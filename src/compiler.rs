@@ -12,7 +12,7 @@ use docx_rs::{
     StructuredDataTag, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType,
     TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
     TableCellBorderPosition, TableCellBorders, TableLayoutType, TableOfContents, TableRow,
-    TextBorder, VAlignType, VertAlignType, WidthType,
+    TextBorder, ThemeColor, VAlignType, VertAlignType, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -1066,14 +1066,32 @@ fn compile_run_properties(props: &Map<String, Value>, path: &str) -> Result<Run>
     if let Some(size) = number_prop(props, "size", path)? {
         run = run.size(to_half_points(size, &format!("{path}/size"))?);
     }
-    if bool_prop(props, "bold", path)?.unwrap_or(false) {
-        run = run.bold();
+    if let Some(value) = bool_prop(props, "bold", path)? {
+        run = if value {
+            run.bold()
+        } else {
+            run.disable_bold()
+        };
     }
-    if bool_prop(props, "italic", path)?.unwrap_or(false) {
-        run = run.italic();
+    if let Some(value) = bool_prop(props, "italic", path)? {
+        run = if value {
+            run.italic()
+        } else {
+            run.disable_italic()
+        };
     }
-    if bool_prop(props, "strike", path)?.unwrap_or(false) {
+    let strike = bool_prop(props, "strike", path)?;
+    let double_strike = bool_prop(props, "doubleStrike", path)?;
+    if strike == Some(true) {
         run = run.strike();
+    } else if double_strike == Some(true) {
+        run = run.dstrike();
+    }
+    if strike == Some(false) {
+        run.run_property = std::mem::take(&mut run.run_property).disable_strike();
+    }
+    if double_strike == Some(false) {
+        run.run_property = std::mem::take(&mut run.run_property).disable_dstrike();
     }
     if bool_prop(props, "underline", path)?.unwrap_or(false) {
         run = run.underline("single");
@@ -1081,10 +1099,45 @@ fn compile_run_properties(props: &Map<String, Value>, path: &str) -> Result<Run>
     if let Some(color) = string_prop(props, "color", path)? {
         run = run.color(color.to_ascii_uppercase());
     }
+    if let Some(theme) = string_prop(props, "themeColor", path)? {
+        run = run.theme_color(theme_color(theme, path)?);
+    }
+    if let Some(shade) = string_prop(props, "themeShade", path)? {
+        run = run.theme_shade(shade.to_ascii_uppercase());
+    }
+    if let Some(tint) = string_prop(props, "themeTint", path)? {
+        run = run.theme_tint(tint.to_ascii_uppercase());
+    }
     if let Some(highlight) = string_prop(props, "highlight", path)? {
         run = run.highlight(highlight);
     }
     Ok(run)
+}
+
+fn theme_color(value: &str, path: &str) -> Result<ThemeColor> {
+    match value {
+        "dark1" => Ok(ThemeColor::Dark1),
+        "light1" => Ok(ThemeColor::Light1),
+        "dark2" => Ok(ThemeColor::Dark2),
+        "light2" => Ok(ThemeColor::Light2),
+        "accent1" => Ok(ThemeColor::Accent1),
+        "accent2" => Ok(ThemeColor::Accent2),
+        "accent3" => Ok(ThemeColor::Accent3),
+        "accent4" => Ok(ThemeColor::Accent4),
+        "accent5" => Ok(ThemeColor::Accent5),
+        "accent6" => Ok(ThemeColor::Accent6),
+        "hyperlink" => Ok(ThemeColor::Hyperlink),
+        "followedHyperlink" => Ok(ThemeColor::FollowedHyperlink),
+        "none" => Ok(ThemeColor::None),
+        "background1" => Ok(ThemeColor::Background1),
+        "text1" => Ok(ThemeColor::Text1),
+        "background2" => Ok(ThemeColor::Background2),
+        "text2" => Ok(ThemeColor::Text2),
+        _ => Err(validation(
+            path,
+            format!("invalid `themeColor` value `{value}`"),
+        )),
+    }
 }
 
 fn compile_run_child(mut run: Run, child: &Child, entry_dir: &Path, path: &str) -> Result<Run> {
@@ -2275,6 +2328,31 @@ mod tests {
         assert!(document.contains(r#"<w:color w:val="1A2B3C" />"#));
         assert!(document.contains(r#"<w:spacing w:val="10" />"#));
         assert!(document.contains("<w:b />") && document.contains("<w:i />"));
+    }
+
+    #[test]
+    fn compile_should_render_run_theme_and_explicit_formatting_flags() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"color":"2e74b5","themeColor":"accent1","themeShade":"bf","themeTint":"99","bold":false,"italic":false,"strike":false,"doubleStrike":true},"children":["themed"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+
+        assert!(document.contains(
+            r#"<w:color w:val="2E74B5" w:themeColor="accent1" w:themeShade="BF" w:themeTint="99" />"#
+        ));
+        assert!(document.contains(r#"<w:b w:val="false" />"#));
+        assert!(document.contains(r#"<w:i w:val="false" />"#));
+        assert!(document.contains(r#"<w:strike w:val="false" />"#));
+        assert!(document.contains("<w:dstrike />"));
     }
 
     #[test]

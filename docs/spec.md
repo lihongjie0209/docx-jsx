@@ -102,6 +102,12 @@ components it uses and default-exports one `Document`.
   signed `characterSpacing?` in points.
 - `Heading`: required `level: 1..9`, optional `style`, plus all `Paragraph`
   layout properties. It emits both a heading style and Word outline level.
+- `Run`: `themeColor?` accepts Word theme tokens `dark1`, `light1`, `dark2`,
+  `light2`, `accent1` through `accent6`, `hyperlink`, `followedHyperlink`,
+  `none`, `background1`, `text1`, `background2`, or `text2`. `themeShade?` and
+  `themeTint?` are two-digit hex modifiers. Boolean `bold`, `italic`, `strike`,
+  and `doubleStrike` emit explicit on/off OOXML; enabled strike modes are
+  mutually exclusive.
 - `Caption`: required Word identifier `label`; optional Word identifier
   `identifier?` defaults to `label`. `format?`, `restart?`, `placeholder?`, and
   `dirty?` have the same meaning as on `SequenceField`; `style?` defaults to

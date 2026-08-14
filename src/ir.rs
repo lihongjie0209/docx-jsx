@@ -570,6 +570,10 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "underline",
             "color",
             "highlight",
+            "themeColor",
+            "themeShade",
+            "themeTint",
+            "doubleStrike",
         ],
         NodeKind::Text => &["value"],
         NodeKind::Break | NodeKind::Header | NodeKind::Footer => &["type"],
@@ -879,12 +883,69 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
 }
 
 fn validate_advanced_semantics(node: &Node, path: &str) -> Result<()> {
+    validate_run_defaults(node, path)?;
     validate_field_semantics(node, path)?;
     validate_index_semantics(node, path)?;
     validate_text_effect_semantics(node, path)?;
     validate_revision_and_control_semantics(node, path)?;
     validate_annotation_semantics(node, path)?;
     validate_structure_semantics(node, path)
+}
+
+fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
+    if node.kind != NodeKind::Run {
+        return Ok(());
+    }
+    if node.props.contains_key("themeColor") {
+        validate_optional_enum_prop(
+            node,
+            path,
+            "themeColor",
+            &[
+                "dark1",
+                "light1",
+                "dark2",
+                "light2",
+                "accent1",
+                "accent2",
+                "accent3",
+                "accent4",
+                "accent5",
+                "accent6",
+                "hyperlink",
+                "followedHyperlink",
+                "none",
+                "background1",
+                "text1",
+                "background2",
+                "text2",
+            ],
+        )?;
+    }
+    for key in ["themeShade", "themeTint"] {
+        if let Some(value) = node.props.get(key) {
+            let modifier = value
+                .as_str()
+                .ok_or_else(|| validation(path, format!("`{key}` must be a hex byte")))?;
+            if modifier.len() != 2 || !modifier.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(validation(path, format!("`{key}` must be a hex byte")));
+            }
+        }
+    }
+    for key in ["bold", "italic", "strike", "doubleStrike"] {
+        if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(path, format!("`{key}` must be a boolean")));
+        }
+    }
+    if node.props.get("strike").and_then(Value::as_bool) == Some(true)
+        && node.props.get("doubleStrike").and_then(Value::as_bool) == Some(true)
+    {
+        return Err(validation(
+            path,
+            "enabled `strike` and `doubleStrike` are mutually exclusive",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_text_effect_semantics(node: &Node, path: &str) -> Result<()> {
@@ -1746,6 +1807,39 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"snapToGrid":false,"widowControl":true,"font":"Noto Sans CJK SC","size":12,"bold":true,"italic":false,"color":"1a2B3c","characterSpacing":0.5},"children":["body"]},{"type":"Heading","props":{"level":2,"font":"Noto Sans CJK SC","size":16},"children":["title"]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_run_theme_color_and_explicit_formatting_flags() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"color":"2E74B5","themeColor":"accent1","themeShade":"BF","themeTint":"99","bold":false,"italic":false,"strike":false,"doubleStrike":true},"children":["themed"]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_run_theme_and_conflicting_strikes() {
+        let invalid_theme = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"themeColor":"accent9"},"children":["x"]}]}]}]}}"#,
+        );
+        assert!(
+            invalid_theme
+                .validate()
+                .expect_err("unknown theme must fail")
+                .to_string()
+                .contains("themeColor")
+        );
+
+        let conflicting = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"strike":true,"doubleStrike":true},"children":["x"]}]}]}]}}"#,
+        );
+        assert!(
+            conflicting
+                .validate()
+                .expect_err("strike modes must be exclusive")
+                .to_string()
+                .contains("mutually exclusive")
+        );
     }
 
     #[test]
