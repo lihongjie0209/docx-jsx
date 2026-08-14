@@ -192,6 +192,14 @@ components it uses and default-exports one `Document`.
   `cantSplit?`.
 - `TableCell`: `width?`, `colSpan?`,
   `verticalAlign?: "top" | "center" | "bottom"`, `shading?`, `border?`.
+- Table, TableCell, and their custom-style equivalents also accept an advanced
+  border object. Table positions are `top`, `right`, `bottom`, `left`,
+  `insideHorizontal`, and `insideVertical`; cells additionally accept
+  `topLeftToBottomRight` and `topRightToBottomLeft`. Each position is either a
+  `{style?,size?,color?}` border or `false` to emit an explicit `nil` border.
+  `clearAll: true` clears every supported position and cannot be combined with
+  position entries. Uniform `{style?,size?,color?}` remains supported and
+  cannot be mixed with position entries.
 - `Header`, `Footer`: `type?: "default" | "first" | "even"`. A `first`
   header or footer enables the section's different-first-page setting.
 - `Hyperlink`: exactly one of `href?: string` (external relationship) or

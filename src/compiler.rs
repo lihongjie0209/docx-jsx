@@ -329,7 +329,7 @@ fn compile_style_table(mut style: Style, value: &Value, path: &str) -> Result<St
         style = style.margins(TableCellMargins::new().margin(top, right, bottom, left));
     }
     if let Some(value) = table.get("border") {
-        style = style.set_borders(table_borders(&parse_border(value, path)?));
+        style = style.set_borders(compile_table_borders(value, path)?);
     }
     Ok(style)
 }
@@ -379,7 +379,7 @@ fn compile_style_cell(mut style: Style, value: &Value, path: &str) -> Result<Sty
         );
     }
     if let Some(value) = cell.get("border") {
-        property = property.set_borders(cell_borders(&parse_border(value, path)?));
+        property = property.set_borders(compile_cell_borders(value, path)?);
     }
     style = style.table_cell_property(property);
     Ok(style)
@@ -2048,7 +2048,7 @@ fn compile_table(
         table = table.set_grid(widths);
     }
     if let Some(border) = node.props.get("border") {
-        table = table.set_borders(table_borders(&parse_border(border, path)?));
+        table = table.set_borders(compile_table_borders(border, path)?);
     }
     Ok(table)
 }
@@ -2168,7 +2168,7 @@ fn compile_cell(
         );
     }
     if let Some(border) = node.props.get("border") {
-        cell = cell.set_borders(cell_borders(&parse_border(border, path)?));
+        cell = cell.set_borders(compile_cell_borders(border, path)?);
     }
     for (index, child) in node.children.iter().enumerate() {
         let Child::Node(child) = child else {
@@ -2588,6 +2588,46 @@ fn table_borders(spec: &BorderSpec) -> TableBorders {
     })
 }
 
+fn compile_table_borders(value: &Value, path: &str) -> Result<TableBorders> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`border` must be an object"))?;
+    if object
+        .keys()
+        .all(|key| ["style", "size", "color"].contains(&key.as_str()))
+    {
+        return Ok(table_borders(&parse_border(value, path)?));
+    }
+    let mut borders = TableBorders::with_empty();
+    if object.get("clearAll").and_then(Value::as_bool) == Some(true) {
+        return Ok(borders.clear_all());
+    }
+    for (key, position) in [
+        ("top", TableBorderPosition::Top),
+        ("right", TableBorderPosition::Right),
+        ("bottom", TableBorderPosition::Bottom),
+        ("left", TableBorderPosition::Left),
+        ("insideHorizontal", TableBorderPosition::InsideH),
+        ("insideVertical", TableBorderPosition::InsideV),
+    ] {
+        let Some(edge) = object.get(key) else {
+            continue;
+        };
+        if edge == &Value::Bool(false) {
+            borders = borders.clear(position);
+        } else {
+            let spec = parse_border(edge, &format!("{path}/border/{key}"))?;
+            borders = borders.set(
+                TableBorder::new(position)
+                    .border_type(spec.border_type)
+                    .size(spec.size)
+                    .color(spec.color),
+            );
+        }
+    }
+    Ok(borders)
+}
+
 fn cell_borders(spec: &BorderSpec) -> TableCellBorders {
     [
         TableCellBorderPosition::Top,
@@ -2604,6 +2644,48 @@ fn cell_borders(spec: &BorderSpec) -> TableCellBorders {
                 .color(&spec.color),
         )
     })
+}
+
+fn compile_cell_borders(value: &Value, path: &str) -> Result<TableCellBorders> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`border` must be an object"))?;
+    if object
+        .keys()
+        .all(|key| ["style", "size", "color"].contains(&key.as_str()))
+    {
+        return Ok(cell_borders(&parse_border(value, path)?));
+    }
+    let mut borders = TableCellBorders::with_empty();
+    if object.get("clearAll").and_then(Value::as_bool) == Some(true) {
+        return Ok(borders.clear_all());
+    }
+    for (key, position) in [
+        ("top", TableCellBorderPosition::Top),
+        ("right", TableCellBorderPosition::Right),
+        ("bottom", TableCellBorderPosition::Bottom),
+        ("left", TableCellBorderPosition::Left),
+        ("insideHorizontal", TableCellBorderPosition::InsideH),
+        ("insideVertical", TableCellBorderPosition::InsideV),
+        ("topLeftToBottomRight", TableCellBorderPosition::Tl2br),
+        ("topRightToBottomLeft", TableCellBorderPosition::Tr2bl),
+    ] {
+        let Some(edge) = object.get(key) else {
+            continue;
+        };
+        if edge == &Value::Bool(false) {
+            borders = borders.clear(position);
+        } else {
+            let spec = parse_border(edge, &format!("{path}/border/{key}"))?;
+            borders = borders.set(
+                TableCellBorder::new(position)
+                    .border_type(spec.border_type)
+                    .size(spec.size)
+                    .color(spec.color),
+            );
+        }
+    }
+    Ok(borders)
 }
 
 fn parse_box_margins(value: &Value, path: &str) -> Result<[usize; 4]> {
@@ -3147,12 +3229,12 @@ mod tests {
                             "position": {"leftFromText": 7.1, "rightFromText": 7.1, "verticalAnchor": "text", "horizontalAnchor": "margin", "xAlign": "right", "y": 25.5},
                             "layout": "fixed",
                             "columnWidths": [100, 100],
-                            "border": {"style": "single", "size": 0.5, "color": "112233"}
+                            "border": {"top": {"style": "double", "size": 1, "color": "112233"}, "insideHorizontal": false}
                         },
                         "children": [{
                             "type": "TableRow", "props": {"cantSplit": true, "inserted": {"author": "Ada", "date": "2026-08-14T00:00:00Z"}}, "children": [{
                                 "type": "TableCell",
-                                "props": {"colSpan": 2, "verticalAlign": "center", "verticalMerge": "restart", "textDirection": "tbRl", "margins": {"top": 1, "right": 2, "bottom": 3, "left": 4}, "shading": "EEEEEE"},
+                                "props": {"colSpan": 2, "verticalAlign": "center", "verticalMerge": "restart", "textDirection": "tbRl", "margins": {"top": 1, "right": 2, "bottom": 3, "left": 4}, "shading": "EEEEEE", "border": {"left": false, "topLeftToBottomRight": {"style": "dotted", "size": 0.5, "color": "993366"}}},
                                 "children": [
                                     {"type": "Paragraph", "props": {}, "children": ["cell"]},
                                     {"type": "TableOfContents", "props": {}, "children": []},
@@ -3187,6 +3269,13 @@ mod tests {
                 && document.contains("<w:tcMar>")
                 && document.contains(r#"<w:vMerge w:val="restart" />"#)
                 && document.contains(r#"<w:textDirection w:val="tbRl" />"#)
+                && document
+                    .contains(r#"<w:top w:val="double" w:sz="8" w:space="0" w:color="112233" />"#)
+                && document.contains(r#"<w:insideH w:val="nil""#)
+                && document.contains(r#"<w:left w:val="nil""#)
+                && document.contains(
+                    r#"<w:tl2br w:val="dotted" w:sz="4" w:space="0" w:color="993366" />"#
+                )
                 && document.contains("<w:sdt>")
                 && document.contains("TOC")
                 && document.contains(r#"w:leftFromText="142""#)

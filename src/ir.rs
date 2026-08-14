@@ -1227,7 +1227,7 @@ fn validate_style_table(value: &Value, path: &str) -> Result<()> {
         validate_box_margins(value, path)?;
     }
     if let Some(value) = table.get("border") {
-        validate_style_border(value, path, false)?;
+        validate_border_model(value, path, false)?;
     }
     Ok(())
 }
@@ -1279,7 +1279,7 @@ fn validate_style_cell(value: &Value, path: &str) -> Result<()> {
         validate_box_margins(value, path)?;
     }
     if let Some(value) = cell.get("border") {
-        validate_style_border(value, path, false)?;
+        validate_border_model(value, path, true)?;
     }
     Ok(())
 }
@@ -1314,6 +1314,78 @@ fn validate_style_border(value: &Value, path: &str, allow_space: bool) -> Result
             path,
             "style text border `space` must be non-negative integer",
         ));
+    }
+    Ok(())
+}
+
+fn validate_border_model(value: &Value, path: &str, cell: bool) -> Result<()> {
+    let border = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`border` must be an object"))?;
+    let uniform = ["style", "size", "color"];
+    let mut positions = vec![
+        "top",
+        "right",
+        "bottom",
+        "left",
+        "insideHorizontal",
+        "insideVertical",
+    ];
+    if cell {
+        positions.extend(["topLeftToBottomRight", "topRightToBottomLeft"]);
+    }
+    let uses_uniform = border.keys().any(|key| uniform.contains(&key.as_str()));
+    let uses_advanced = border
+        .keys()
+        .any(|key| key == "clearAll" || positions.contains(&key.as_str()));
+    if uses_uniform && uses_advanced {
+        return Err(validation(
+            path,
+            "uniform and positioned border properties are mutually exclusive",
+        ));
+    }
+    if !uses_advanced {
+        return validate_style_border(value, path, false);
+    }
+    let mut allowed = positions.clone();
+    allowed.push("clearAll");
+    validate_object_keys(border, path, &allowed)?;
+    if border
+        .get("clearAll")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(validation(path, "border `clearAll` must be a boolean"));
+    }
+    if border.get("clearAll").and_then(Value::as_bool) == Some(true)
+        && positions.iter().any(|key| border.contains_key(*key))
+    {
+        return Err(validation(
+            path,
+            "border `clearAll` cannot be combined with position entries",
+        ));
+    }
+    if border.get("clearAll").and_then(Value::as_bool) != Some(true)
+        && !positions.iter().any(|key| border.contains_key(*key))
+    {
+        return Err(validation(
+            path,
+            "advanced `border` must configure a position",
+        ));
+    }
+    for position in positions {
+        let Some(value) = border.get(position) else {
+            continue;
+        };
+        if value == &Value::Bool(false) {
+            continue;
+        }
+        if value.is_boolean() {
+            return Err(validation(
+                path,
+                format!("border `{position}` must be an object or false"),
+            ));
+        }
+        validate_style_border(value, path, false)?;
     }
     Ok(())
 }
@@ -1703,6 +1775,9 @@ fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
         if let Some(value) = node.props.get("position") {
             validate_table_position(value, path)?;
         }
+        if let Some(value) = node.props.get("border") {
+            validate_border_model(value, path, false)?;
+        }
     }
     if matches!(node.kind, NodeKind::Table | NodeKind::TableCell)
         && let Some(value) = node.props.get("margins")
@@ -1722,6 +1797,9 @@ fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
             if node.props.contains_key(key) {
                 validate_optional_enum_prop(node, path, key, allowed)?;
             }
+        }
+        if let Some(value) = node.props.get("border") {
+            validate_border_model(value, path, true)?;
         }
     }
     if node.kind == NodeKind::TableRow {
@@ -2812,6 +2890,38 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"style":"GridTable4","indent":12,"margins":{"top":2,"right":3,"bottom":4,"left":5}},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"verticalMerge":"restart","textDirection":"tbRl","margins":{"top":1,"right":2,"bottom":3,"left":4}},"children":[{"type":"TableOfContents","props":{},"children":[]},{"type":"ContentControl","props":{"alias":"Cell"},"children":["value"]}]}]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_positioned_and_cleared_borders() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"border":{"top":{"style":"double","size":1,"color":"336699"},"insideHorizontal":false}},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"border":{"left":false,"topLeftToBottomRight":{"style":"dotted","size":0.5,"color":"993366"}}},"children":[]}]}]},{"type":"Table","props":{"border":{"clearAll":true}},"children":[]}]}]}}"#,
+        );
+        ir.validate().expect("advanced borders should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_ambiguous_or_invalid_positioned_borders() {
+        for (border, expected) in [
+            (
+                r#"{"style":"single","top":{"style":"double"}}"#,
+                "mutually exclusive",
+            ),
+            (r#"{"clearAll":true,"left":false}"#, "cannot be combined"),
+            (r#"{"top":true}"#, "object or false"),
+            (
+                r#"{"topLeftToBottomRight":{"style":"single"}}"#,
+                "unknown property",
+            ),
+        ] {
+            let source = format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{}},"children":[{{"type":"Section","props":{{}},"children":[{{"type":"Table","props":{{"border":{border}}},"children":[]}}]}}]}}}}"#
+            );
+            let error = parse(&source)
+                .validate()
+                .expect_err("invalid border should be rejected");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]
