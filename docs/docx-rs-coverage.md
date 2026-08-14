@@ -7,7 +7,7 @@ tests, CLI round-trip coverage, and specification text.
 | Area | Covered | Next gaps |
 | --- | --- | --- |
 | Run content and formatting | text, breaks, images, symbols, fields, tabs, fonts, size, RGB and theme color/tint/shade, highlight, explicit bold/italic/strike/double-strike on/off, underline, caps, hidden, spacing, scaling, fit, border, shading, revisions, footnotes | remaining public run-property combinations and reader-only run children |
-| Paragraph | alignment, style, spacing, indentation, keep flags, page break, tabs, outline, snap-to-grid, widow control, bidi, text alignment, right-indent adjustment, shading, frame properties, paragraph run defaults, formatting insert/delete and property revisions | character-unit indentation (upstream serializer currently drops it), paragraph borders, explicit paragraph IDs |
+| Paragraph | alignment, style, spacing, indentation, keep flags, page break, tabs, outline, snap-to-grid, widow control, bidi, text alignment, right-indent adjustment, shading, frame properties, paragraph borders, explicit paragraph IDs, paragraph run defaults, formatting insert/delete and property revisions | character-unit indentation (upstream serializer currently drops it) |
 | Section | page size, orientation, margins, headers, footers, title page, text direction, document grid, page numbering | section type and columns (no public `Section` setters), line numbering (no public writer API) |
 | Table | width, alignment, layout, grid, uniform/positioned/cleared borders, style, indentation, cell margins, floating position | remaining public property combinations |
 | TableRow | height/rule, cant-split, inserted/deleted revisions | before/after grid widths (upstream serializer currently drops them) |

@@ -8,7 +8,8 @@ use docx_rs::{
     Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC,
     InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing, MoveFrom, MoveTo, NumPages,
     NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType,
-    PageSize, Paragraph, ParagraphPropertyChange, Pic, PositionalTab, PositionalTabAlignmentType,
+    PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition, ParagraphBorders,
+    ParagraphPropertyChange, Pic, PositionalTab, PositionalTabAlignmentType,
     PositionalTabRelativeTo, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
     Start, StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab, TabLeaderType, TabValueType,
     Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
@@ -1047,6 +1048,9 @@ fn compile_advanced_paragraph_properties(
     node: &Node,
     path: &str,
 ) -> Result<Paragraph> {
+    if let Some(value) = string_prop(&node.props, "paragraphId", path)? {
+        paragraph = paragraph.id(value.to_ascii_uppercase());
+    }
     if let Some(value) = bool_prop(&node.props, "bidi", path)? {
         paragraph.property = paragraph.property.bidi(value);
     }
@@ -1081,6 +1085,11 @@ fn compile_advanced_paragraph_properties(
     }
     if let Some(value) = node.props.get("frame") {
         paragraph = compile_paragraph_frame(paragraph, value, path)?;
+    }
+    if let Some(value) = node.props.get("border") {
+        paragraph.property = paragraph
+            .property
+            .set_borders(compile_paragraph_borders(value, path)?);
     }
     if let Some(value) = node.props.get("inserted") {
         paragraph.property.run_property.ins = Some(compile_row_insert(value, path)?);
@@ -2664,6 +2673,7 @@ fn compile_list(
 struct BorderSpec {
     border_type: BorderType,
     size: usize,
+    space: usize,
     color: String,
 }
 
@@ -2680,13 +2690,7 @@ fn parse_border_spec(value: &Value, path: &str, allow_space: bool) -> Result<Bor
             return Err(validation(path, format!("unknown border property `{key}`")));
         }
     }
-    let style = optional_enum_value(
-        object,
-        "style",
-        &["single", "double", "dotted", "dashed"],
-        path,
-    )?
-    .unwrap_or("single");
+    let style = string_prop(object, "style", path)?.unwrap_or("single");
     let size_pt = number_prop(object, "size", path)?.unwrap_or(0.5);
     if size_pt < 0.0 {
         return Err(validation(path, "border size must be non-negative"));
@@ -2695,16 +2699,80 @@ fn parse_border_spec(value: &Value, path: &str, allow_space: bool) -> Result<Bor
     if color.len() != 6 || !color.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(validation(path, "border color must be six-digit RGB"));
     }
+    let space = object
+        .get("space")
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| validation(path, "border space must be a non-negative integer"))
+        })
+        .transpose()?
+        .unwrap_or(0);
     Ok(BorderSpec {
-        border_type: match style {
-            "double" => BorderType::Double,
-            "dotted" => BorderType::Dotted,
-            "dashed" => BorderType::Dashed,
-            _ => BorderType::Single,
-        },
+        border_type: style
+            .parse()
+            .map_err(|_| validation(path, format!("invalid border style `{style}`")))?,
         size: f64_to_usize(size_pt * 8.0, path)?,
+        space,
         color: color.to_ascii_uppercase(),
     })
+}
+
+fn paragraph_border(position: ParagraphBorderPosition, spec: &BorderSpec) -> ParagraphBorder {
+    ParagraphBorder::new(position)
+        .val(spec.border_type)
+        .size(spec.size)
+        .space(spec.space)
+        .color(&spec.color)
+}
+
+fn paragraph_borders(spec: &BorderSpec) -> ParagraphBorders {
+    [
+        ParagraphBorderPosition::Top,
+        ParagraphBorderPosition::Right,
+        ParagraphBorderPosition::Bottom,
+        ParagraphBorderPosition::Left,
+    ]
+    .into_iter()
+    .fold(ParagraphBorders::with_empty(), |borders, position| {
+        borders.set(paragraph_border(position, spec))
+    })
+}
+
+fn compile_paragraph_borders(value: &Value, path: &str) -> Result<ParagraphBorders> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`border` must be an object"))?;
+    if object
+        .keys()
+        .all(|key| ["style", "size", "color", "space"].contains(&key.as_str()))
+    {
+        return Ok(paragraph_borders(&parse_border_spec(value, path, true)?));
+    }
+    let mut borders = ParagraphBorders::with_empty();
+    if object.get("clearAll").and_then(Value::as_bool) == Some(true) {
+        return Ok(borders.clear_all());
+    }
+    for (key, position) in [
+        ("top", ParagraphBorderPosition::Top),
+        ("right", ParagraphBorderPosition::Right),
+        ("bottom", ParagraphBorderPosition::Bottom),
+        ("left", ParagraphBorderPosition::Left),
+        ("between", ParagraphBorderPosition::Between),
+        ("bar", ParagraphBorderPosition::Bar),
+    ] {
+        let Some(edge) = object.get(key) else {
+            continue;
+        };
+        if edge == &Value::Bool(false) {
+            borders = borders.clear(position);
+        } else {
+            let spec = parse_border_spec(edge, &format!("{path}/border/{key}"), true)?;
+            borders = borders.set(paragraph_border(position, &spec));
+        }
+    }
+    Ok(borders)
 }
 
 fn table_borders(spec: &BorderSpec) -> TableBorders {
@@ -3360,6 +3428,35 @@ mod tests {
                 && document.contains("w:author=\"Lin\"")
                 && document.contains("<w:jc w:val=\"right\" />")
                 && document.contains("<w:spacing w:after=\"120\" />"),
+            "{document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_paragraph_id_and_borders() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"paragraphId":"a1b2c3d4","border":{"top":{"style":"double","size":1,"color":"336699","space":2},"between":false,"bar":{"style":"babyRattle"}}},"children":["one"]},{"type":"Paragraph","props":{"border":{"style":"dashed","size":0.5,"color":"993366","space":1}},"children":["two"]},{"type":"Paragraph","props":{"border":{"clearAll":true}},"children":[]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(
+            document.contains("w14:paraId=\"A1B2C3D4\"")
+                && document.contains(
+                    "<w:top w:val=\"double\" w:space=\"2\" w:sz=\"8\" w:color=\"336699\" />"
+                )
+                && document.contains("<w:between w:val=\"nil\"")
+                && document.contains("<w:bar w:val=\"babyRattle\"")
+                && document.contains(
+                    "<w:left w:val=\"dashed\" w:space=\"1\" w:sz=\"4\" w:color=\"993366\" />"
+                )
+                && document.matches("w:val=\"nil\"").count() >= 7,
             "{document}"
         );
     }

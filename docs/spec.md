@@ -167,6 +167,25 @@ components it uses and default-exports one `Document`.
   formatting as `{author?, date?, previous}`. `previous` is non-empty and
   accepts the same paragraph formatting properties except `inserted`,
   `deleted`, and `propertyChange`.
+- `Paragraph`: optional `paragraphId` is exactly eight hexadecimal characters
+  and is emitted as `w14:paraId`. `border` accepts either a uniform
+  `{style?,size?,color?,space?}` object or positioned entries `top`, `right`,
+  `bottom`, `left`, `between`, and `bar`. Each positioned entry is a border
+  object or `false` for an explicit `nil` border; `{clearAll:true}` clears all
+  six positions. Uniform and positioned forms cannot be mixed. Border sizes
+  use points and `space` is a non-negative integer in OOXML point units. All
+  border-bearing components accept every `BorderType` token exposed by the
+  pinned docx-rs backend, from `nil`, `none`, `single`, `thick`, `double`,
+  `dotted`, and `dashed` through compound, wave, 3D, and art values such as
+  `thinThickThinLargeGap`, `doubleWave`, `threeDEmboss`, and `babyRattle`.
+  The complete style set is `nil`, `none`, `single`, `thick`, `double`,
+  `dotted`, `dashed`, `dotDash`, `dotDotDash`, `triple`,
+  `thinThickSmallGap`, `thickThinSmallGap`, `thinThickThinSmallGap`,
+  `thinThickMediumGap`, `thickThinMediumGap`, `thinThickThinMediumGap`,
+  `thinThickLargeGap`, `thickThinLargeGap`, `thinThickThinLargeGap`, `wave`,
+  `doubleWave`, `dashSmallGap`, `dashDotStroked`, `threeDEmboss`,
+  `threeDEngrave`, `outset`, `inset`, `apples`, `archedScallops`,
+  `babyPacifier`, and `babyRattle`.
 - `Paragraph`: also accepts paragraph-default
   `font?`, positive `size?`, `bold?`, `italic?`, six-digit RGB `color?`, and
   signed `characterSpacing?` in points.

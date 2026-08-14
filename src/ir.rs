@@ -4,6 +4,40 @@ use std::collections::HashSet;
 
 use crate::error::{Error, Result};
 
+const BORDER_STYLES: &[&str] = &[
+    "nil",
+    "none",
+    "single",
+    "thick",
+    "double",
+    "dotted",
+    "dashed",
+    "dotDash",
+    "dotDotDash",
+    "triple",
+    "thinThickSmallGap",
+    "thickThinSmallGap",
+    "thinThickThinSmallGap",
+    "thinThickMediumGap",
+    "thickThinMediumGap",
+    "thinThickThinMediumGap",
+    "thinThickLargeGap",
+    "thickThinLargeGap",
+    "thinThickThinLargeGap",
+    "wave",
+    "doubleWave",
+    "dashSmallGap",
+    "dashDotStroked",
+    "threeDEmboss",
+    "threeDEngrave",
+    "outset",
+    "inset",
+    "apples",
+    "archedScallops",
+    "babyPacifier",
+    "babyRattle",
+];
+
 /// Versioned data exchanged between the JavaScript runtime and Rust compiler.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -771,6 +805,8 @@ fn paragraph_props() -> &'static [&'static str] {
         "inserted",
         "deleted",
         "propertyChange",
+        "paragraphId",
+        "border",
     ]
 }
 
@@ -805,6 +841,8 @@ fn heading_props() -> &'static [&'static str] {
         "inserted",
         "deleted",
         "propertyChange",
+        "paragraphId",
+        "border",
     ]
 }
 
@@ -974,6 +1012,20 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
         }
         if let Some(value) = node.props.get("frame") {
             validate_style_frame(value, path)?;
+        }
+        if let Some(value) = node.props.get("paragraphId") {
+            let valid = value.as_str().is_some_and(|value| {
+                value.len() == 8 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            });
+            if !valid {
+                return Err(validation(
+                    path,
+                    "`paragraphId` must contain exactly eight hexadecimal characters",
+                ));
+            }
+        }
+        if let Some(value) = node.props.get("border") {
+            validate_paragraph_border_model(value, path)?;
         }
         validate_paragraph_revisions(node, path)?;
     }
@@ -1414,12 +1466,7 @@ fn validate_style_border(value: &Value, path: &str, allow_space: bool) -> Result
         &["style", "size", "color"][..]
     };
     validate_object_keys(border, path, allowed)?;
-    validate_map_enum(
-        border,
-        path,
-        "style",
-        &["single", "double", "dotted", "dashed"],
-    )?;
+    validate_map_enum(border, path, "style", BORDER_STYLES)?;
     if let Some(value) = border.get("size") {
         require_number(value, path, "border.size", true)?;
     }
@@ -1432,17 +1479,13 @@ fn validate_style_border(value: &Value, path: &str, allow_space: bool) -> Result
     {
         return Err(validation(
             path,
-            "style text border `space` must be non-negative integer",
+            "border `space` must be a non-negative integer",
         ));
     }
     Ok(())
 }
 
 fn validate_border_model(value: &Value, path: &str, cell: bool) -> Result<()> {
-    let border = value
-        .as_object()
-        .ok_or_else(|| validation(path, "`border` must be an object"))?;
-    let uniform = ["style", "size", "color"];
     let mut positions = vec![
         "top",
         "right",
@@ -1453,6 +1496,31 @@ fn validate_border_model(value: &Value, path: &str, cell: bool) -> Result<()> {
     ];
     if cell {
         positions.extend(["topLeftToBottomRight", "topRightToBottomLeft"]);
+    }
+    validate_positioned_border_model(value, path, &positions, false)
+}
+
+fn validate_paragraph_border_model(value: &Value, path: &str) -> Result<()> {
+    validate_positioned_border_model(
+        value,
+        path,
+        &["top", "right", "bottom", "left", "between", "bar"],
+        true,
+    )
+}
+
+fn validate_positioned_border_model(
+    value: &Value,
+    path: &str,
+    positions: &[&str],
+    allow_space: bool,
+) -> Result<()> {
+    let border = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`border` must be an object"))?;
+    let mut uniform = vec!["style", "size", "color"];
+    if allow_space {
+        uniform.push("space");
     }
     let uses_uniform = border.keys().any(|key| uniform.contains(&key.as_str()));
     let uses_advanced = border
@@ -1465,9 +1533,9 @@ fn validate_border_model(value: &Value, path: &str, cell: bool) -> Result<()> {
         ));
     }
     if !uses_advanced {
-        return validate_style_border(value, path, false);
+        return validate_style_border(value, path, allow_space);
     }
-    let mut allowed = positions.clone();
+    let mut allowed = positions.to_vec();
     allowed.push("clearAll");
     validate_object_keys(border, path, &allowed)?;
     if border
@@ -1493,7 +1561,7 @@ fn validate_border_model(value: &Value, path: &str, cell: bool) -> Result<()> {
         ));
     }
     for position in positions {
-        let Some(value) = border.get(position) else {
+        let Some(value) = border.get(*position) else {
             continue;
         };
         if value == &Value::Bool(false) {
@@ -1505,7 +1573,7 @@ fn validate_border_model(value: &Value, path: &str, cell: bool) -> Result<()> {
                 format!("border `{position}` must be an object or false"),
             ));
         }
-        validate_style_border(value, path, false)?;
+        validate_style_border(value, path, allow_space)?;
     }
     Ok(())
 }
@@ -2999,6 +3067,36 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"bidi":true,"textAlign":"baseline","adjustRightIndent":-2,"shading":"DDEEFF","outlineLevel":3,"frame":{"wrap":"around","horizontalAnchor":"page","x":12,"yAlign":"top","width":144,"height":72},"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"},"propertyChange":{"author":"Lin","date":"2026-08-13T00:00:00Z","previous":{"align":"right","spacingAfter":6,"bidi":false}}},"children":["body"]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_paragraph_id_and_borders() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"paragraphId":"A1B2C3D4","border":{"top":{"style":"double","size":1,"color":"336699","space":2},"between":false,"bar":{"style":"babyRattle"}}},"children":["one"]},{"type":"Paragraph","props":{"border":{"style":"dashed","size":0.5,"color":"993366","space":1}},"children":["two"]},{"type":"Paragraph","props":{"border":{"clearAll":true}},"children":[]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_paragraph_id_and_borders() {
+        for (props, expected) in [
+            (r#"{"paragraphId":"123"}"#, "eight hexadecimal"),
+            (r#"{"paragraphId":"ZZZZZZZZ"}"#, "eight hexadecimal"),
+            (
+                r#"{"border":{"style":"single","top":false}}"#,
+                "uniform and positioned",
+            ),
+            (
+                r#"{"border":{"between":{"space":-1}}}"#,
+                "non-negative integer",
+            ),
+        ] {
+            let ir = parse(&format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{}},"children":[{{"type":"Section","props":{{}},"children":[{{"type":"Paragraph","props":{props},"children":[]}}]}}]}}}}"#
+            ));
+            let error = ir.validate().expect_err("fixture must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

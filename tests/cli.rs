@@ -309,7 +309,7 @@ export default <Document defaultCharacterSpacing={0.5} createdAt="2026-08-14T00:
   <Index identifier="topics" columns={2} runIn placeholder="Update index" style="IndexBody" />
   <Paragraph><MergeField name="CustomerName" placeholder="Ada" /><DocumentPropertyField name="Project Name">Apollo</DocumentPropertyField><FormulaField expression="SUM(ABOVE)" numberFormat="#,##0.00">42.00</FormulaField></Paragraph>
   <Paragraph><Deleted author="Ada" date="2026-08-14T00:00:00Z"><Run bold>Old text</Run></Deleted><Inserted author="Ada"><Run bold>New text</Run></Inserted></Paragraph>
-  <Paragraph bidi textAlign="baseline" adjustRightIndent={-2} shading="DDEEFF" outlineLevel={3} frame={{wrap: "around", horizontalAnchor: "page", x: 12, yAlign: "top", width: 144, height: 72}} inserted={{author: "Ada", date: "2026-08-14T00:00:00Z"}} propertyChange={{author: "Lin", previous: {align: "right", spacingAfter: 6, bidi: false}}}>Revised paragraph formatting</Paragraph>
+  <Paragraph paragraphId="A1B2C3D4" bidi textAlign="baseline" adjustRightIndent={-2} shading="DDEEFF" outlineLevel={3} frame={{wrap: "around", horizontalAnchor: "page", x: 12, yAlign: "top", width: 144, height: 72}} border={{top: {style: "double", size: 1, color: "336699", space: 2}, between: false, bar: {style: "babyRattle"}}} inserted={{author: "Ada", date: "2026-08-14T00:00:00Z"}} propertyChange={{author: "Lin", previous: {align: "right", spacingAfter: 6, bidi: false}}}>Revised paragraph formatting</Paragraph>
   <List type="ordered" start={3}><ListItem>Third</ListItem><ListItem level={1}>Nested</ListItem></List>
   <Table style="GridTable4" indent={12} margins={{top: 2, right: 3, bottom: 4, left: 5}} border={{top: {style: "double", size: 1, color: "336699"}, insideHorizontal: false}} position={{leftFromText: 7.1, rightFromText: 7.1, verticalAnchor: "text", horizontalAnchor: "margin", xAlign: "right", y: 25.5}}><TableRow inserted={{author: "Ada", date: "2026-08-14T00:00:00Z"}}><TableCell verticalMerge="restart" textDirection="tbRl" margins={{top: 1, right: 2, bottom: 3, left: 4}} border={{left: false, topLeftToBottomRight: {style: "dotted", size: 0.5, color: "993366"}}}><Paragraph>Cell</Paragraph><TableOfContents startLevel={1} endLevel={2} /><ContentControl alias="CellValue">value</ContentControl></TableCell></TableRow><TableRow deleted={{author: "Linus"}}><TableCell><Paragraph>Removed row</Paragraph></TableCell></TableRow></Table>
 </Section></Document>;"##,
@@ -371,6 +371,7 @@ export default <Document defaultCharacterSpacing={0.5} createdAt="2026-08-14T00:
     assert!(document.contains("w:ins") && document.contains("w:del"));
     assert!(document.contains("w:framePr") && document.contains("w:pPrChange"));
     assert!(document.contains("w:textAlignment") && document.contains("w:adjustRightInd"));
+    assert!(document.contains("w14:paraId=\"A1B2C3D4\"") && document.contains("w:pBdr"));
     assert!(document.contains("w:delText") && document.contains("Old text"));
     assert!(document.contains("PAGEREF intro") && document.contains("w:dirty=\"true\""));
     assert!(document.contains("w:ptab") && document.contains("w:leader=\"dot\""));
