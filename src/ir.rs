@@ -715,6 +715,8 @@ fn document_props() -> &'static [&'static str] {
         "defaultSize",
         "defaultCharacterSpacing",
         "defaultLineSpacing",
+        "webExtensions",
+        "customXmlItems",
         "createdAt",
         "updatedAt",
         "customProperties",
@@ -1216,6 +1218,12 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
         }
         validate_line_spacing_extras(spacing, path, "beforeLines", "afterLines", "lineRule")?;
     }
+    if let Some(value) = node.props.get("webExtensions") {
+        validate_web_extensions(value, path)?;
+    }
+    if let Some(value) = node.props.get("customXmlItems") {
+        validate_custom_xml_items(value, path)?;
+    }
     if let Some(value) = node.props.get("defaultTabStop") {
         require_number(value, path, "defaultTabStop", true)?;
     }
@@ -1253,6 +1261,108 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
     )?;
     if let Some(value) = node.props.get("styles") {
         validate_style_definitions(value, path)?;
+    }
+    Ok(())
+}
+
+fn validate_web_extensions(value: &Value, path: &str) -> Result<()> {
+    let extensions = value
+        .as_array()
+        .ok_or_else(|| validation(path, "`webExtensions` must be an array"))?;
+    if extensions.is_empty() {
+        return Err(validation(path, "`webExtensions` must not be empty"));
+    }
+    let mut ids = HashSet::new();
+    for (index, value) in extensions.iter().enumerate() {
+        let extension_path = format!("{path}/webExtensions[{index}]");
+        let extension = value
+            .as_object()
+            .ok_or_else(|| validation(&extension_path, "web extension must be an object"))?;
+        validate_object_keys(
+            extension,
+            &extension_path,
+            &[
+                "id",
+                "referenceId",
+                "version",
+                "store",
+                "storeType",
+                "properties",
+            ],
+        )?;
+        for key in ["id", "referenceId", "version", "store", "storeType"] {
+            if extension
+                .get(key)
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                return Err(validation(
+                    &extension_path,
+                    format!("web extension requires non-empty `{key}`"),
+                ));
+            }
+        }
+        let id = extension
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !ids.insert(id) {
+            return Err(validation(
+                &extension_path,
+                format!("duplicate web extension id `{id}`"),
+            ));
+        }
+        if let Some(properties) = extension.get("properties") {
+            let properties = properties
+                .as_object()
+                .ok_or_else(|| validation(&extension_path, "`properties` must be an object"))?;
+            if properties.values().any(|value| !value.is_string()) {
+                return Err(validation(
+                    &extension_path,
+                    "web extension property values must be strings",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_custom_xml_items(value: &Value, path: &str) -> Result<()> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| validation(path, "`customXmlItems` must be an array"))?;
+    if items.is_empty() {
+        return Err(validation(path, "`customXmlItems` must not be empty"));
+    }
+    let mut ids = HashSet::new();
+    for (index, value) in items.iter().enumerate() {
+        let item_path = format!("{path}/customXmlItems[{index}]");
+        let item = value
+            .as_object()
+            .ok_or_else(|| validation(&item_path, "custom XML item must be an object"))?;
+        validate_object_keys(item, &item_path, &["id", "xml"])?;
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| validation(&item_path, "custom XML item requires non-empty `id`"))?;
+        if !ids.insert(id) {
+            return Err(validation(
+                &item_path,
+                format!("duplicate custom XML id `{id}`"),
+            ));
+        }
+        let xml = item
+            .get("xml")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| validation(&item_path, "custom XML item requires non-empty `xml`"))?;
+        if xml.parse::<docx_rs::CustomItem>().is_err() {
+            return Err(validation(
+                &item_path,
+                "custom XML item `xml` must be well-formed XML",
+            ));
+        }
     }
     Ok(())
 }
@@ -3996,6 +4106,42 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{"defaultLineSpacing":{"before":2,"after":6,"line":14,"beforeLines":100,"afterLines":200,"lineRule":"atLeast"},"styles":[{"id":"Dense","name":"Dense","type":"paragraph","paragraph":{"spacingBeforeLines":50,"spacingAfterLines":75,"lineRule":"exact"}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"spacingBefore":3,"spacingAfter":4,"lineSpacing":12,"spacingBeforeLines":125,"spacingAfterLines":250,"lineRule":"auto"},"children":["text"]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_web_extensions_and_custom_xml_items() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"webExtensions":[{"id":"7f33b723-fb58-4524-8733-dbedc4b7c095","referenceId":"office-addin","version":"1.0.0.0","store":"developer","storeType":"Registry","properties":{"mode":"review"}},{"id":"11111111-2222-3333-4444-555555555555","referenceId":"second","version":"2.0","store":"OMEX","storeType":"Marketplace"}],"customXmlItems":[{"id":"06AC5857-5C65-A94A-BCEC-37356A209BC3","xml":"<customer><name>Ada</name></customer>"},{"id":"11111111-AAAA-BBBB-CCCC-222222222222","xml":"<order id=\"42\"/>"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_web_extensions_and_custom_xml_items() {
+        for (props, expected) in [
+            (
+                r#"{"webExtensions":[]}"#,
+                "`webExtensions` must not be empty",
+            ),
+            (
+                r#"{"webExtensions":[{"id":"same","referenceId":"a","version":"1","store":"s","storeType":"t"},{"id":"same","referenceId":"b","version":"1","store":"s","storeType":"t"}]}"#,
+                "duplicate web extension id `same`",
+            ),
+            (
+                r#"{"customXmlItems":[{"id":"x","xml":"<broken>"}]}"#,
+                "well-formed XML",
+            ),
+            (
+                r#"{"customXmlItems":[{"id":"x","xml":"<a/>"},{"id":"x","xml":"<b/>"}]}"#,
+                "duplicate custom XML id `x`",
+            ),
+        ] {
+            let ir = parse(&format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{props},"children":[{{"type":"Section","props":{{}},"children":[]}}]}}}}"#
+            ));
+            let error = ir.validate().expect_err("fixture must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

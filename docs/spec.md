@@ -128,6 +128,15 @@ components it uses and default-exports one `Document`.
   `beforeLines` and `afterLines` are non-negative integers in OOXML
   hundredths-of-a-line units; `lineRule` is `auto`, `atLeast`, or `exact`.
   The object must configure at least one field.
+  `webExtensions?: WebExtension[]` adds Office task-pane web extensions. Each
+  item requires non-empty `id`, `referenceId`, `version`, `store`, and
+  `storeType`; optional `properties` is a string map. Extension IDs must be
+  unique. Supplying the array creates the task-pane part and one relationship
+  and `webextensionN.xml` part per item.
+  `customXmlItems?: {id:string,xml:string}[]` embeds parsed XML data-store
+  items. IDs must be non-empty and unique, XML must be well-formed, and both
+  arrays must be non-empty when present. The compiler emits item, properties,
+  relationship, document relationship, and content-type parts for every item.
 - `Document.styles?: StyleDefinition[]` defines reusable Word styles. Every
   definition requires unique non-empty `id`, non-empty `name`, and `type` of
   `paragraph`, `character`, `numbering`, or `table`. Optional metadata is

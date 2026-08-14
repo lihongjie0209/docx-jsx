@@ -48,7 +48,7 @@ Windows.
 | Area | Status | Highlights |
 | --- | --- | --- |
 | Executable JSX/TSX | Supported | Embedded V8, local ESM imports, async components, JSON data injection |
-| Document defaults and metadata | Supported | Fonts, size, character/line spacing, settings, core/custom properties, variables, custom styles |
+| Document defaults and metadata | Supported | Fonts, spacing, settings, properties, variables, custom styles, Web Extensions and Custom XML |
 | Sections | Supported | Page size/orientation/margins, headers/footers, title pages, text direction, document grid, page numbering |
 | Paragraphs and headings | Supported | Full line spacing, indentation, frames, borders, IDs, tabs, bidi, outline and tracked format changes |
 | Runs and semantic text | Supported | Fonts, themes, emphasis, effects, borders/shading, symbols, breaks, revisions and semantic wrappers |
@@ -58,7 +58,6 @@ Windows.
 | Images | Supported | Raster image embedding with point-based dimensions |
 | DOCX to JSX | Supported | Component-level 1:1 reversal for generated DOCX; strict structural fallback for external DOCX |
 | Validation and Agent spec | Supported | `validate`, repair-oriented diagnostics, Markdown contract and JSON Schema |
-| Additional package parts | Planned | docx-rs task panes/web extensions and custom XML items |
 | Backend-limited APIs | Not emitted | Character-unit paragraph indentation and row before/after grids are dropped by docx-rs 0.4.22 |
 
 The detailed writer-API audit is maintained in

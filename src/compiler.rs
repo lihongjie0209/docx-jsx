@@ -16,7 +16,7 @@ use docx_rs::{
     TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
     TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
     TextAlignmentType, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
-    VertAlignType, WidthType,
+    VertAlignType, WebExtension, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -83,6 +83,7 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
             docx = docx.add_style(compile_style(value, &format!("Document/styles[{index}]"))?);
         }
     }
+    docx = compile_package_parts(docx, &ir.document.props)?;
     let mut context = CompileContext::default();
     for (index, child) in ir.document.children.iter().enumerate() {
         let Child::Node(section_node) = child else {
@@ -135,11 +136,63 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
             .add_abstract_numbering(abstract_numbering)
             .add_numbering(numbering);
     }
+    package_document(docx, ir)
+}
+
+fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     docx.pack(&mut cursor)
         .map_err(|error| Error::Compile(error.to_string()))?;
     let bytes = patch_external_hyperlink_relationships(cursor.into_inner(), &ir.document)?;
+    let custom_xml_count = ir
+        .document
+        .props
+        .get("customXmlItems")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let bytes = patch_custom_xml_content_types(bytes, custom_xml_count)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn compile_package_parts(mut docx: Docx, props: &Map<String, Value>) -> Result<Docx> {
+    if let Some(extensions) = props.get("webExtensions").and_then(Value::as_array) {
+        docx = docx.taskpanes();
+        for (index, value) in extensions.iter().enumerate() {
+            let path = format!("Document/webExtensions[{index}]");
+            let extension = value
+                .as_object()
+                .ok_or_else(|| validation(&path, "web extension must be an object"))?;
+            let mut output = WebExtension::new(
+                required_string(extension, "id", &path)?,
+                required_string(extension, "referenceId", &path)?,
+                required_string(extension, "version", &path)?,
+                required_string(extension, "store", &path)?,
+                required_string(extension, "storeType", &path)?,
+            );
+            if let Some(properties) = object_prop(extension, "properties", &path)? {
+                for (name, value) in properties {
+                    let value = value.as_str().ok_or_else(|| {
+                        validation(&path, "web extension property values must be strings")
+                    })?;
+                    output = output.property(name, value);
+                }
+            }
+            docx = docx.web_extension(output);
+        }
+    }
+    if let Some(items) = props.get("customXmlItems").and_then(Value::as_array) {
+        for (index, value) in items.iter().enumerate() {
+            let path = format!("Document/customXmlItems[{index}]");
+            let item = value
+                .as_object()
+                .ok_or_else(|| validation(&path, "custom XML item must be an object"))?;
+            docx = docx.add_custom_item(
+                required_string(item, "id", &path)?,
+                required_string(item, "xml", &path)?,
+            );
+        }
+    }
+    Ok(docx)
 }
 
 fn compile_document_settings(props: &Map<String, Value>) -> Result<Settings> {
@@ -640,6 +693,62 @@ fn embed_ir_manifest(bytes: Vec<u8>, ir: &IrEnvelope) -> Result<Vec<u8>> {
         .map_err(|error| Error::Compile(format!("cannot write IR manifest: {error}")))?;
     serde_json::to_writer(&mut writer, ir)
         .map_err(|error| Error::Compile(format!("cannot serialize IR manifest: {error}")))?;
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
+fn patch_custom_xml_content_types(bytes: Vec<u8>, item_count: usize) -> Result<Vec<u8>> {
+    if item_count == 0 {
+        return Ok(bytes);
+    }
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut content_types = String::new();
+    source
+        .by_name("[Content_Types].xml")
+        .map_err(|error| Error::Compile(format!("missing content types: {error}")))?
+        .read_to_string(&mut content_types)
+        .map_err(|error| Error::Compile(format!("cannot read content types: {error}")))?;
+    let marker = r#"<Override PartName="/customXml/itemProps"#;
+    while let Some(start) = content_types.find(marker) {
+        let end = content_types[start..]
+            .find("/>")
+            .map(|offset| start + offset + 2)
+            .ok_or_else(|| Error::Compile("invalid custom XML content type override".to_owned()))?;
+        content_types.replace_range(start..end, "");
+    }
+    let end = content_types
+        .rfind("</Types>")
+        .ok_or_else(|| Error::Compile("invalid [Content_Types].xml".to_owned()))?;
+    let mut overrides = String::new();
+    for index in 1..=item_count {
+        write!(overrides, r#"<Override PartName="/customXml/itemProps{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml" />"#)
+            .expect("writing to String cannot fail");
+    }
+    content_types.insert_str(end, &overrides);
+
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..source.len() {
+        let file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        if file.name() == "[Content_Types].xml" {
+            let options = file.options();
+            writer
+                .start_file(file.name(), options)
+                .map_err(|error| Error::Compile(format!("cannot write content types: {error}")))?;
+            writer
+                .write_all(content_types.as_bytes())
+                .map_err(|error| Error::Compile(format!("cannot write content types: {error}")))?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
     writer
         .finish()
         .map(Cursor::into_inner)
@@ -3442,6 +3551,49 @@ mod tests {
                 && styles.contains("<w:spacing w:beforeLines=\"50\" w:afterLines=\"75\" w:lineRule=\"exact\" />")
                 && document.contains("<w:spacing w:before=\"60\" w:after=\"80\" w:beforeLines=\"125\" w:afterLines=\"250\" w:line=\"240\" w:lineRule=\"auto\" />"),
             "styles={styles}\ndocument={document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_package_web_extensions_and_multiple_custom_xml_items() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"webExtensions":[{"id":"7f33b723-fb58-4524-8733-dbedc4b7c095","referenceId":"office-addin","version":"1.0.0.0","store":"developer","storeType":"Registry","properties":{"mode":"review"}},{"id":"11111111-2222-3333-4444-555555555555","referenceId":"second","version":"2.0","store":"OMEX","storeType":"Marketplace"}],"customXmlItems":[{"id":"06AC5857-5C65-A94A-BCEC-37356A209BC3","xml":"<customer><name>Ada</name></customer>"},{"id":"11111111-AAAA-BBBB-CCCC-222222222222","xml":"<order id=\"42\"/>"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        for name in [
+            "word/webextensions/taskpanes.xml",
+            "word/webextensions/_rels/taskpanes.xml.rels",
+            "word/webextensions/webextension1.xml",
+            "word/webextensions/webextension2.xml",
+            "customXml/item1.xml",
+            "customXml/item2.xml",
+            "customXml/itemProps1.xml",
+            "customXml/itemProps2.xml",
+            "customXml/_rels/item1.xml.rels",
+            "customXml/_rels/item2.xml.rels",
+        ] {
+            assert!(archive.by_name(name).is_ok(), "missing package part {name}");
+        }
+        let mut read = |name: &str| {
+            let mut output = String::new();
+            archive
+                .by_name(name)
+                .unwrap_or_else(|_| panic!("missing {name}"))
+                .read_to_string(&mut output)
+                .expect("UTF-8 XML");
+            output
+        };
+        let extension = read("word/webextensions/webextension1.xml");
+        assert!(extension.contains("office-addin") && extension.contains("name=\"mode\""));
+        assert!(read("customXml/item1.xml").contains("<name>Ada</name>"));
+        assert!(read("customXml/item2.xml").contains("id=\"42\""));
+        let content_types = read("[Content_Types].xml");
+        assert!(
+            content_types.contains("/customXml/itemProps1.xml")
+                && content_types.contains("/customXml/itemProps2.xml"),
+            "{content_types}"
         );
     }
 
