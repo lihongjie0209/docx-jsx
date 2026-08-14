@@ -1,0 +1,48 @@
+[package]
+name = "docx-jsx"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Compile executable JSX/TSX documents to DOCX with docx-rs"
+repository = "https://github.com/lihongjie0209/docx-jsx"
+readme = "README.md"
+
+[lib]
+name = "docx_jsx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "docx-jsx"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+deno_ast = { version = "0.53.3", features = ["transpiling"] }
+deno_core = "0.410.0"
+deno_error = "0.7.1"
+docx-rs = "0.4.22"
+image = "0.25.10"
+num-traits = "0.2.19"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["rt", "macros"] }
+url = "2.5.8"
+zip = "8.4.0"
+
+[dev-dependencies]
+assert_cmd = "2.1.2"
+predicates = "3.1.4"
+tempfile = "3.27.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
+pedantic = "warn"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

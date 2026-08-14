@@ -1,0 +1,4 @@
+/target/
+*.docx
+*.tmp
+.DS_Store

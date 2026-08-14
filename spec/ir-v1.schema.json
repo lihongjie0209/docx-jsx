@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docx-jsx.dev/schema/ir-v1.json",
+  "title": "docx-jsx IR v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "document"],
+  "properties": {
+    "version": { "const": 1 },
+    "document": { "$ref": "#/$defs/node" }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "props", "children"],
+      "properties": {
+        "type": {
+          "enum": ["Document", "Section", "Paragraph", "Run", "Text", "Break", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen", "Image", "Table", "TableRow", "TableCell", "Header", "Footer", "Hyperlink", "PageNumber", "TotalPages", "List", "ListItem", "Heading", "Caption", "Index", "Bookmark", "TableOfContents", "TableOfFigures", "TableOfEntries", "TocEntry", "IndexEntry", "Comment", "Footnote", "Tab", "TabStop", "Symbol", "Superscript", "Subscript", "AllCaps", "HiddenText", "SpecialHiddenText", "DoubleStrike", "SpacedText", "ScaledText", "FitText", "BorderedText", "ShadedText", "Inserted", "Deleted", "MovedFrom", "MovedTo", "PageReference", "PositionalTab", "ContentControl", "Field", "DateField", "TimeField", "FileNameField", "AuthorField", "TitleField", "SubjectField", "SequenceField", "ReferenceField", "MergeField", "DocumentPropertyField", "FormulaField"]
+        },
+        "props": { "type": "object" },
+        "children": {
+          "type": "array",
+          "items": { "oneOf": [{ "$ref": "#/$defs/node" }, { "type": "string" }, { "type": "number" }] }
+        }
+      }
+    }
+  }
+}

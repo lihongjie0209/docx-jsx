@@ -1,0 +1,14 @@
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[registries.rsproxy]
+index = "sparse+https://rsproxy.cn/index/"
+
+[build]
+incremental = true
+
+[env]
+RUSTY_V8_MIRROR = "https://gh-proxy.com/https://github.com/denoland/rusty_v8/releases/download"
