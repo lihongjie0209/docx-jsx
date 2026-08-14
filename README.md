@@ -55,12 +55,28 @@ Windows.
 | Tables | Supported | Grid/width/layout, positioning, margins, all border positions/styles, row revisions and cell layout |
 | Fields and indexes | Supported | Generic and typed fields, TOC/figures/entries, captions, index fields and cross-references |
 | Annotations and controls | Supported | Bookmarks, comments, footnotes, hyperlinks and bound content controls |
-| Images | Supported | Raster image embedding with point-based dimensions |
+| Images | Supported | Raster embedding, dimensions, rotation, floating anchors, alignment/offsets, relative origins, distances, overlap and layer height |
 | DOCX to JSX | Supported | Component-level 1:1 reversal for generated DOCX; strict structural fallback for external DOCX |
-| Validation and Agent spec | Supported | `validate`, repair-oriented diagnostics, Markdown contract and JSON Schema |
-| Backend-limited APIs | Not emitted | Character-unit paragraph indentation and row before/after grids are dropped by docx-rs 0.4.22 |
+| Validation and Agent spec | Supported | DSL validation, repair-oriented diagnostics, Agent contract, JSON Schema, and .NET Open XML conformance tests |
+| Backend-limited APIs | Not emitted | Character-unit paragraph indentation, row before/after grids, and image simple-position are dropped or hardcoded by docx-rs 0.4.22 |
 
 The detailed writer-API audit is maintained in
 [docs/docx-rs-coverage.md](docs/docx-rs-coverage.md).
 
 See [the v1 specification](docs/spec.md) for the complete component contract.
+
+## Open XML conformance test
+
+The integration gate compiles a representative JSX fixture and validates the
+resulting package with Microsoft `DocumentFormat.OpenXml` 3.5.1. Diagnostics
+are JSON Lines containing the package part, XPath, explanation, and a repair
+suggestion. It requires .NET SDK 8 and restores packages through the configured
+Huawei Cloud NuGet mirror.
+
+```sh
+./scripts/openxml-test.sh
+```
+
+This complements Rust DSL validation: it checks OPC/OOXML schema and semantic
+constraints in the generated DOCX, while the Rust tests continue to verify
+component mappings and DOCX-to-JSX round trips.

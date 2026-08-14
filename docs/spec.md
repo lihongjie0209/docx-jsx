@@ -234,7 +234,18 @@ components it uses and default-exports one `Document`.
   children. They emit Unicode U+00A0, U+00AD, and U+2011 respectively, keeping
   adjacent words together, exposing an optional hyphenation point, or keeping
   a hyphenated term together. They are valid wherever run-level text is valid.
-- `Image`: required `src`, `width`, and `height`. Images are inline. Relative
+- `Image`: required `src`, `width`, and `height` in points. Optional
+  `relationshipId` overrides the generated image relationship identifier and
+  must be non-empty. `rotate` is an integer angle from 0 through 65535 degrees.
+  `floating` switches from inline layout to an anchored drawing. Anchored
+  images support `allowOverlap`, `positionH` (`left`, `center`, `right`, or a
+  point offset), `positionV` (`top`, `center`, `bottom`, or a point offset),
+  `relativeFromH` (`character`, `column`, `insideMargin`, `leftMargin`,
+  `margin`, `outsideMargin`, `page`, or `rightMargin`), `relativeFromV`
+  (`bottomMargin`, `insideMargin`, `line`, `margin`, `outsideMargin`, `page`,
+  `paragraph`, or `topMargin`), point-valued `distanceTop`, `distanceBottom`,
+  `distanceLeft`, and `distanceRight`, and integer `relativeHeight`.
+  Anchor-only properties require `floating={true}`. Image
   sources resolve from the entry module directory.
 - `Table`: `width?`, `widthPercent?`, `align?`, `layout?: "auto" | "fixed"`,
   `columnWidths?: number[]`, `border?: {style?,size?,color?}`. Point and percent

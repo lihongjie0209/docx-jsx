@@ -4,13 +4,14 @@ use std::path::Path;
 
 use docx_rs::{
     AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, CharacterSpacingValues,
-    Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, FieldCharType, Footer, Footnote,
-    Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC,
-    InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing, LineSpacingType, MoveFrom, MoveTo,
-    NumPages, NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType,
-    PageOrientationType, PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition,
-    ParagraphBorders, ParagraphPropertyChange, Pic, PositionalTab, PositionalTabAlignmentType,
-    PositionalTabRelativeTo, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
+    Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, DrawingPosition, FieldCharType,
+    Footer, Footnote, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
+    InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing,
+    LineSpacingType, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin,
+    PageNum, PageNumType, PageOrientationType, PageSize, Paragraph, ParagraphBorder,
+    ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic, PicAlign,
+    PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo, RelativeFromHType,
+    RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
     Start, StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab, TabLeaderType, TabValueType,
     Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
     TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
@@ -151,6 +152,7 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     let bytes = patch_custom_xml_content_types(bytes, custom_xml_count)?;
+    let bytes = normalize_ooxml_element_order(bytes)?;
     embed_ir_manifest(bytes, ir)
 }
 
@@ -753,6 +755,417 @@ fn patch_custom_xml_content_types(bytes: Vec<u8>, item_count: usize) -> Result<V
         .finish()
         .map(Cursor::into_inner)
         .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
+fn normalize_ooxml_element_order(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..source.len() {
+        let mut file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        if file.name().starts_with("word/")
+            && Path::new(file.name())
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            let name = file.name().to_owned();
+            let options = file.options();
+            let mut xml = String::new();
+            file.read_to_string(&mut xml)
+                .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
+            normalize_word_xml(&mut xml, name == "word/styles.xml")?;
+            writer
+                .start_file(&name, options)
+                .map_err(|error| Error::Compile(format!("cannot write {name}: {error}")))?;
+            writer
+                .write_all(xml.as_bytes())
+                .map_err(|error| Error::Compile(format!("cannot write {name}: {error}")))?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
+fn normalize_word_xml(xml: &mut String, is_styles: bool) -> Result<()> {
+    if is_styles {
+        remove_element_children(xml, "w:pPr", "w:rPr")?;
+    }
+    reorder_element_children(xml, "w:pPr", paragraph_property_rank)?;
+    reorder_element_children(xml, "w:rPr", run_property_rank)?;
+    reorder_element_children(xml, "w:style", style_child_rank)?;
+    reorder_element_children(xml, "w:settings", settings_child_rank)
+}
+
+fn remove_element_children(
+    xml: &mut String,
+    parent: &str,
+    child_name_to_remove: &str,
+) -> Result<()> {
+    let ranges = element_content_ranges(xml, parent)?;
+    for (start, end) in ranges.into_iter().rev() {
+        let children = split_element_children(&xml[start..end])?;
+        let content = children
+            .into_iter()
+            .filter(|child| child_name(child) != child_name_to_remove)
+            .collect::<String>();
+        xml.replace_range(start..end, &content);
+    }
+    Ok(())
+}
+
+fn reorder_element_children(xml: &mut String, tag: &str, rank: fn(&str) -> usize) -> Result<()> {
+    let ranges = element_content_ranges(xml, tag)?;
+    // Ranges are recorded when their closing tag is seen, so nested elements
+    // precede their parents. Normalize inner elements first; sorting preserves
+    // byte length and therefore keeps the remaining offsets stable.
+    for (start, end) in ranges {
+        let content = &xml[start..end];
+        let mut children = split_element_children(content).map_err(|error| {
+            Error::Compile(format!(
+                "cannot normalize `<{tag}>` children `{content}`: {error}"
+            ))
+        })?;
+        children.sort_by_key(|child| rank(child));
+        xml.replace_range(start..end, &children.concat());
+    }
+    Ok(())
+}
+
+fn element_content_ranges(xml: &str, wanted: &str) -> Result<Vec<(usize, usize)>> {
+    let mut ranges = Vec::new();
+    let mut stack = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative_start) = xml[cursor..].find('<') {
+        let start = cursor + relative_start;
+        let end = xml[start..]
+            .find('>')
+            .map(|offset| start + offset)
+            .ok_or_else(|| Error::Compile("unterminated XML tag".to_owned()))?;
+        let token = xml[start + 1..end].trim();
+        let closing = token.strip_prefix('/');
+        let body = closing.unwrap_or(token);
+        let name = body
+            .split(|character: char| character.is_ascii_whitespace() || character == '/')
+            .next()
+            .unwrap_or_default();
+        if name == wanted {
+            if closing.is_some() {
+                let content_start = stack.pop().ok_or_else(|| {
+                    Error::Compile(format!("unexpected closing `<{wanted}>` element"))
+                })?;
+                ranges.push((content_start, start));
+            } else if !token.ends_with('/') {
+                stack.push(end + 1);
+            }
+        }
+        cursor = end + 1;
+    }
+    if stack.is_empty() {
+        Ok(ranges)
+    } else {
+        Err(Error::Compile(format!("unclosed `<{wanted}>` element")))
+    }
+}
+
+fn split_element_children(content: &str) -> Result<Vec<&str>> {
+    let mut children = Vec::new();
+    let mut depth = 0_usize;
+    let mut child_start = None;
+    let mut cursor = 0;
+    while let Some(relative_start) = content[cursor..].find('<') {
+        let start = cursor + relative_start;
+        let end = content[start..]
+            .find('>')
+            .map(|offset| start + offset)
+            .ok_or_else(|| Error::Compile("unterminated XML child tag".to_owned()))?;
+        let token = content[start + 1..end].trim();
+        if token.starts_with('!') || token.starts_with('?') {
+            cursor = end + 1;
+            continue;
+        }
+        if token.starts_with('/') {
+            depth = depth
+                .checked_sub(1)
+                .ok_or_else(|| Error::Compile("unexpected XML child closing tag".to_owned()))?;
+            if depth == 0 {
+                let child_start = child_start
+                    .take()
+                    .ok_or_else(|| Error::Compile("missing XML child opening tag".to_owned()))?;
+                children.push(&content[child_start..=end]);
+            }
+        } else if token.ends_with('/') {
+            if depth == 0 {
+                children.push(&content[start..=end]);
+            }
+        } else {
+            if depth == 0 {
+                child_start = Some(start);
+            }
+            depth += 1;
+        }
+        cursor = end + 1;
+    }
+    if depth == 0 && children.concat().len() == content.len() {
+        Ok(children)
+    } else {
+        Err(Error::Compile(
+            "property XML contains unsupported text or malformed children".to_owned(),
+        ))
+    }
+}
+
+fn child_name(fragment: &str) -> &str {
+    fragment
+        .trim_start_matches('<')
+        .split(|character: char| {
+            character.is_ascii_whitespace() || character == '/' || character == '>'
+        })
+        .next()
+        .unwrap_or_default()
+}
+
+fn rank_in(name: &str, ordered: &[&str]) -> usize {
+    ordered
+        .iter()
+        .position(|candidate| *candidate == name)
+        .unwrap_or(ordered.len())
+}
+
+fn paragraph_property_rank(fragment: &str) -> usize {
+    rank_in(
+        child_name(fragment),
+        &[
+            "w:pStyle",
+            "w:keepNext",
+            "w:keepLines",
+            "w:pageBreakBefore",
+            "w:framePr",
+            "w:widowControl",
+            "w:numPr",
+            "w:suppressLineNumbers",
+            "w:pBdr",
+            "w:shd",
+            "w:tabs",
+            "w:suppressAutoHyphens",
+            "w:kinsoku",
+            "w:wordWrap",
+            "w:overflowPunct",
+            "w:topLinePunct",
+            "w:autoSpaceDE",
+            "w:autoSpaceDN",
+            "w:bidi",
+            "w:adjustRightInd",
+            "w:snapToGrid",
+            "w:spacing",
+            "w:ind",
+            "w:contextualSpacing",
+            "w:mirrorIndents",
+            "w:suppressOverlap",
+            "w:jc",
+            "w:textDirection",
+            "w:textAlignment",
+            "w:textboxTightWrap",
+            "w:outlineLvl",
+            "w:divId",
+            "w:cnfStyle",
+            "w:rPr",
+            "w:sectPr",
+            "w:pPrChange",
+        ],
+    )
+}
+
+fn run_property_rank(fragment: &str) -> usize {
+    rank_in(
+        child_name(fragment),
+        &[
+            "w:rStyle",
+            "w:rFonts",
+            "w:b",
+            "w:bCs",
+            "w:i",
+            "w:iCs",
+            "w:caps",
+            "w:smallCaps",
+            "w:strike",
+            "w:dstrike",
+            "w:outline",
+            "w:shadow",
+            "w:emboss",
+            "w:imprint",
+            "w:noProof",
+            "w:snapToGrid",
+            "w:vanish",
+            "w:webHidden",
+            "w:color",
+            "w:spacing",
+            "w:w",
+            "w:kern",
+            "w:position",
+            "w:sz",
+            "w:szCs",
+            "w:highlight",
+            "w:u",
+            "w:effect",
+            "w:bdr",
+            "w:shd",
+            "w:fitText",
+            "w:vertAlign",
+            "w:rtl",
+            "w:cs",
+            "w:em",
+            "w:lang",
+            "w:eastAsianLayout",
+            "w:specVanish",
+            "w:oMath",
+            "w:rPrChange",
+        ],
+    )
+}
+
+fn style_child_rank(fragment: &str) -> usize {
+    rank_in(
+        child_name(fragment),
+        &[
+            "w:name",
+            "w:aliases",
+            "w:basedOn",
+            "w:next",
+            "w:link",
+            "w:autoRedefine",
+            "w:hidden",
+            "w:uiPriority",
+            "w:semiHidden",
+            "w:unhideWhenUsed",
+            "w:qFormat",
+            "w:locked",
+            "w:personal",
+            "w:personalCompose",
+            "w:personalReply",
+            "w:rsid",
+            "w:pPr",
+            "w:rPr",
+            "w:tblPr",
+            "w:trPr",
+            "w:tcPr",
+            "w:tblStylePr",
+        ],
+    )
+}
+
+const SETTINGS_CHILD_ORDER: &[&str] = &[
+    "w:writeProtection",
+    "w:view",
+    "w:zoom",
+    "w:removePersonalInformation",
+    "w:removeDateAndTime",
+    "w:doNotDisplayPageBoundaries",
+    "w:displayBackgroundShape",
+    "w:printPostScriptOverText",
+    "w:printFractionalCharacterWidth",
+    "w:printFormsData",
+    "w:embedTrueTypeFonts",
+    "w:embedSystemFonts",
+    "w:saveSubsetFonts",
+    "w:saveFormsData",
+    "w:mirrorMargins",
+    "w:alignBordersAndEdges",
+    "w:bordersDoNotSurroundHeader",
+    "w:bordersDoNotSurroundFooter",
+    "w:gutterAtTop",
+    "w:hideSpellingErrors",
+    "w:hideGrammaticalErrors",
+    "w:activeWritingStyle",
+    "w:proofState",
+    "w:formsDesign",
+    "w:attachedTemplate",
+    "w:linkStyles",
+    "w:stylePaneFormatFilter",
+    "w:stylePaneSortMethod",
+    "w:documentType",
+    "w:mailMerge",
+    "w:revisionView",
+    "w:trackRevisions",
+    "w:doNotTrackMoves",
+    "w:doNotTrackFormatting",
+    "w:documentProtection",
+    "w:autoFormatOverride",
+    "w:styleLockTheme",
+    "w:styleLockQFSet",
+    "w:defaultTabStop",
+    "w:autoHyphenation",
+    "w:consecutiveHyphenLimit",
+    "w:hyphenationZone",
+    "w:doNotHyphenateCaps",
+    "w:showEnvelope",
+    "w:summaryLength",
+    "w:clickAndTypeStyle",
+    "w:defaultTableStyle",
+    "w:evenAndOddHeaders",
+    "w:bookFoldRevPrinting",
+    "w:bookFoldPrinting",
+    "w:bookFoldPrintingSheets",
+    "w:drawingGridHorizontalSpacing",
+    "w:drawingGridVerticalSpacing",
+    "w:displayHorizontalDrawingGridEvery",
+    "w:displayVerticalDrawingGridEvery",
+    "w:doNotUseMarginsForDrawingGridOrigin",
+    "w:drawingGridHorizontalOrigin",
+    "w:drawingGridVerticalOrigin",
+    "w:doNotShadeFormData",
+    "w:noPunctuationKerning",
+    "w:characterSpacingControl",
+    "w:printTwoOnOne",
+    "w:strictFirstAndLastChars",
+    "w:noLineBreaksAfter",
+    "w:noLineBreaksBefore",
+    "w:savePreviewPicture",
+    "w:doNotValidateAgainstSchema",
+    "w:saveInvalidXml",
+    "w:ignoreMixedContent",
+    "w:alwaysShowPlaceholderText",
+    "w:doNotDemarcateInvalidXml",
+    "w:saveXmlDataOnly",
+    "w:useXSLTWhenSaving",
+    "w:saveThroughXslt",
+    "w:showXMLTags",
+    "w:alwaysMergeEmptyNamespace",
+    "w:updateFields",
+    "w:hdrShapeDefaults",
+    "w:footnotePr",
+    "w:endnotePr",
+    "w:compat",
+    "w:docVars",
+    "w:rsids",
+    "m:mathPr",
+    "w:uiCompat97To2003",
+    "w:attachedSchema",
+    "w:themeFontLang",
+    "w:clrSchemeMapping",
+    "w:doNotIncludeSubdocsInStats",
+    "w:doNotAutoCompressPictures",
+    "w:forceUpgrade",
+    "w:captions",
+    "w:readModeInkLockDown",
+    "w:smartTagType",
+    "w:schemaLibrary",
+    "w:shapeDefaults",
+    "w:doNotEmbedSmartTags",
+    "w:decimalSymbol",
+    "w:listSeparator",
+];
+
+fn settings_child_rank(fragment: &str) -> usize {
+    rank_in(child_name(fragment), SETTINGS_CHILD_ORDER)
 }
 
 fn patch_external_hyperlink_relationships(bytes: Vec<u8>, root: &Node) -> Result<Vec<u8>> {
@@ -2296,8 +2709,19 @@ fn compile_image(node: &Node, entry_dir: &Path, path: &str) -> Result<Pic> {
     } else {
         entry_dir.join(source_path)
     };
-    let bytes = std::fs::read(&source_path).map_err(|source| Error::Resource {
-        path: source_path.clone(),
+    let png = load_image_as_png(&source_path)?;
+    let width = required_number(&node.props, "width", path)?;
+    let height = required_number(&node.props, "height", path)?;
+    let picture = Pic::new_with_dimensions(png, 1, 1).size(
+        to_emu(width, &format!("{path}/width"))?,
+        to_emu(height, &format!("{path}/height"))?,
+    );
+    compile_image_layout(picture, node, path)
+}
+
+fn load_image_as_png(source_path: &Path) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(source_path).map_err(|source| Error::Resource {
+        path: source_path.to_path_buf(),
         source,
     })?;
     let image = image::load_from_memory(&bytes).map_err(|error| {
@@ -2312,12 +2736,156 @@ fn compile_image(node: &Node, entry_dir: &Path, path: &str) -> Result<Pic> {
                 source_path.display()
             ))
         })?;
-    let width = required_number(&node.props, "width", path)?;
-    let height = required_number(&node.props, "height", path)?;
-    Ok(Pic::new_with_dimensions(png.into_inner(), 1, 1).size(
-        to_emu(width, &format!("{path}/width"))?,
-        to_emu(height, &format!("{path}/height"))?,
-    ))
+    Ok(png.into_inner())
+}
+
+fn compile_image_layout(mut picture: Pic, node: &Node, path: &str) -> Result<Pic> {
+    if let Some(id) = string_prop(&node.props, "relationshipId", path)? {
+        picture = picture.id(id);
+    }
+    if let Some(angle) = node.props.get("rotate") {
+        picture = picture.rotate(
+            u16::try_from(
+                angle
+                    .as_u64()
+                    .ok_or_else(|| validation(path, "`rotate` must be a non-negative integer"))?,
+            )
+            .map_err(|_| validation(path, "`rotate` must not exceed 65535"))?,
+        );
+    }
+    if bool_prop(&node.props, "floating", path)? == Some(true) {
+        picture = picture.floating();
+    }
+    if bool_prop(&node.props, "allowOverlap", path)? == Some(true) {
+        // docx-rs 0.4.22 reads `simple_pos` into the `allowOverlap` anchor
+        // attribute. Set both fields so the attribute and wrapping agree.
+        picture = picture.overlapping().simple_pos(true);
+    }
+    if let Some(position) = compile_image_position(&node.props, "positionH", path)? {
+        picture = picture.position_h(position);
+    }
+    if let Some(position) = compile_image_position(&node.props, "positionV", path)? {
+        picture = picture.position_v(position);
+    }
+    picture = compile_image_relative_origins(picture, &node.props, path)?;
+    picture = compile_image_distances(picture, &node.props, path)?;
+    if node.props.contains_key("relativeHeight") {
+        picture = picture.relative_height(
+            u32::try_from(required_u64(&node.props, "relativeHeight", path)?)
+                .map_err(|_| validation(path, "`relativeHeight` must not exceed 4294967295"))?,
+        );
+    }
+    Ok(picture)
+}
+
+fn compile_image_relative_origins(
+    mut picture: Pic,
+    props: &Map<String, Value>,
+    path: &str,
+) -> Result<Pic> {
+    if let Some(value) = optional_enum(
+        props,
+        "relativeFromH",
+        &[
+            "character",
+            "column",
+            "insideMargin",
+            "leftMargin",
+            "margin",
+            "outsideMargin",
+            "page",
+            "rightMargin",
+        ],
+        path,
+    )? {
+        picture = picture.relative_from_h(match value {
+            "character" => RelativeFromHType::Character,
+            "column" => RelativeFromHType::Column,
+            "insideMargin" => RelativeFromHType::InsideMargin,
+            "leftMargin" => RelativeFromHType::LeftMargin,
+            "outsideMargin" => RelativeFromHType::OutsizeMargin,
+            "page" => RelativeFromHType::Page,
+            "rightMargin" => RelativeFromHType::RightMargin,
+            _ => RelativeFromHType::Margin,
+        });
+    }
+    if let Some(value) = optional_enum(
+        props,
+        "relativeFromV",
+        &[
+            "bottomMargin",
+            "insideMargin",
+            "line",
+            "margin",
+            "outsideMargin",
+            "page",
+            "paragraph",
+            "topMargin",
+        ],
+        path,
+    )? {
+        picture = picture.relative_from_v(match value {
+            "bottomMargin" => RelativeFromVType::BottomMargin,
+            "insideMargin" => RelativeFromVType::InsideMargin,
+            "line" => RelativeFromVType::Line,
+            "outsideMargin" => RelativeFromVType::OutsizeMargin,
+            "page" => RelativeFromVType::Page,
+            "paragraph" => RelativeFromVType::Paragraph,
+            "topMargin" => RelativeFromVType::TopMargin,
+            _ => RelativeFromVType::Margin,
+        });
+    }
+    Ok(picture)
+}
+
+fn compile_image_distances(
+    mut picture: Pic,
+    props: &Map<String, Value>,
+    path: &str,
+) -> Result<Pic> {
+    for (key, setter) in [
+        ("distanceTop", Pic::dist_t as fn(Pic, i32) -> Pic),
+        ("distanceBottom", Pic::dist_b),
+        ("distanceLeft", Pic::dist_l),
+        ("distanceRight", Pic::dist_r),
+    ] {
+        if let Some(value) = number_prop(props, key, path)? {
+            picture = setter(picture, to_emu_i32(value, &format!("{path}/{key}"))?);
+        }
+    }
+    Ok(picture)
+}
+
+fn compile_image_position(
+    props: &Map<String, Value>,
+    key: &str,
+    path: &str,
+) -> Result<Option<DrawingPosition>> {
+    let Some(value) = props.get(key) else {
+        return Ok(None);
+    };
+    if let Some(offset) = value.as_f64().filter(|offset| offset.is_finite()) {
+        return Ok(Some(DrawingPosition::Offset(to_emu_i32(
+            offset,
+            &format!("{path}/{key}"),
+        )?)));
+    }
+    let alignment = value
+        .as_str()
+        .ok_or_else(|| validation(path, format!("`{key}` must be a point offset or alignment")))?;
+    Ok(Some(DrawingPosition::Align(match alignment {
+        "left" => PicAlign::Left,
+        "right" => PicAlign::Right,
+        "top" => PicAlign::Top,
+        "bottom" => PicAlign::Bottom,
+        "center" => PicAlign::Center,
+        _ => {
+            return Err(validation(
+                path,
+                format!("invalid `{key}` value `{alignment}`"),
+            ));
+        }
+    })))
 }
 
 fn compile_table(
@@ -3393,6 +3961,16 @@ fn to_emu(value: f64, path: &str) -> Result<u32> {
     f64_to_u32(value * EMU_PER_POINT, path)
 }
 
+fn to_emu_i32(value: f64, path: &str) -> Result<i32> {
+    let rounded = (value * EMU_PER_POINT).round();
+    if !rounded.is_finite() || rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
+        return Err(validation(path, "value is out of range"));
+    }
+    rounded
+        .to_i32()
+        .ok_or_else(|| validation(path, "value is out of range"))
+}
+
 fn percent_to_fiftieths(value: f64, path: &str) -> Result<usize> {
     f64_to_usize(value * 50.0, path)
 }
@@ -3849,7 +4427,16 @@ mod tests {
                 "type": "Document", "props": {}, "children": [{
                     "type": "Section", "props": {}, "children": [{
                         "type": "Paragraph", "props": {}, "children": [{
-                            "type": "Image", "props": {"src": "pixel.png", "width": 12, "height": 12}, "children": []
+                            "type": "Image", "props": {
+                                "src": "pixel.png", "width": 12, "height": 12,
+                                "relationshipId": "rIdHero", "rotate": 45,
+                                "floating": true, "allowOverlap": true,
+                                "positionH": "right", "positionV": 18.5,
+                                "relativeFromH": "page", "relativeFromV": "paragraph",
+                                "distanceTop": 2, "distanceBottom": 3,
+                                "distanceLeft": 4, "distanceRight": 5,
+                                "relativeHeight": 251_658_240
+                            }, "children": []
                         }]
                     }]
                 }]
@@ -3857,11 +4444,25 @@ mod tests {
         }))
         .expect("fixture should parse");
         let bytes = compile_document(&ir, directory.path()).expect("compile should work");
-        let archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
         let has_media = archive
             .file_names()
             .any(|name| name.starts_with("word/media/"));
         assert!(has_media);
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        assert!(
+            document.contains(r#"<wp:anchor distT="25400" distB="38100" distL="50800" distR="63500" simplePos="0" allowOverlap="1""#)
+                && document.contains(r#"relativeHeight="251658240""#)
+                && document.contains(r#"<wp:positionH relativeFrom="page"><wp:align>right</wp:align>"#)
+                && document.contains(r#"<wp:positionV relativeFrom="paragraph"><wp:posOffset>234950</wp:posOffset>"#)
+                && document.contains(r#"<a:xfrm rot="2700000">"#),
+            "{document}"
+        );
     }
 
     #[test]

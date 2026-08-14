@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "1"
+  RUSTUP_DIST_SERVER: https://rsproxy.cn
+  RUSTUP_UPDATE_ROOT: https://rsproxy.cn/rustup
+  RUSTY_V8_MIRROR: https://gh-proxy.com/https://github.com/denoland/rusty_v8/releases/download
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: tools/openxml-validator/packages.lock.json
+      - name: Rust formatting
+        run: cargo fmt -- --check
+      - name: Rust lint
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Rust tests
+        run: cargo test --all-targets --all-features --locked
+      - name: Open XML conformance integration test
+        run: ./scripts/openxml-test.sh

@@ -624,7 +624,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         ],
         NodeKind::Text => &["value"],
         NodeKind::Break | NodeKind::Header | NodeKind::Footer => &["type"],
-        NodeKind::Image => &["src", "width", "height"],
+        NodeKind::Image => image_props(),
         NodeKind::Table => table_props(),
         NodeKind::TableRow => &["height", "heightRule", "cantSplit", "inserted", "deleted"],
         NodeKind::TableCell => &[
@@ -695,6 +695,27 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::DocumentPropertyField => &["name", "placeholder", "dirty"],
         NodeKind::FormulaField => &["expression", "numberFormat", "placeholder", "dirty"],
     }
+}
+
+fn image_props() -> &'static [&'static str] {
+    &[
+        "src",
+        "width",
+        "height",
+        "relationshipId",
+        "rotate",
+        "floating",
+        "allowOverlap",
+        "positionH",
+        "positionV",
+        "relativeFromH",
+        "relativeFromV",
+        "distanceTop",
+        "distanceBottom",
+        "distanceLeft",
+        "distanceRight",
+        "relativeHeight",
+    ]
 }
 
 fn section_props() -> &'static [&'static str] {
@@ -930,6 +951,7 @@ fn validate_semantics(node: &Node, path: &str) -> Result<()> {
                 return Err(validation(path, format!("Image requires `{key}`")));
             }
         }
+        validate_image_semantics(node, path)?;
     }
     if node.kind == NodeKind::Hyperlink {
         let targets = usize::from(node.props.contains_key("href"))
@@ -966,6 +988,127 @@ fn validate_semantics(node: &Node, path: &str) -> Result<()> {
         if number > 100.0 {
             return Err(validation(path, "`widthPercent` must be at most 100"));
         }
+    }
+    Ok(())
+}
+
+fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
+    node.props
+        .get("src")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| validation(path, "Image `src` must be a non-empty string"))?;
+    if node
+        .props
+        .get("relationshipId")
+        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(validation(
+            path,
+            "`relationshipId` must be a non-empty string",
+        ));
+    }
+    if let Some(value) = node.props.get("rotate") {
+        value
+            .as_u64()
+            .filter(|angle| u16::try_from(*angle).is_ok())
+            .ok_or_else(|| validation(path, "`rotate` must be an integer from 0 through 65535"))?;
+    }
+    for key in ["floating", "allowOverlap"] {
+        if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(path, format!("`{key}` must be a boolean")));
+        }
+    }
+    validate_image_position(node, path, "positionH", &["left", "center", "right"])?;
+    validate_image_position(node, path, "positionV", &["top", "center", "bottom"])?;
+    validate_optional_enum_prop(
+        node,
+        path,
+        "relativeFromH",
+        &[
+            "character",
+            "column",
+            "insideMargin",
+            "leftMargin",
+            "margin",
+            "outsideMargin",
+            "page",
+            "rightMargin",
+        ],
+    )?;
+    validate_optional_enum_prop(
+        node,
+        path,
+        "relativeFromV",
+        &[
+            "bottomMargin",
+            "insideMargin",
+            "line",
+            "margin",
+            "outsideMargin",
+            "page",
+            "paragraph",
+            "topMargin",
+        ],
+    )?;
+    for key in [
+        "distanceTop",
+        "distanceBottom",
+        "distanceLeft",
+        "distanceRight",
+    ] {
+        if let Some(value) = node.props.get(key) {
+            require_number(value, path, key, false)?;
+        }
+    }
+    if node
+        .props
+        .get("relativeHeight")
+        .is_some_and(|value| value.as_u64().is_none())
+    {
+        return Err(validation(
+            path,
+            "`relativeHeight` must be a non-negative integer",
+        ));
+    }
+    let anchor_props = [
+        "allowOverlap",
+        "positionH",
+        "positionV",
+        "relativeFromH",
+        "relativeFromV",
+        "distanceTop",
+        "distanceBottom",
+        "distanceLeft",
+        "distanceRight",
+        "relativeHeight",
+    ];
+    if anchor_props.iter().any(|key| node.props.contains_key(*key))
+        && node.props.get("floating").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(validation(
+            path,
+            "advanced image anchor properties require `floating={true}`",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_image_position(node: &Node, path: &str, key: &str, alignments: &[&str]) -> Result<()> {
+    let Some(value) = node.props.get(key) else {
+        return Ok(());
+    };
+    if value.as_f64().is_some_and(f64::is_finite) {
+        return Ok(());
+    }
+    let alignment = value
+        .as_str()
+        .ok_or_else(|| validation(path, format!("`{key}` must be a point offset or alignment")))?;
+    if !alignments.contains(&alignment) {
+        return Err(validation(
+            path,
+            format!("invalid `{key}` value `{alignment}`"),
+        ));
     }
     Ok(())
 }
@@ -3346,6 +3489,42 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"style":"GridTable4","indent":12,"margins":{"top":2,"right":3,"bottom":4,"left":5}},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"verticalMerge":"restart","textDirection":"tbRl","margins":{"top":1,"right":2,"bottom":3,"left":4}},"children":[{"type":"TableOfContents","props":{},"children":[]},{"type":"ContentControl","props":{"alias":"Cell"},"children":["value"]}]}]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_advanced_image_properties() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Image","props":{"src":"figure.png","width":120,"height":80,"relationshipId":"rIdHero","rotate":45,"floating":true,"allowOverlap":true,"positionH":"right","positionV":18.5,"relativeFromH":"page","relativeFromV":"paragraph","distanceTop":2,"distanceBottom":3,"distanceLeft":4,"distanceRight":5,"relativeHeight":251658240},"children":[]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_advanced_image_properties() {
+        for (props, expected) in [
+            (
+                r#"{"src":"x.png","width":1,"height":1,"positionH":"right"}"#,
+                "require `floating={true}`",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"floating":true,"positionV":"left"}"#,
+                "positionV",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"rotate":1.5}"#,
+                "integer",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"floating":true,"distanceTop":-1}"#,
+                "non-negative",
+            ),
+        ] {
+            let ir = parse(&format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{}},"children":[{{"type":"Section","props":{{}},"children":[{{"type":"Paragraph","props":{{}},"children":[{{"type":"Image","props":{props},"children":[]}}]}}]}}]}}}}"#
+            ));
+            let error = ir.validate().expect_err("fixture must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

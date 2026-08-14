@@ -1,4 +1,6 @@
 /target/
+**/bin/
+**/obj/
 *.docx
 *.tmp
 .DS_Store
