@@ -3,6 +3,7 @@ import {
   Document,
   Heading,
   Paragraph,
+  Run,
   Section,
   Table,
   TableCell,
@@ -24,13 +25,20 @@ export default (
         xml: "<validation><generator>docx-jsx</generator></validation>",
       },
     ]}
+    styles={[
+      { id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: { spacingAfter: 6 } },
+      { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: { font: "Noto Sans CJK SC", size: 11 } },
+      { id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: { italic: true } },
+      { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center" } },
+    ]}
   >
     <Section pageSize={{ width: 595.3, height: 841.9 }} margins={{ top: 72, right: 72, bottom: 72, left: 72 }}>
       <Heading level={1}>Open XML validation fixture</Heading>
-      <Paragraph>
+      <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.
       </Paragraph>
-      <Table widthPercent={100} border={{ style: "single", size: 0.5, color: "808080" }}>
+      <Paragraph><Run style="BodyChar">Linked character style</Run></Paragraph>
+      <Table style="ValidationTable" widthPercent={100} border={{ style: "single", size: 0.5, color: "808080" }}>
         <TableRow>
           <TableCell shading="D9EAF7"><Paragraph>Component</Paragraph></TableCell>
           <TableCell><Paragraph>Status</Paragraph></TableCell>

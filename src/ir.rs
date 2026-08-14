@@ -86,6 +86,7 @@ pub enum NodeKind {
     Caption,
     Index,
     Bookmark,
+    InlineBookmark,
     TableOfContents,
     TableOfFigures,
     TableOfEntries,
@@ -161,6 +162,7 @@ impl NodeKind {
             Self::Caption => "Caption",
             Self::Index => "Index",
             Self::Bookmark => "Bookmark",
+            Self::InlineBookmark => "InlineBookmark",
             Self::TableOfContents => "TableOfContents",
             Self::TableOfFigures => "TableOfFigures",
             Self::TableOfEntries => "TableOfEntries",
@@ -291,6 +293,8 @@ fn validate_style_relationships(root: &Node) -> Result<()> {
     };
     let mut types = HashMap::new();
     let mut based_on = HashMap::new();
+    let mut next_styles = HashMap::new();
+    let mut linked_styles = HashMap::new();
     for style in styles {
         let Some(style) = style.as_object() else {
             continue;
@@ -307,6 +311,12 @@ fn validate_style_relationships(root: &Node) -> Result<()> {
             if let Some(base_type) = types.get(base).copied() {
                 ensure_matching_style_types(id, style_type, base, base_type)?;
             }
+        }
+        if let Some(next) = style.get("next").and_then(Value::as_str) {
+            next_styles.insert(id, next);
+        }
+        if let Some(link) = style.get("link").and_then(Value::as_str) {
+            linked_styles.insert(id, link);
         }
     }
     // A base style can be declared after its derived style.
@@ -333,8 +343,76 @@ fn validate_style_relationships(root: &Node) -> Result<()> {
             current = base;
         }
     }
+    validate_next_style_relationships(&types, &next_styles)?;
+    validate_linked_style_relationships(&types, &linked_styles)?;
 
     validate_style_references(root, "Document", &types)
+}
+
+fn validate_next_style_relationships(
+    types: &HashMap<&str, &str>,
+    next_styles: &HashMap<&str, &str>,
+) -> Result<()> {
+    for (&id, &next) in next_styles {
+        if types.get(id).copied() != Some("paragraph") {
+            return Err(validation(
+                "Document/styles",
+                format!(
+                    "style `{id}`: `next` is only valid on paragraph styles; remove `next` or change the style type"
+                ),
+            ));
+        }
+        if let Some(next_type) = types.get(next)
+            && *next_type != "paragraph"
+        {
+            return Err(validation(
+                "Document/styles",
+                format!(
+                    "style `{id}`: `next` must reference a paragraph style, but `{next}` is {next_type}; choose a paragraph style id"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_linked_style_relationships(
+    types: &HashMap<&str, &str>,
+    linked_styles: &HashMap<&str, &str>,
+) -> Result<()> {
+    for (&id, &link) in linked_styles {
+        let Some(style_type) = types.get(id).copied() else {
+            continue;
+        };
+        if !matches!(style_type, "paragraph" | "character") {
+            return Err(validation(
+                "Document/styles",
+                format!(
+                    "style `{id}`: `link` is only valid for a paragraph and character style pair; remove `link`"
+                ),
+            ));
+        }
+        let Some(link_type) = types.get(link).copied() else {
+            continue;
+        };
+        if style_type == link_type || !matches!(link_type, "paragraph" | "character") {
+            return Err(validation(
+                "Document/styles",
+                format!(
+                    "styles `{id}` and `{link}` must form a paragraph and character style pair; change one style type"
+                ),
+            ));
+        }
+        if linked_styles.get(link).copied() != Some(id) {
+            return Err(validation(
+                "Document/styles",
+                format!(
+                    "linked style `{link}` must link back to `{id}`; set its `link` property to `{id}`"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_style_references(node: &Node, path: &str, types: &HashMap<&str, &str>) -> Result<()> {
@@ -392,7 +470,7 @@ fn ensure_matching_style_types(
 
 fn validate_bookmark_references(root: &Node) -> Result<()> {
     fn collect<'a>(node: &'a Node, names: &mut Vec<&'a str>, anchors: &mut Vec<&'a str>) {
-        if node.kind == NodeKind::Bookmark
+        if matches!(node.kind, NodeKind::Bookmark | NodeKind::InlineBookmark)
             && let Some(name) = node.props.get("name").and_then(Value::as_str)
         {
             names.push(name);
@@ -524,6 +602,7 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
                         | NodeKind::MergeField
                         | NodeKind::DocumentPropertyField
                         | NodeKind::FormulaField
+                        | NodeKind::InlineBookmark
                 ) && !node.kind.is_semantic_text()
                 {
                     return Err(validation(path, "text is not allowed here"));
@@ -628,6 +707,7 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
                 | NodeKind::Table
                 | NodeKind::List
         ),
+        NodeKind::InlineBookmark => allows_paragraph_child(child),
         NodeKind::Footnote => {
             child == NodeKind::Run || (allows_run_child(child) && child != NodeKind::Footnote)
         }
@@ -693,6 +773,7 @@ fn allows_paragraph_child(child: NodeKind) -> bool {
                 | NodeKind::FormulaField
                 | NodeKind::IndexEntry
                 | NodeKind::TabStop
+                | NodeKind::InlineBookmark
         )
 }
 
@@ -770,7 +851,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::TabStop => &["position", "align", "leader"],
         NodeKind::List => &["type", "start"],
         NodeKind::ListItem => &["level"],
-        NodeKind::Bookmark => &["name"],
+        NodeKind::Bookmark | NodeKind::InlineBookmark => &["name"],
         NodeKind::TableOfContents => &["startLevel", "endLevel", "hyperlinks", "dirty", "alias"],
         NodeKind::TableOfFigures => &[
             "label",
@@ -1806,21 +1887,14 @@ fn validate_style_table(value: &Value, path: &str) -> Result<()> {
             "border",
         ],
     )?;
-    if table.contains_key("width") && table.contains_key("widthPercent") {
-        return Err(validation(
-            path,
-            "style table `width` and `widthPercent` are mutually exclusive",
-        ));
-    }
-    for key in ["width", "widthPercent"] {
-        if let Some(value) = table.get(key) {
-            let number = require_number(value, path, key, true)?;
-            if key == "widthPercent" && number > 100.0 {
-                return Err(validation(
-                    path,
-                    "style table `widthPercent` must be at most 100",
-                ));
-            }
+    for key in ["style", "width", "widthPercent", "layout"] {
+        if table.contains_key(key) {
+            return Err(validation(
+                path,
+                format!(
+                    "style table `{key}` is not legal in OOXML style properties; apply `{key}` to Table instead"
+                ),
+            ));
         }
     }
     if let Some(value) = table.get("indent") {
@@ -1829,14 +1903,7 @@ fn validate_style_table(value: &Value, path: &str) -> Result<()> {
             .filter(|number| number.is_finite())
             .ok_or_else(|| validation(path, "style table `indent` must be finite"))?;
     }
-    if table
-        .get("style")
-        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
-    {
-        return Err(validation(path, "style table `style` must be non-empty"));
-    }
     validate_map_enum(table, path, "align", &["left", "center", "right"])?;
-    validate_map_enum(table, path, "layout", &["auto", "fixed"])?;
     if let Some(value) = table.get("margins") {
         validate_box_margins(value, path)?;
     }
@@ -3313,10 +3380,13 @@ fn validate_structure_semantics(node: &Node, path: &str) -> Result<()> {
             ));
         }
     }
-    if node.kind == NodeKind::Bookmark {
+    if matches!(node.kind, NodeKind::Bookmark | NodeKind::InlineBookmark) {
         let name = node.props.get("name").and_then(Value::as_str);
         if name.is_none_or(str::is_empty) {
-            return Err(validation(path, "Bookmark requires non-empty `name`"));
+            return Err(validation(
+                path,
+                format!("{} requires non-empty `name`", node.kind.name()),
+            ));
         }
     }
     if node.kind == NodeKind::Caption {
@@ -4453,7 +4523,7 @@ mod tests {
     #[test]
     fn validate_should_accept_custom_style_definitions() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"style":"BaseTable","indent":6,"widthPercent":80,"align":"center","layout":"fixed","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         );
         ir.validate().expect("custom style should validate");
     }
@@ -4488,8 +4558,8 @@ mod tests {
                 "require type `table`",
             ),
             (
-                r#"[{"id":"A","name":"A","type":"table","table":{"width":10,"widthPercent":50}}]"#,
-                "mutually exclusive",
+                r#"[{"id":"A","name":"A","type":"table","table":{"width":10}}]"#,
+                "not legal in OOXML style properties",
             ),
         ] {
             let source = format!(
@@ -4555,7 +4625,7 @@ mod tests {
     #[test]
     fn validate_should_accept_typed_style_references_and_inheritance() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"BodyBase","name":"Body Base","type":"paragraph","paragraph":{"spacingAfter":6}},{"id":"Body","name":"Body","type":"paragraph","basedOn":"BodyBase","run":{"font":"Arial"}},{"id":"Emphasis","name":"Emphasis","type":"character","run":{"italic":true}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"layout":"fixed"}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"Body"},"children":[{"type":"Run","props":{"style":"Emphasis"},"children":["text"]}]},{"type":"Table","props":{"style":"ReportTable"},"children":[]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"BodyBase","name":"Body Base","type":"paragraph","paragraph":{"spacingAfter":6}},{"id":"Body","name":"Body","type":"paragraph","basedOn":"BodyBase","run":{"font":"Arial"}},{"id":"Emphasis","name":"Emphasis","type":"character","run":{"italic":true}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"align":"center"}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"Body"},"children":[{"type":"Run","props":{"style":"Emphasis"},"children":["text"]}]},{"type":"Table","props":{"style":"ReportTable"},"children":[]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
     }
@@ -4590,5 +4660,88 @@ mod tests {
             .validate()
             .expect_err("inherited style type mismatch must fail");
         assert!(error.to_string().contains("same type"), "{error}");
+    }
+
+    #[test]
+    fn validate_should_accept_linked_styles_and_paragraph_next_style() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","next":"Body","link":"BodyChar"},{"id":"BodyChar","name":"Body Char","type":"character","link":"Body"}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"Body"},"children":[{"type":"Run","props":{"style":"BodyChar"},"children":["text"]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_next_on_non_paragraph_style() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Strong","name":"Strong","type":"character","next":"Normal"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("next on character style must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("`next` is only valid on paragraph styles"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_next_style_type_mismatch() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","next":"Strong"},{"id":"Strong","name":"Strong","type":"character"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        let error = ir.validate().expect_err("next target must be paragraph");
+        assert!(
+            error
+                .to_string()
+                .contains("`next` must reference a paragraph style"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_linked_style_type_mismatch() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","link":"Quote"},{"id":"Quote","name":"Quote","type":"paragraph"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("linked styles must pair paragraph and character styles");
+        assert!(
+            error.to_string().contains("paragraph and character style"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_non_reciprocal_local_style_link() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","link":"BodyChar"},{"id":"BodyChar","name":"Body Char","type":"character"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("local style links must be reciprocal");
+        assert!(error.to_string().contains("must link back"), "{error}");
+    }
+
+    #[test]
+    fn validate_should_reject_run_style_reference_to_table_style() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Grid","name":"Grid","type":"table"}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"style":"Grid"},"children":["text"]}]}]}]}}"#,
+        );
+        let error = ir.validate().expect_err("Run requires a character style");
+        assert!(
+            error.to_string().contains("requires a character style"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_allow_external_template_style_references() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","basedOn":"TemplateBody","next":"TemplateNext","link":"TemplateBodyChar"}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"TemplateBody"},"children":[]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
     }
 }

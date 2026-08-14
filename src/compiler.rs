@@ -798,11 +798,58 @@ fn normalize_ooxml_element_order(bytes: Vec<u8>) -> Result<Vec<u8>> {
 fn normalize_word_xml(xml: &mut String, is_styles: bool) -> Result<()> {
     if is_styles {
         remove_element_children(xml, "w:pPr", "w:rPr")?;
+        remove_element_children(xml, "w:tblPr", "w:tblW")?;
+        remove_element_children(xml, "w:tblPr", "w:tblLayout")?;
+        prefix_element_children(
+            xml,
+            "w:tblPr",
+            r#"<w:tblStyleRowBandSize w:val="1" /><w:tblStyleColBandSize w:val="1" />"#,
+        )?;
     }
     reorder_element_children(xml, "w:pPr", paragraph_property_rank)?;
     reorder_element_children(xml, "w:rPr", run_property_rank)?;
+    reorder_element_children(xml, "w:tblPr", table_property_rank)?;
+    reorder_element_children(xml, "w:sectPr", section_property_rank)?;
     reorder_element_children(xml, "w:style", style_child_rank)?;
     reorder_element_children(xml, "w:settings", settings_child_rank)
+}
+
+fn section_property_rank(fragment: &str) -> usize {
+    rank_in(
+        child_name(fragment),
+        &[
+            "w:headerReference",
+            "w:footerReference",
+            "w:footnotePr",
+            "w:endnotePr",
+            "w:type",
+            "w:pgSz",
+            "w:pgMar",
+            "w:paperSrc",
+            "w:pgBorders",
+            "w:lnNumType",
+            "w:pgNumType",
+            "w:cols",
+            "w:formProt",
+            "w:vAlign",
+            "w:noEndnote",
+            "w:titlePg",
+            "w:textDirection",
+            "w:bidi",
+            "w:rtlGutter",
+            "w:docGrid",
+            "w:printerSettings",
+            "w:sectPrChange",
+        ],
+    )
+}
+
+fn prefix_element_children(xml: &mut String, parent: &str, prefix: &str) -> Result<()> {
+    let ranges = element_content_ranges(xml, parent)?;
+    for (start, _) in ranges.into_iter().rev() {
+        xml.insert_str(start, prefix);
+    }
+    Ok(())
 }
 
 fn remove_element_children(
@@ -1058,6 +1105,32 @@ fn style_child_rank(fragment: &str) -> usize {
             "w:trPr",
             "w:tcPr",
             "w:tblStylePr",
+        ],
+    )
+}
+
+fn table_property_rank(fragment: &str) -> usize {
+    rank_in(
+        child_name(fragment),
+        &[
+            "w:tblStyle",
+            "w:tblpPr",
+            "w:tblOverlap",
+            "w:bidiVisual",
+            "w:tblStyleRowBandSize",
+            "w:tblStyleColBandSize",
+            "w:tblW",
+            "w:jc",
+            "w:tblCellSpacing",
+            "w:tblInd",
+            "w:tblBorders",
+            "w:shd",
+            "w:tblLayout",
+            "w:tblCellMar",
+            "w:tblLook",
+            "w:tblCaption",
+            "w:tblDescription",
+            "w:tblPrChange",
         ],
     )
 }
@@ -1853,6 +1926,10 @@ fn compile_paragraph_children(
                     &child_path,
                 )?);
             }
+            Child::Node(bookmark) if bookmark.kind == NodeKind::InlineBookmark => {
+                paragraph =
+                    compile_inline_bookmark(paragraph, bookmark, entry_dir, &child_path, context)?;
+            }
             Child::Node(tab_stop) if tab_stop.kind == NodeKind::TabStop => {
                 paragraph = paragraph.add_tab(compile_tab_stop(tab_stop, &child_path)?);
             }
@@ -1868,6 +1945,20 @@ fn compile_paragraph_children(
         }
     }
     Ok(paragraph)
+}
+
+fn compile_inline_bookmark(
+    mut paragraph: Paragraph,
+    node: &Node,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<Paragraph> {
+    context.next_bookmark_id += 1;
+    let id = context.next_bookmark_id;
+    paragraph = paragraph.add_bookmark_start(id, required_string(&node.props, "name", path)?);
+    paragraph = compile_paragraph_children(paragraph, &node.children, entry_dir, path, context)?;
+    Ok(paragraph.add_bookmark_end(id))
 }
 
 fn compile_caption(
@@ -4178,7 +4269,7 @@ mod tests {
     #[test]
     fn compile_should_render_custom_style_definition() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":false,"uiPriority":5,"semiHidden":true,"unhideWhenUsed":true,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":true,"underline":"single","hidden":true,"textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"hangingChars":20,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"style":"BaseTable","indent":6,"widthPercent":80,"align":"center","layout":"fixed","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":false,"uiPriority":5,"semiHidden":true,"unhideWhenUsed":true,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":true,"underline":"single","hidden":true,"textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"hangingChars":20,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         )
         .expect("fixture should parse");
         ir.validate().expect("fixture should validate");
@@ -4212,12 +4303,52 @@ mod tests {
             .expect("ReportTitle style body should exist");
         assert!(!report_style.contains("<w:qFormat />"));
         assert!(styles.contains(r#"w:type="table" w:styleId="ReportTable""#));
-        assert!(styles.contains(r#"<w:tblStyle w:val="BaseTable" />"#));
-        assert!(styles.contains(r#"<w:tblW w:w="4000" w:type="pct" />"#));
-        assert!(styles.contains(r#"<w:tblLayout w:type="fixed" />"#));
+        assert!(styles.contains(r#"<w:jc w:val="center" />"#));
         assert!(styles.contains(r#"<w:gridSpan w:val="2" />"#));
         assert!(styles.contains(r#"<w:textDirection w:val="tbRl" />"#));
         assert!(styles.contains(r#"<w:shd w:val="clear" w:color="auto" w:fill="FFF2CC" />"#));
+    }
+
+    #[test]
+    fn compile_should_render_style_inheritance_links_and_typed_references() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"BodyBase","name":"Body Base","type":"paragraph"},{"id":"Body","name":"Body","type":"paragraph","basedOn":"BodyBase","next":"Body","link":"BodyChar"},{"id":"BodyChar","name":"Body Char","type":"character","link":"Body"},{"id":"TableBase","name":"Table Base","type":"table"},{"id":"ReportTable","name":"Report Table","type":"table","basedOn":"TableBase"}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"Body"},"children":[{"type":"Run","props":{"style":"BodyChar"},"children":["styled"]}]},{"type":"Table","props":{"style":"ReportTable"},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{},"children":[{"type":"Paragraph","props":{},"children":["cell"]}]}]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles should exist")
+            .read_to_string(&mut styles)
+            .expect("styles should be UTF-8");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document should exist")
+            .read_to_string(&mut document)
+            .expect("document should be UTF-8");
+
+        for expected in [
+            r#"<w:basedOn w:val="BodyBase" />"#,
+            r#"<w:next w:val="Body" />"#,
+            r#"<w:link w:val="BodyChar" />"#,
+            r#"<w:link w:val="Body" />"#,
+            r#"<w:basedOn w:val="TableBase" />"#,
+        ] {
+            assert!(styles.contains(expected), "missing {expected} in {styles}");
+        }
+        for expected in [
+            r#"<w:pStyle w:val="Body" />"#,
+            r#"<w:rStyle w:val="BodyChar" />"#,
+            r#"<w:tblStyle w:val="ReportTable" />"#,
+        ] {
+            assert!(
+                document.contains(expected),
+                "missing {expected} in {document}"
+            );
+        }
     }
 
     #[test]

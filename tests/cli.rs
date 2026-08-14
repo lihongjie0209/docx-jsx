@@ -127,6 +127,28 @@ export default <Document><Section><Paragraph unknownProp /></Section></Document>
 }
 
 #[test]
+fn validate_should_reject_style_cycle_with_targeted_repair_suggestion() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("style-cycle.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section } from "docx-jsx";
+export default <Document styles={[{id:"A",name:"A",type:"paragraph",basedOn:"B"},{id:"B",name:"B",type:"paragraph",basedOn:"A"}]}><Section /></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["validate", input.to_str().expect("UTF-8 path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("style inheritance cycle"))
+        .stderr(predicate::str::contains(
+            "Remove or redirect one `basedOn` reference",
+        ));
+}
+
+#[test]
 fn cli_should_compile_tsx_with_json_data() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("report.tsx");
@@ -289,13 +311,13 @@ fn cli_should_compile_advanced_document_components() {
     fs::write(
         &input,
         r##"import { Document, Section, Header, Footer, Heading, Caption, Index, IndexEntry, Paragraph, Hyperlink, PageNumber, TotalPages, List, ListItem, Run, Image, Bookmark, Table, TableRow, TableCell, TableOfContents, TableOfFigures, TableOfEntries, TocEntry, Comment, Footnote, Tab, TabStop, CarriageReturn, NonBreakingSpace, SoftHyphen, NonBreakingHyphen, Symbol, Bold, Italic, Underline, StrikeThrough, Superscript, Subscript, AllCaps, HiddenText, SpecialHiddenText, DoubleStrike, SpacedText, ScaledText, FitText, BorderedText, ShadedText, Inserted, Deleted, MovedFrom, MovedTo, PageReference, PositionalTab, ContentControl, Field, DateField, TimeField, FileNameField, AuthorField, TitleField, SubjectField, SequenceField, ReferenceField, MergeField, DocumentPropertyField, FormulaField } from "docx-jsx";
-export default <Document defaultCharacterSpacing={0.5} defaultLineSpacing={{before: 2, after: 6, line: 14, beforeLines: 100, afterLines: 200, lineRule: "atLeast"}} createdAt="2026-08-14T00:00:00Z" updatedAt="2026-08-15T00:00:00Z" customProperties={{Project: "Apollo"}} documentId="01234567-89AB-CDEF-0123-456789ABCDEF" defaultTabStop={36} documentVariables={{Customer: "Ada"}} evenAndOddHeaders adjustLineHeightInTable characterSpacingControl="compressPunctuation" webExtensions={[{id: "7f33b723-fb58-4524-8733-dbedc4b7c095", referenceId: "office-addin", version: "1.0.0.0", store: "developer", storeType: "Registry", properties: {mode: "review"}}, {id: "11111111-2222-3333-4444-555555555555", referenceId: "second", version: "2.0", store: "OMEX", storeType: "Marketplace"}]} customXmlItems={[{id: "06AC5857-5C65-A94A-BCEC-37356A209BC3", xml: "<customer><name>Ada</name></customer>"}, {id: "11111111-AAAA-BBBB-CCCC-222222222222", xml: "<order id=\"42\"/>"}]} styles={[{id: "ReportTitle", name: "Report Title", type: "paragraph", basedOn: "Normal", quickFormat: true, run: {font: "Noto Sans CJK SC", size: 18, color: "336699", bold: true, textBorder: {style: "double", size: 1, color: "336699", space: 2}}, paragraph: {align: "center", spacingAfter: 12, spacingBeforeLines: 50, spacingAfterLines: 75, lineRule: "exact", outlineLevel: 1}}, {id: "ReportTable", name: "Report Table", type: "table", table: {widthPercent: 80, align: "center", layout: "fixed", margins: {top: 1, right: 2, bottom: 3, left: 4}, border: {style: "double", size: 1, color: "336699"}}, cell: {verticalAlign: "center", shading: "FFF2CC", border: {style: "dotted", size: 0.5, color: "993366"}}}]}><Section titlePage textDirection="tbRl" documentGrid={{type: "linesAndChars", linePitch: 18, charSpace: -10}} pageNumbering={{start: 3, chapterStyle: "1"}}>
+export default <Document defaultCharacterSpacing={0.5} defaultLineSpacing={{before: 2, after: 6, line: 14, beforeLines: 100, afterLines: 200, lineRule: "atLeast"}} createdAt="2026-08-14T00:00:00Z" updatedAt="2026-08-15T00:00:00Z" customProperties={{Project: "Apollo"}} documentId="01234567-89AB-CDEF-0123-456789ABCDEF" defaultTabStop={36} documentVariables={{Customer: "Ada"}} evenAndOddHeaders adjustLineHeightInTable characterSpacingControl="compressPunctuation" webExtensions={[{id: "7f33b723-fb58-4524-8733-dbedc4b7c095", referenceId: "office-addin", version: "1.0.0.0", store: "developer", storeType: "Registry", properties: {mode: "review"}}, {id: "11111111-2222-3333-4444-555555555555", referenceId: "second", version: "2.0", store: "OMEX", storeType: "Marketplace"}]} customXmlItems={[{id: "06AC5857-5C65-A94A-BCEC-37356A209BC3", xml: "<customer><name>Ada</name></customer>"}, {id: "11111111-AAAA-BBBB-CCCC-222222222222", xml: "<order id=\"42\"/>"}]} styles={[{id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: {spacingAfter: 6}}, {id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: {font: "Noto Sans CJK SC", size: 12}}, {id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: {italic: true}}, {id: "ReportTitle", name: "Report Title", type: "paragraph", basedOn: "Normal", quickFormat: true, run: {font: "Noto Sans CJK SC", size: 18, color: "336699", bold: true, textBorder: {style: "double", size: 1, color: "336699", space: 2}}, paragraph: {align: "center", spacingAfter: 12, spacingBeforeLines: 50, spacingAfterLines: 75, lineRule: "exact", outlineLevel: 1}}, {id: "ReportTable", name: "Report Table", type: "table", table: {align: "center", margins: {top: 1, right: 2, bottom: 3, left: 4}, border: {style: "double", size: 1, color: "336699"}}, cell: {verticalAlign: "center", shading: "FFF2CC", border: {style: "dotted", size: 0.5, color: "993366"}}}]}><Section titlePage textDirection="tbRl" documentGrid={{type: "linesAndChars", linePitch: 18, charSpace: -10}} pageNumbering={{start: 3, chapterStyle: "1"}}>
   <Header type="first"><Paragraph>Report header</Paragraph></Header>
   <Footer type="even"><Paragraph>Page <PageNumber /> of <TotalPages /></Paragraph></Footer>
   <TableOfContents startLevel={1} endLevel={2} alias="Contents" />
   <TableOfFigures label="Figure" alias="Figures" />
   <TableOfEntries identifier="manual" alias="Manual entries" />
-  <Paragraph><Hyperlink href="https://example.com" history><Run underline color="2E74B5" themeColor="accent1" themeShade="BF" bold={false} italic={false} strike={false} doubleStrike>Example</Run></Hyperlink></Paragraph>
+  <Paragraph style="Body"><Hyperlink href="https://example.com" history><Run style="BodyChar" underline color="2E74B5" themeColor="accent1" themeShade="BF" bold={false} italic={false} strike={false} doubleStrike>Example</Run></Hyperlink></Paragraph>
   <Paragraph><Image src="pixel.png" width={48} height={32} rotate={45} floating allowOverlap positionH="right" positionV={18.5} relativeFromH="page" relativeFromV="paragraph" distanceTop={2} distanceBottom={3} distanceLeft={4} distanceRight={5} relativeHeight={251658240} /></Paragraph>
   <Bookmark name="intro"><Heading level={1} font="Noto Sans CJK SC" size={16}>Introduction</Heading><Paragraph style="Quote" snapToGrid={false} widowControl font="Noto Sans CJK SC" size={12} bold italic={false} color="1a2B3c" characterSpacing={0.5}>Bookmarked text</Paragraph></Bookmark>
   <Paragraph><Hyperlink anchor="intro">Jump to introduction</Hyperlink></Paragraph>
@@ -315,7 +337,7 @@ export default <Document defaultCharacterSpacing={0.5} defaultLineSpacing={{befo
   <Paragraph><Deleted author="Ada" date="2026-08-14T00:00:00Z"><Run bold>Old text</Run></Deleted><Inserted author="Ada"><Run bold>New text</Run></Inserted></Paragraph>
   <Paragraph paragraphId="A1B2C3D4" spacingBeforeLines={125} spacingAfterLines={250} lineRule="auto" bidi textAlign="baseline" adjustRightIndent={-2} shading="DDEEFF" outlineLevel={3} frame={{wrap: "around", horizontalAnchor: "page", x: 12, yAlign: "top", width: 144, height: 72}} border={{top: {style: "double", size: 1, color: "336699", space: 2}, between: false, bar: {style: "babyRattle"}}} inserted={{author: "Ada", date: "2026-08-14T00:00:00Z"}} propertyChange={{author: "Lin", previous: {align: "right", spacingAfter: 6, bidi: false}}}>Revised paragraph formatting</Paragraph>
   <List type="ordered" start={3}><ListItem>Third</ListItem><ListItem level={1}>Nested</ListItem></List>
-  <Table style="GridTable4" indent={12} margins={{top: 2, right: 3, bottom: 4, left: 5}} border={{top: {style: "double", size: 1, color: "336699"}, insideHorizontal: false}} position={{leftFromText: 7.1, rightFromText: 7.1, verticalAnchor: "text", horizontalAnchor: "margin", xAlign: "right", y: 25.5}}><TableRow inserted={{author: "Ada", date: "2026-08-14T00:00:00Z"}}><TableCell verticalMerge="restart" textDirection="tbRl" margins={{top: 1, right: 2, bottom: 3, left: 4}} border={{left: false, topLeftToBottomRight: {style: "dotted", size: 0.5, color: "993366"}}}><Paragraph>Cell</Paragraph><TableOfContents startLevel={1} endLevel={2} /><ContentControl alias="CellValue">value</ContentControl></TableCell></TableRow><TableRow deleted={{author: "Linus"}}><TableCell><Paragraph>Removed row</Paragraph></TableCell></TableRow></Table>
+  <Table style="ReportTable" indent={12} margins={{top: 2, right: 3, bottom: 4, left: 5}} border={{top: {style: "double", size: 1, color: "336699"}, insideHorizontal: false}} position={{leftFromText: 7.1, rightFromText: 7.1, verticalAnchor: "text", horizontalAnchor: "margin", xAlign: "right", y: 25.5}}><TableRow inserted={{author: "Ada", date: "2026-08-14T00:00:00Z"}}><TableCell verticalMerge="restart" textDirection="tbRl" margins={{top: 1, right: 2, bottom: 3, left: 4}} border={{left: false, topLeftToBottomRight: {style: "dotted", size: 0.5, color: "993366"}}}><Paragraph>Cell</Paragraph><TableOfContents startLevel={1} endLevel={2} /><ContentControl alias="CellValue">value</ContentControl></TableCell></TableRow><TableRow deleted={{author: "Linus"}}><TableCell><Paragraph>Removed row</Paragraph></TableCell></TableRow></Table>
 </Section></Document>;"##,
     )
     .expect("input should write");

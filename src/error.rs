@@ -85,6 +85,21 @@ impl Error {
             Self::Validation { message, .. } if message.contains("cannot contain") => {
                 "Move the child into one of the parent component's allowed containers shown by `docx-jsx spec`."
             }
+            Self::Validation { message, .. } if message.contains("style inheritance cycle") => {
+                "Remove or redirect one `basedOn` reference so the inheritance chain terminates."
+            }
+            Self::Validation { message, .. } if message.contains("`style` requires a") => {
+                "Reference a declared id with the matching style type, or change the style definition's `type`."
+            }
+            Self::Validation { message, .. }
+                if message.contains("style")
+                    && (message.contains("same type")
+                        || message.contains("must link back")
+                        || message.contains("paragraph and character style")
+                        || message.contains("`next`")) =>
+            {
+                "Correct the reported `basedOn`, `next`, or `link` relationship using the style rules from `docx-jsx spec`."
+            }
             Self::Validation { message, .. } if message.contains("requires") => {
                 "Add the required property or child named by the error, then compile again."
             }
@@ -116,3 +131,33 @@ impl Error {
 
 /// Result alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn style_cycle_diagnostic_should_explain_how_to_break_inheritance() {
+        let diagnostic = Error::Validation {
+            path: "Document/styles".to_owned(),
+            message: "style inheritance cycle includes `Body`".to_owned(),
+        }
+        .render_diagnostic();
+
+        assert!(
+            diagnostic.contains("Remove or redirect one `basedOn`"),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn style_reference_diagnostic_should_recommend_matching_style_type() {
+        let diagnostic = Error::Validation {
+            path: "Document/Section[0]/Paragraph[0]".to_owned(),
+            message: "Paragraph `style` requires a paragraph style".to_owned(),
+        }
+        .render_diagnostic();
+
+        assert!(diagnostic.contains("matching style type"), "{diagnostic}");
+    }
+}

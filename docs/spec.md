@@ -152,10 +152,13 @@ components it uses and default-exports one `Document`.
   and `height`; its dimensions are points and coordinate/alignment pairs are
   mutually exclusive.
   Table styles additionally accept
-  `table?: {style,indent,width,widthPercent,align,layout,margins,border}` and
+  `table?: {indent,align,margins,border}` and
   `cell?: {width,colSpan,verticalAlign,verticalMerge,textDirection,shading,margins,border}`.
-  These reuse the corresponding `Table` and `TableCell` property formats;
-  `width`/`widthPercent` are mutually exclusive. `run.textBorder` reuses the
+  These reuse the corresponding `Table` and `TableCell` property formats.
+  Width, layout, and nested style references belong on `Table`; they are
+  rejected inside a style because OOXML `StyleTableProperties` does not permit
+  them even though docx-rs exposes setters that serialize invalid markup.
+  `run.textBorder` reuses the
   `BorderedText` object shape. `table` and `cell` are rejected on non-table
   styles because docx-rs would otherwise omit them during serialization.
   `basedOn` is emitted as native Word style inheritance. A locally declared

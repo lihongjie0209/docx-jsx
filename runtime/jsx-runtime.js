@@ -36,6 +36,7 @@ export const Heading = host("Heading");
 export const Caption = host("Caption");
 export const Index = host("Index");
 export const Bookmark = host("Bookmark");
+export const InlineBookmark = host("InlineBookmark");
 export const TableOfContents = host("TableOfContents");
 export const TableOfFigures = host("TableOfFigures");
 export const TableOfEntries = host("TableOfEntries");

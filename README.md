@@ -65,7 +65,7 @@ Windows.
 | Area | Status | Highlights |
 | --- | --- | --- |
 | Executable JSX/TSX | Supported | Embedded V8, local ESM imports, async components, JSON data injection |
-| Styles and inheritance | Supported | Paragraph/character/numbering/table styles, native `basedOn` inheritance, typed references and cycle detection |
+| Styles and inheritance | Supported | Paragraph/character/numbering/table styles, native `basedOn`, paragraph `next`, linked styles, typed references and cycle detection |
 | Document defaults and metadata | Supported | Fonts, spacing, settings, properties, variables, Web Extensions and Custom XML |
 | Sections | Supported | Page size/orientation/margins, headers/footers, title pages, text direction, document grid, page numbering |
 | Paragraphs and headings | Supported | Full line spacing, indentation, frames, borders, IDs, tabs, bidi, outline and tracked format changes |
@@ -74,9 +74,9 @@ Windows.
 | Fields and indexes | Supported | Generic and typed fields, TOC/figures/entries, captions, index fields and cross-references |
 | Annotations and controls | Supported | Bookmarks, comments, footnotes, hyperlinks and bound content controls |
 | Images | Supported | Raster embedding, dimensions, rotation, floating anchors, alignment/offsets, relative origins, distances, overlap and layer height |
-| DOCX to JSX | Supported | Component-level 1:1 reversal for generated DOCX; strict structural fallback for external DOCX |
+| DOCX to JSX | Supported | Component-level 1:1 reversal for generated DOCX; external styles/inheritance, exact paragraph spacing/indentation, revisions, bookmarks and footer text-box fallback |
 | Validation and Agent spec | Supported | DSL validation, repair-oriented diagnostics, Agent contract, JSON Schema, and .NET Open XML conformance tests |
-| Backend-limited APIs | Not emitted | Character-unit paragraph indentation, row before/after grids, and image simple-position are dropped or hardcoded by docx-rs 0.4.22 |
+| Backend-limited APIs | Not emitted | Character-unit paragraph indentation, row before/after grids, image simple-position, theme parts and embedded fonts are dropped or hardcoded by docx-rs 0.4.22 |
 
 The detailed writer-API audit is maintained in
 [docs/docx-rs-coverage.md](docs/docx-rs-coverage.md).

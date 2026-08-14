@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 - 2026-08-14
+
+- Add typed paragraph, character, numbering, and table style references with
+  inheritance-cycle, `next`, and reciprocal linked-style validation.
+- Preserve external DOCX style definitions and inheritance metadata, including
+  `basedOn`, `next`, `link`, quick-format, visibility, and UI-priority values.
+- Preserve exact paragraph line spacing, line rules, zero spacing, and
+  first-line/hanging indentation during external DOCX reversal.
+- Preserve external paragraph, run, and table style references, tracked
+  revisions, whitespace, and inline bookmark anchors.
+- Recover footer content from external floating text boxes and normalize
+  section-property ordering for schema-valid header/footer references.
+- Reject table-style properties that docx-rs 0.4.22 serializes as invalid
+  OOXML, with targeted repair suggestions.
+- Expand style inheritance, external reversal, CLI diagnostics, round-trip,
+  and Microsoft Open XML SDK integration coverage.
+
 ## 0.2.0 - 2026-08-14
 
 - Add advanced paragraph formatting, complete line spacing, paragraph borders,
