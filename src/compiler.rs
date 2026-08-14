@@ -6,10 +6,10 @@ use docx_rs::{
     AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, CharacterSpacingValues,
     Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, FieldCharType, Footer, Footnote,
     Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC,
-    InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing, MoveFrom, MoveTo, NumPages,
-    NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType,
-    PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition, ParagraphBorders,
-    ParagraphPropertyChange, Pic, PositionalTab, PositionalTabAlignmentType,
+    InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing, LineSpacingType, MoveFrom, MoveTo,
+    NumPages, NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType,
+    PageOrientationType, PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition,
+    ParagraphBorders, ParagraphPropertyChange, Pic, PositionalTab, PositionalTabAlignmentType,
     PositionalTabRelativeTo, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
     Start, StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab, TabLeaderType, TabValueType,
     Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
@@ -59,6 +59,9 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
     }
     if let Some(spacing) = number_prop(&ir.document.props, "defaultCharacterSpacing", "Document")? {
         docx = docx.default_spacing(to_twips_i32(spacing, "Document/defaultCharacterSpacing")?);
+    }
+    if let Some(value) = ir.document.props.get("defaultLineSpacing") {
+        docx = docx.default_line_spacing(compile_default_line_spacing(value, "Document")?);
     }
     if let Some(created_at) = string_prop(&ir.document.props, "createdAt", "Document")? {
         docx = docx.created_at(created_at);
@@ -455,10 +458,82 @@ fn compile_style_spacing(
         spacing = spacing.line(to_twips_i32(value, path)?);
         present = true;
     }
+    let (next, extras_present) = compile_line_spacing_extras(
+        spacing,
+        paragraph,
+        "spacingBeforeLines",
+        "spacingAfterLines",
+        "lineRule",
+        path,
+    )?;
+    spacing = next;
+    present |= extras_present;
     if present {
         style = style.line_spacing(spacing);
     }
     Ok(style)
+}
+
+fn compile_default_line_spacing(value: &Value, path: &str) -> Result<LineSpacing> {
+    let spacing = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`defaultLineSpacing` must be an object"))?;
+    let mut output = LineSpacing::new();
+    if let Some(value) = number_prop(spacing, "before", path)? {
+        output = output.before(to_twips_u32(
+            value,
+            &format!("{path}/defaultLineSpacing/before"),
+        )?);
+    }
+    if let Some(value) = number_prop(spacing, "after", path)? {
+        output = output.after(to_twips_u32(
+            value,
+            &format!("{path}/defaultLineSpacing/after"),
+        )?);
+    }
+    if let Some(value) = number_prop(spacing, "line", path)? {
+        output = output.line(to_twips_i32(
+            value,
+            &format!("{path}/defaultLineSpacing/line"),
+        )?);
+    }
+    compile_line_spacing_extras(
+        output,
+        spacing,
+        "beforeLines",
+        "afterLines",
+        "lineRule",
+        &format!("{path}/defaultLineSpacing"),
+    )
+    .map(|(spacing, _)| spacing)
+}
+
+fn compile_line_spacing_extras(
+    mut spacing: LineSpacing,
+    props: &Map<String, Value>,
+    before_lines: &str,
+    after_lines: &str,
+    line_rule: &str,
+    path: &str,
+) -> Result<(LineSpacing, bool)> {
+    let mut present = false;
+    if let Some(value) = props.get(before_lines) {
+        spacing = spacing.before_lines(value_to_u32(value, path, before_lines)?);
+        present = true;
+    }
+    if let Some(value) = props.get(after_lines) {
+        spacing = spacing.after_lines(value_to_u32(value, path, after_lines)?);
+        present = true;
+    }
+    if let Some(value) = string_prop(props, line_rule, path)? {
+        spacing = spacing.line_rule(match value {
+            "atLeast" => LineSpacingType::AtLeast,
+            "exact" => LineSpacingType::Exact,
+            _ => LineSpacingType::Auto,
+        });
+        present = true;
+    }
+    Ok((spacing, present))
 }
 
 fn compile_style_indent(
@@ -526,6 +601,13 @@ fn value_to_i32(value: &Value, path: &str, key: &str) -> Result<i32> {
     value
         .as_i64()
         .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| validation(path, format!("`{key}` is out of range")))
+}
+
+fn value_to_u32(value: &Value, path: &str, key: &str) -> Result<u32> {
+    value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| validation(path, format!("`{key}` is out of range")))
 }
 
@@ -984,6 +1066,16 @@ fn compile_paragraph(
         spacing = spacing.line(to_twips_i32(value, &format!("{path}/lineSpacing"))?);
         has_spacing = true;
     }
+    let (next, extras_present) = compile_line_spacing_extras(
+        spacing,
+        &node.props,
+        "spacingBeforeLines",
+        "spacingAfterLines",
+        "lineRule",
+        path,
+    )?;
+    spacing = next;
+    has_spacing |= extras_present;
     if has_spacing {
         paragraph = paragraph.line_spacing(spacing);
     }
@@ -3323,6 +3415,34 @@ mod tests {
         assert!(settings.contains("<w:adjustLineHeightInTable />"));
         assert!(settings.contains(r#"w:characterSpacingControl w:val="compressPunctuation""#));
         assert!(styles.contains(r#"<w:spacing w:val="10" />"#));
+    }
+
+    #[test]
+    fn compile_should_render_complete_line_spacing_properties() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultLineSpacing":{"before":2,"after":6,"line":14,"beforeLines":100,"afterLines":200,"lineRule":"atLeast"},"styles":[{"id":"Dense","name":"Dense","type":"paragraph","paragraph":{"spacingBeforeLines":50,"spacingAfterLines":75,"lineRule":"exact"}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"spacingBefore":3,"spacingAfter":4,"lineSpacing":12,"spacingBeforeLines":125,"spacingAfterLines":250,"lineRule":"auto"},"children":["text"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part")
+            .read_to_string(&mut styles)
+            .expect("UTF-8 XML");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(
+            styles.contains("<w:spacing w:before=\"40\" w:after=\"120\" w:beforeLines=\"100\" w:afterLines=\"200\" w:line=\"280\" w:lineRule=\"atLeast\" />")
+                && styles.contains("<w:spacing w:beforeLines=\"50\" w:afterLines=\"75\" w:lineRule=\"exact\" />")
+                && document.contains("<w:spacing w:before=\"60\" w:after=\"80\" w:beforeLines=\"125\" w:afterLines=\"250\" w:line=\"240\" w:lineRule=\"auto\" />"),
+            "styles={styles}\ndocument={document}"
+        );
     }
 
     #[test]

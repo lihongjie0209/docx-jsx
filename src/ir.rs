@@ -714,6 +714,7 @@ fn document_props() -> &'static [&'static str] {
         "defaultFont",
         "defaultSize",
         "defaultCharacterSpacing",
+        "defaultLineSpacing",
         "createdAt",
         "updatedAt",
         "customProperties",
@@ -781,6 +782,9 @@ fn paragraph_props() -> &'static [&'static str] {
         "spacingBefore",
         "spacingAfter",
         "lineSpacing",
+        "spacingBeforeLines",
+        "spacingAfterLines",
+        "lineRule",
         "indentLeft",
         "indentRight",
         "firstLine",
@@ -818,6 +822,9 @@ fn heading_props() -> &'static [&'static str] {
         "spacingBefore",
         "spacingAfter",
         "lineSpacing",
+        "spacingBeforeLines",
+        "spacingAfterLines",
+        "lineRule",
         "indentLeft",
         "indentRight",
         "firstLine",
@@ -990,6 +997,13 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
                 .filter(|number| number.is_finite())
                 .ok_or_else(|| validation(path, "`characterSpacing` must be a finite number"))?;
         }
+        validate_line_spacing_extras(
+            &node.props,
+            path,
+            "spacingBeforeLines",
+            "spacingAfterLines",
+            "lineRule",
+        )?;
         validate_optional_enum_prop(
             node,
             path,
@@ -1123,6 +1137,40 @@ fn validate_advanced_semantics(node: &Node, path: &str) -> Result<()> {
     validate_structure_semantics(node, path)
 }
 
+fn validate_line_spacing_extras(
+    object: &Map<String, Value>,
+    path: &str,
+    before_lines: &str,
+    after_lines: &str,
+    line_rule: &str,
+) -> Result<()> {
+    for key in [before_lines, after_lines] {
+        if object.get(key).is_some_and(|value| {
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .is_none()
+        }) {
+            return Err(validation(
+                path,
+                format!("`{key}` must be a non-negative integer"),
+            ));
+        }
+    }
+    if let Some(value) = object.get(line_rule) {
+        let valid = value
+            .as_str()
+            .is_some_and(|value| ["auto", "atLeast", "exact"].contains(&value));
+        if !valid {
+            return Err(validation(
+                path,
+                format!("invalid `{line_rule}`; expected auto, atLeast, or exact"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
     if node.kind != NodeKind::Document {
         return Ok(());
@@ -1132,6 +1180,41 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
             .as_f64()
             .filter(|number| number.is_finite())
             .ok_or_else(|| validation(path, "`defaultCharacterSpacing` must be finite"))?;
+    }
+    if let Some(value) = node.props.get("defaultLineSpacing") {
+        let spacing = value
+            .as_object()
+            .ok_or_else(|| validation(path, "`defaultLineSpacing` must be an object"))?;
+        validate_object_keys(
+            spacing,
+            path,
+            &[
+                "before",
+                "after",
+                "line",
+                "beforeLines",
+                "afterLines",
+                "lineRule",
+            ],
+        )?;
+        if spacing.is_empty() {
+            return Err(validation(path, "`defaultLineSpacing` must not be empty"));
+        }
+        for key in ["before", "after"] {
+            if let Some(value) = spacing.get(key) {
+                require_number(value, path, &format!("defaultLineSpacing.{key}"), false)?;
+                if value.as_f64().is_some_and(|value| value < 0.0) {
+                    return Err(validation(
+                        path,
+                        format!("`defaultLineSpacing.{key}` must be non-negative"),
+                    ));
+                }
+            }
+        }
+        if let Some(value) = spacing.get("line") {
+            require_number(value, path, "defaultLineSpacing.line", false)?;
+        }
+        validate_line_spacing_extras(spacing, path, "beforeLines", "afterLines", "lineRule")?;
     }
     if let Some(value) = node.props.get("defaultTabStop") {
         require_number(value, path, "defaultTabStop", true)?;
@@ -1592,6 +1675,9 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             "spacingBefore",
             "spacingAfter",
             "lineSpacing",
+            "spacingBeforeLines",
+            "spacingAfterLines",
+            "lineRule",
             "indentLeft",
             "indentRight",
             "firstLine",
@@ -1623,34 +1709,7 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
         "textAlign",
         &["auto", "baseline", "bottom", "center", "top"],
     )?;
-    if paragraph
-        .get("snapToGrid")
-        .is_some_and(|value| !value.is_boolean())
-    {
-        return Err(validation(
-            path,
-            "style paragraph `snapToGrid` must be a boolean",
-        ));
-    }
-    for key in [
-        "spacingBefore",
-        "spacingAfter",
-        "lineSpacing",
-        "indentLeft",
-        "indentRight",
-        "firstLine",
-        "hanging",
-    ] {
-        if let Some(value) = paragraph.get(key) {
-            require_number(value, path, key, false)?;
-        }
-    }
-    if paragraph.contains_key("firstLine") && paragraph.contains_key("hanging") {
-        return Err(validation(
-            path,
-            "style paragraph `firstLine` and `hanging` are mutually exclusive",
-        ));
-    }
+    validate_style_paragraph_layout(paragraph, path)?;
     for key in ["hangingChars", "firstLineChars"] {
         if paragraph
             .get(key)
@@ -1673,6 +1732,45 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
     }
     if let Some(frame) = paragraph.get("frame") {
         validate_style_frame(frame, path)?;
+    }
+    Ok(())
+}
+
+fn validate_style_paragraph_layout(paragraph: &Map<String, Value>, path: &str) -> Result<()> {
+    if paragraph
+        .get("snapToGrid")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(validation(
+            path,
+            "style paragraph `snapToGrid` must be a boolean",
+        ));
+    }
+    for key in [
+        "spacingBefore",
+        "spacingAfter",
+        "lineSpacing",
+        "indentLeft",
+        "indentRight",
+        "firstLine",
+        "hanging",
+    ] {
+        if let Some(value) = paragraph.get(key) {
+            require_number(value, path, key, false)?;
+        }
+    }
+    validate_line_spacing_extras(
+        paragraph,
+        path,
+        "spacingBeforeLines",
+        "spacingAfterLines",
+        "lineRule",
+    )?;
+    if paragraph.contains_key("firstLine") && paragraph.contains_key("hanging") {
+        return Err(validation(
+            path,
+            "style paragraph `firstLine` and `hanging` are mutually exclusive",
+        ));
     }
     Ok(())
 }
@@ -3890,6 +3988,35 @@ mod tests {
         );
         ir.validate()
             .expect("document settings and metadata should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_complete_line_spacing_properties() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultLineSpacing":{"before":2,"after":6,"line":14,"beforeLines":100,"afterLines":200,"lineRule":"atLeast"},"styles":[{"id":"Dense","name":"Dense","type":"paragraph","paragraph":{"spacingBeforeLines":50,"spacingAfterLines":75,"lineRule":"exact"}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"spacingBefore":3,"spacingAfter":4,"lineSpacing":12,"spacingBeforeLines":125,"spacingAfterLines":250,"lineRule":"auto"},"children":["text"]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_complete_line_spacing_properties() {
+        for (source, expected) in [
+            (
+                r#"{"version":1,"document":{"type":"Document","props":{"defaultLineSpacing":{}},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+                "`defaultLineSpacing` must not be empty",
+            ),
+            (
+                r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"spacingBeforeLines":-1},"children":[]}]}]}}"#,
+                "`spacingBeforeLines` must be a non-negative integer",
+            ),
+            (
+                r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"lineRule":"sometimes"},"children":[]}]}]}}"#,
+                "invalid `lineRule`",
+            ),
+        ] {
+            let error = parse(source).validate().expect_err("fixture must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

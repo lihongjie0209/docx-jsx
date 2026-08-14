@@ -122,15 +122,22 @@ components it uses and default-exports one `Document`.
   Metadata strings, IDs, property names, and variable names must be non-empty;
   maps must not be empty. These values are emitted to the standard core,
   custom-property, styles, and settings package parts.
+  `defaultLineSpacing?: {before?,after?,line?,beforeLines?,afterLines?,lineRule?}`
+  configures default paragraph properties. `before`, `after`, and `line` are
+  finite point values (`before` and `after` are non-negative);
+  `beforeLines` and `afterLines` are non-negative integers in OOXML
+  hundredths-of-a-line units; `lineRule` is `auto`, `atLeast`, or `exact`.
+  The object must configure at least one field.
 - `Document.styles?: StyleDefinition[]` defines reusable Word styles. Every
   definition requires unique non-empty `id`, non-empty `name`, and `type` of
   `paragraph`, `character`, `numbering`, or `table`. Optional metadata is
   `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
   `unhideWhenUsed`. `run?: {font,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden,textBorder}`
   uses the same units and color rules as `Run`.
-  `paragraph?: {align,textAlign,snapToGrid,spacingBefore,spacingAfter,lineSpacing,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
+  `paragraph?: {align,textAlign,snapToGrid,spacingBefore,spacingAfter,lineSpacing,spacingBeforeLines,spacingAfterLines,lineRule,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
   uses point dimensions; `firstLine` and `hanging` are mutually exclusive.
-  `textAlign` is `auto`, `baseline`, `bottom`, `center`, or `top`.
+  `textAlign` is `auto`, `baseline`, `bottom`, `center`, or `top`; line-spacing
+  fields use the same units and `lineRule` values as `Paragraph`.
   `frame` accepts `wrap`, `verticalAnchor`, `horizontalAnchor`, `heightRule`,
   `xAlign`, `yAlign`, `horizontalSpace`, `verticalSpace`, `x`, `y`, `width`,
   and `height`; its dimensions are points and coordinate/alignment pairs are
@@ -156,6 +163,10 @@ components it uses and default-exports one `Document`.
   `spacingBefore?`, `spacingAfter?`, `lineSpacing?`, `indentLeft?`,
   `indentRight?`, `firstLine?`, `hanging?`, `keepNext?`, `keepLines?`,
   `pageBreakBefore?`. `firstLine` and `hanging` are mutually exclusive.
+  Optional `spacingBeforeLines?`, `spacingAfterLines?`, and
+  `lineRule?: "auto" | "atLeast" | "exact"` expose the remaining docx-rs
+  line-spacing controls. The `*Lines` values are non-negative integers in
+  OOXML hundredths-of-a-line units and may be combined with point spacing.
 - `Paragraph`: also accepts `snapToGrid?`, `widowControl?`, `bidi?`,
   `textAlign?: "auto" | "baseline" | "bottom" | "center" | "top"`, signed
   integer `adjustRightIndent?`, six-digit RGB `shading?`, and integer
