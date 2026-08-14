@@ -689,6 +689,7 @@ fn document_props() -> &'static [&'static str] {
         "evenAndOddHeaders",
         "adjustLineHeightInTable",
         "characterSpacingControl",
+        "styles",
     ]
 }
 
@@ -994,7 +995,409 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
             "compressPunctuation",
             "compressPunctuationAndJapaneseKana",
         ],
-    )
+    )?;
+    if let Some(value) = node.props.get("styles") {
+        validate_style_definitions(value, path)?;
+    }
+    Ok(())
+}
+
+fn validate_style_definitions(value: &Value, path: &str) -> Result<()> {
+    let styles = value
+        .as_array()
+        .filter(|styles| !styles.is_empty())
+        .ok_or_else(|| validation(path, "`styles` must be a non-empty array"))?;
+    let mut ids = HashSet::new();
+    for (index, value) in styles.iter().enumerate() {
+        let style_path = format!("{path}/styles[{index}]");
+        let style = value
+            .as_object()
+            .ok_or_else(|| validation(&style_path, "style definition must be an object"))?;
+        validate_object_keys(
+            style,
+            &style_path,
+            &[
+                "id",
+                "name",
+                "type",
+                "basedOn",
+                "next",
+                "link",
+                "quickFormat",
+                "uiPriority",
+                "semiHidden",
+                "unhideWhenUsed",
+                "run",
+                "paragraph",
+            ],
+        )?;
+        for key in ["id", "name", "type"] {
+            if style
+                .get(key)
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                return Err(validation(
+                    &style_path,
+                    format!("style requires non-empty `{key}`"),
+                ));
+            }
+        }
+        let id = style.get("id").and_then(Value::as_str).unwrap_or_default();
+        if !ids.insert(id) {
+            return Err(validation(
+                &style_path,
+                format!("duplicate style id `{id}`"),
+            ));
+        }
+        let style_type = style
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !["paragraph", "character", "numbering", "table"].contains(&style_type) {
+            return Err(validation(
+                &style_path,
+                format!("invalid style type `{style_type}`"),
+            ));
+        }
+        for key in ["basedOn", "next", "link"] {
+            if style
+                .get(key)
+                .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+            {
+                return Err(validation(
+                    &style_path,
+                    format!("`{key}` must be non-empty"),
+                ));
+            }
+        }
+        for key in ["quickFormat", "semiHidden", "unhideWhenUsed"] {
+            if style.get(key).is_some_and(|value| !value.is_boolean()) {
+                return Err(validation(
+                    &style_path,
+                    format!("`{key}` must be a boolean"),
+                ));
+            }
+        }
+        if style
+            .get("uiPriority")
+            .is_some_and(|value| value.as_u64().is_none())
+        {
+            return Err(validation(
+                &style_path,
+                "`uiPriority` must be a non-negative integer",
+            ));
+        }
+        if let Some(run) = style.get("run") {
+            validate_style_run(run, &style_path)?;
+        }
+        if let Some(paragraph) = style.get("paragraph") {
+            validate_style_paragraph(paragraph, &style_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_style_run(value: &Value, path: &str) -> Result<()> {
+    let run = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style `run` must be an object"))?;
+    validate_object_keys(
+        run,
+        path,
+        &[
+            "font",
+            "size",
+            "color",
+            "themeColor",
+            "themeShade",
+            "themeTint",
+            "highlight",
+            "bold",
+            "italic",
+            "underline",
+            "hidden",
+        ],
+    )?;
+    if let Some(value) = run.get("size") {
+        require_number(value, path, "run.size", true)?;
+    }
+    for key in ["font", "highlight"] {
+        if run
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("style run `{key}` must be non-empty"),
+            ));
+        }
+    }
+    if let Some(value) = run.get("color") {
+        validate_rgb(value, path, "style run `color`")?;
+    }
+    validate_theme_fields(run, path)?;
+    validate_map_enum(
+        run,
+        path,
+        "underline",
+        &["single", "double", "dotted", "dash", "wave"],
+    )?;
+    for key in ["bold", "italic", "hidden"] {
+        if run.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(
+                path,
+                format!("style run `{key}` must be a boolean"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
+    let paragraph = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style `paragraph` must be an object"))?;
+    validate_object_keys(
+        paragraph,
+        path,
+        &[
+            "align",
+            "textAlign",
+            "snapToGrid",
+            "spacingBefore",
+            "spacingAfter",
+            "lineSpacing",
+            "indentLeft",
+            "indentRight",
+            "firstLine",
+            "hanging",
+            "hangingChars",
+            "firstLineChars",
+            "outlineLevel",
+            "frame",
+        ],
+    )?;
+    validate_map_enum(
+        paragraph,
+        path,
+        "align",
+        &[
+            "left",
+            "right",
+            "center",
+            "both",
+            "distribute",
+            "start",
+            "end",
+            "justified",
+        ],
+    )?;
+    validate_map_enum(
+        paragraph,
+        path,
+        "textAlign",
+        &["auto", "baseline", "bottom", "center", "top"],
+    )?;
+    if paragraph
+        .get("snapToGrid")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(validation(
+            path,
+            "style paragraph `snapToGrid` must be a boolean",
+        ));
+    }
+    for key in [
+        "spacingBefore",
+        "spacingAfter",
+        "lineSpacing",
+        "indentLeft",
+        "indentRight",
+        "firstLine",
+        "hanging",
+    ] {
+        if let Some(value) = paragraph.get(key) {
+            require_number(value, path, key, false)?;
+        }
+    }
+    if paragraph.contains_key("firstLine") && paragraph.contains_key("hanging") {
+        return Err(validation(
+            path,
+            "style paragraph `firstLine` and `hanging` are mutually exclusive",
+        ));
+    }
+    for key in ["hangingChars", "firstLineChars"] {
+        if paragraph
+            .get(key)
+            .is_some_and(|value| value.as_i64().is_none())
+        {
+            return Err(validation(
+                path,
+                format!("style paragraph `{key}` must be an integer"),
+            ));
+        }
+    }
+    if paragraph
+        .get("outlineLevel")
+        .is_some_and(|value| value.as_u64().is_none_or(|level| level > 9))
+    {
+        return Err(validation(
+            path,
+            "style paragraph `outlineLevel` must be an integer from 0 to 9",
+        ));
+    }
+    if let Some(frame) = paragraph.get("frame") {
+        validate_style_frame(frame, path)?;
+    }
+    Ok(())
+}
+
+fn validate_style_frame(value: &Value, path: &str) -> Result<()> {
+    let frame = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style paragraph `frame` must be an object"))?;
+    validate_object_keys(
+        frame,
+        path,
+        &[
+            "wrap",
+            "verticalAnchor",
+            "horizontalAnchor",
+            "heightRule",
+            "xAlign",
+            "yAlign",
+            "horizontalSpace",
+            "verticalSpace",
+            "x",
+            "y",
+            "width",
+            "height",
+        ],
+    )?;
+    if frame.is_empty() {
+        return Err(validation(
+            path,
+            "style paragraph `frame` must not be empty",
+        ));
+    }
+    validate_map_enum(
+        frame,
+        path,
+        "wrap",
+        &["around", "auto", "none", "notBeside", "through", "tight"],
+    )?;
+    for key in ["verticalAnchor", "horizontalAnchor"] {
+        validate_map_enum(frame, path, key, &["margin", "page", "text"])?;
+    }
+    validate_map_enum(frame, path, "heightRule", &["atLeast", "auto", "exact"])?;
+    validate_map_enum(
+        frame,
+        path,
+        "xAlign",
+        &["center", "inside", "left", "outside", "right"],
+    )?;
+    validate_map_enum(
+        frame,
+        path,
+        "yAlign",
+        &["bottom", "center", "inline", "inside", "outside", "top"],
+    )?;
+    for key in ["horizontalSpace", "verticalSpace", "x", "y"] {
+        if let Some(value) = frame.get(key) {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| validation(path, format!("style frame `{key}` must be finite")))?;
+        }
+    }
+    for key in ["width", "height"] {
+        if let Some(value) = frame.get(key) {
+            require_number(value, path, &format!("frame.{key}"), true)?;
+        }
+    }
+    for (coordinate, alignment) in [("x", "xAlign"), ("y", "yAlign")] {
+        if frame.contains_key(coordinate) && frame.contains_key(alignment) {
+            return Err(validation(
+                path,
+                format!("style frame `{coordinate}` and `{alignment}` are mutually exclusive"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_object_keys(object: &Map<String, Value>, path: &str, allowed: &[&str]) -> Result<()> {
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(validation(path, format!("unknown property `{key}`")));
+    }
+    Ok(())
+}
+
+fn validate_map_enum(
+    object: &Map<String, Value>,
+    path: &str,
+    key: &str,
+    allowed: &[&str],
+) -> Result<()> {
+    let Some(value) = object.get(key) else {
+        return Ok(());
+    };
+    let value = value
+        .as_str()
+        .ok_or_else(|| validation(path, format!("`{key}` must be a string")))?;
+    if !allowed.contains(&value) {
+        return Err(validation(path, format!("invalid `{key}` value `{value}`")));
+    }
+    Ok(())
+}
+
+fn validate_rgb(value: &Value, path: &str, label: &str) -> Result<()> {
+    let color = value
+        .as_str()
+        .ok_or_else(|| validation(path, format!("{label} must be a color string")))?;
+    if color.len() != 6 || !color.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(validation(path, format!("{label} must be six-digit RGB")));
+    }
+    Ok(())
+}
+
+fn validate_theme_fields(object: &Map<String, Value>, path: &str) -> Result<()> {
+    validate_map_enum(
+        object,
+        path,
+        "themeColor",
+        &[
+            "dark1",
+            "light1",
+            "dark2",
+            "light2",
+            "accent1",
+            "accent2",
+            "accent3",
+            "accent4",
+            "accent5",
+            "accent6",
+            "hyperlink",
+            "followedHyperlink",
+            "none",
+            "background1",
+            "text1",
+            "background2",
+            "text2",
+        ],
+    )?;
+    for key in ["themeShade", "themeTint"] {
+        if let Some(value) = object.get(key) {
+            let modifier = value
+                .as_str()
+                .ok_or_else(|| validation(path, format!("`{key}` must be a hex byte")))?;
+            if modifier.len() != 2 || !modifier.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(validation(path, format!("`{key}` must be a hex byte")));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_string_map(value: &Value, path: &str, key: &str) -> Result<()> {
@@ -2965,6 +3368,50 @@ mod tests {
         );
         ir.validate()
             .expect("document settings and metadata should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_custom_style_definitions() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single"},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        ir.validate().expect("custom style should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_custom_style_definitions() {
+        for (styles, expected) in [
+            (r"[]", "non-empty array"),
+            (r"[{}]", "requires non-empty `id`"),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph"},{"id":"A","name":"B","type":"character"}]"#,
+                "duplicate style id",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"page"}]"#,
+                "invalid style type",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","run":{"color":"red"}}]"#,
+                "six-digit RGB",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"firstLine":1,"hanging":1}}]"#,
+                "mutually exclusive",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"frame":{"x":1,"xAlign":"left"}}}]"#,
+                "mutually exclusive",
+            ),
+        ] {
+            let source = format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{"styles":{styles}}},"children":[{{"type":"Section","props":{{}},"children":[]}}]}}}}"#
+            );
+            let error = parse(&source)
+                .validate()
+                .expect_err("fixture should be rejected");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

@@ -10,11 +10,11 @@ use docx_rs::{
     NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType,
     PageSize, Paragraph, Pic, PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo,
     Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start,
-    StructuredDataTag, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType,
-    TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
+    StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table,
+    TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
     TableCellBorderPosition, TableCellBorders, TableCellMargins, TableLayoutType, TableOfContents,
-    TablePositionProperty, TableRow, TextBorder, TextDirectionType, ThemeColor, VAlignType,
-    VMergeType, VertAlignType, WidthType,
+    TablePositionProperty, TableRow, TextAlignmentType, TextBorder, TextDirectionType, ThemeColor,
+    VAlignType, VMergeType, VertAlignType, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -73,6 +73,11 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
         }
     }
     docx = docx.settings(compile_document_settings(&ir.document.props)?);
+    if let Some(styles) = ir.document.props.get("styles").and_then(Value::as_array) {
+        for (index, value) in styles.iter().enumerate() {
+            docx = docx.add_style(compile_style(value, &format!("Document/styles[{index}]"))?);
+        }
+    }
     let mut context = CompileContext::default();
     for (index, child) in ir.document.children.iter().enumerate() {
         let Child::Node(section_node) = child else {
@@ -174,6 +179,244 @@ fn compile_document_settings(props: &Map<String, Value>) -> Result<Settings> {
         });
     }
     Ok(settings)
+}
+
+fn compile_style(value: &Value, path: &str) -> Result<Style> {
+    let definition = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style definition must be an object"))?;
+    let id = required_string(definition, "id", path)?;
+    let style_type = match required_string(definition, "type", path)? {
+        "paragraph" => StyleType::Paragraph,
+        "character" => StyleType::Character,
+        "numbering" => StyleType::Numbering,
+        "table" => StyleType::Table,
+        value => return Err(validation(path, format!("invalid style type `{value}`"))),
+    };
+    let mut style = Style::new(id, style_type).name(required_string(definition, "name", path)?);
+    if let Some(value) = string_prop(definition, "basedOn", path)? {
+        style = style.based_on(value);
+    }
+    if let Some(value) = string_prop(definition, "next", path)? {
+        style = style.next(value);
+    }
+    if let Some(value) = string_prop(definition, "link", path)? {
+        style = style.link(value);
+    }
+    if let Some(value) = bool_prop(definition, "quickFormat", path)? {
+        style = style.q_format(value);
+    }
+    if let Some(value) = definition.get("uiPriority") {
+        style = style.ui_priority(value_to_usize(value, path, "uiPriority")?);
+    }
+    if bool_prop(definition, "semiHidden", path)? == Some(true) {
+        style = style.semi_hidden();
+    }
+    if bool_prop(definition, "unhideWhenUsed", path)? == Some(true) {
+        style = style.unhide_when_used();
+    }
+    if let Some(run) = definition.get("run") {
+        style = compile_style_run(style, run, path)?;
+    }
+    if let Some(paragraph) = definition.get("paragraph") {
+        style = compile_style_paragraph(style, paragraph, path)?;
+    }
+    Ok(style)
+}
+
+fn compile_style_run(mut style: Style, value: &Value, path: &str) -> Result<Style> {
+    let run = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style `run` must be an object"))?;
+    if let Some(font) = string_prop(run, "font", path)? {
+        style = style.fonts(
+            RunFonts::new()
+                .ascii(font)
+                .hi_ansi(font)
+                .east_asia(font)
+                .cs(font),
+        );
+    }
+    if let Some(size) = number_prop(run, "size", path)? {
+        style = style.size(to_half_points(size, path)?);
+    }
+    if let Some(color) = string_prop(run, "color", path)? {
+        style = style.color(color.to_ascii_uppercase());
+    }
+    if let Some(value) = string_prop(run, "themeColor", path)? {
+        style = style.theme_color(theme_color(value, path)?);
+    }
+    if let Some(value) = string_prop(run, "themeShade", path)? {
+        style = style.theme_shade(value.to_ascii_uppercase());
+    }
+    if let Some(value) = string_prop(run, "themeTint", path)? {
+        style = style.theme_tint(value.to_ascii_uppercase());
+    }
+    if let Some(value) = string_prop(run, "highlight", path)? {
+        style = style.highlight(value);
+    }
+    if bool_prop(run, "bold", path)? == Some(true) {
+        style = style.bold();
+    }
+    if bool_prop(run, "italic", path)? == Some(true) {
+        style = style.italic();
+    }
+    if let Some(value) = string_prop(run, "underline", path)? {
+        style = style.underline(value);
+    }
+    if bool_prop(run, "hidden", path)? == Some(true) {
+        style = style.vanish();
+    }
+    Ok(style)
+}
+
+fn compile_style_paragraph(mut style: Style, value: &Value, path: &str) -> Result<Style> {
+    let paragraph = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style `paragraph` must be an object"))?;
+    if let Some(value) = string_prop(paragraph, "align", path)? {
+        style = style.align(match value {
+            "right" => AlignmentType::Right,
+            "center" => AlignmentType::Center,
+            "both" => AlignmentType::Both,
+            "distribute" => AlignmentType::Distribute,
+            "start" => AlignmentType::Start,
+            "end" => AlignmentType::End,
+            "justified" => AlignmentType::Justified,
+            _ => AlignmentType::Left,
+        });
+    }
+    if let Some(value) = string_prop(paragraph, "textAlign", path)? {
+        style = style.text_alignment(match value {
+            "baseline" => TextAlignmentType::Baseline,
+            "bottom" => TextAlignmentType::Bottom,
+            "center" => TextAlignmentType::Center,
+            "top" => TextAlignmentType::Top,
+            _ => TextAlignmentType::Auto,
+        });
+    }
+    if let Some(value) = bool_prop(paragraph, "snapToGrid", path)? {
+        style = style.snap_to_grid(value);
+    }
+    style = compile_style_spacing(style, paragraph, path)?;
+    style = compile_style_indent(style, paragraph, path)?;
+    for (key, first_line) in [("hangingChars", false), ("firstLineChars", true)] {
+        if let Some(value) = paragraph.get(key) {
+            let value = value_to_i32(value, path, key)?;
+            style = if first_line {
+                style.first_line_chars(value)
+            } else {
+                style.hanging_chars(value)
+            };
+        }
+    }
+    if let Some(value) = paragraph.get("outlineLevel") {
+        style = style.outline_lvl(value_to_usize(value, path, "outlineLevel")?);
+    }
+    if let Some(frame) = paragraph.get("frame") {
+        style = compile_style_frame(style, frame, path)?;
+    }
+    Ok(style)
+}
+
+fn compile_style_spacing(
+    mut style: Style,
+    paragraph: &Map<String, Value>,
+    path: &str,
+) -> Result<Style> {
+    let mut spacing = LineSpacing::new();
+    let mut present = false;
+    if let Some(value) = number_prop(paragraph, "spacingBefore", path)? {
+        spacing = spacing.before(to_twips_u32(value, path)?);
+        present = true;
+    }
+    if let Some(value) = number_prop(paragraph, "spacingAfter", path)? {
+        spacing = spacing.after(to_twips_u32(value, path)?);
+        present = true;
+    }
+    if let Some(value) = number_prop(paragraph, "lineSpacing", path)? {
+        spacing = spacing.line(to_twips_i32(value, path)?);
+        present = true;
+    }
+    if present {
+        style = style.line_spacing(spacing);
+    }
+    Ok(style)
+}
+
+fn compile_style_indent(
+    mut style: Style,
+    paragraph: &Map<String, Value>,
+    path: &str,
+) -> Result<Style> {
+    let left = optional_twips_i32(paragraph, "indentLeft", path)?;
+    let right = optional_twips_i32(paragraph, "indentRight", path)?;
+    let special = if let Some(value) = number_prop(paragraph, "firstLine", path)? {
+        Some(SpecialIndentType::FirstLine(to_twips_i32(value, path)?))
+    } else if let Some(value) = number_prop(paragraph, "hanging", path)? {
+        Some(SpecialIndentType::Hanging(to_twips_i32(value, path)?))
+    } else {
+        None
+    };
+    if left.is_some() || right.is_some() || special.is_some() {
+        style = style.indent(left, special, right, None);
+    }
+    Ok(style)
+}
+
+fn compile_style_frame(mut style: Style, value: &Value, path: &str) -> Result<Style> {
+    let frame = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style paragraph `frame` must be an object"))?;
+    if let Some(value) = string_prop(frame, "wrap", path)? {
+        style = style.wrap(value);
+    }
+    if let Some(value) = string_prop(frame, "verticalAnchor", path)? {
+        style = style.v_anchor(value);
+    }
+    if let Some(value) = string_prop(frame, "horizontalAnchor", path)? {
+        style = style.h_anchor(value);
+    }
+    if let Some(value) = string_prop(frame, "heightRule", path)? {
+        style = style.h_rule(value);
+    }
+    if let Some(value) = string_prop(frame, "xAlign", path)? {
+        style = style.x_align(value);
+    }
+    if let Some(value) = string_prop(frame, "yAlign", path)? {
+        style = style.y_align(value);
+    }
+    for (key, apply) in [
+        ("horizontalSpace", Style::h_space as fn(Style, i32) -> Style),
+        ("verticalSpace", Style::v_space),
+        ("x", Style::frame_x),
+        ("y", Style::frame_y),
+    ] {
+        if let Some(value) = number_prop(frame, key, path)? {
+            style = apply(style, to_twips_i32(value, path)?);
+        }
+    }
+    if let Some(value) = number_prop(frame, "width", path)? {
+        style = style.frame_width(to_twips_u32(value, path)?);
+    }
+    if let Some(value) = number_prop(frame, "height", path)? {
+        style = style.frame_height(to_twips_u32(value, path)?);
+    }
+    Ok(style)
+}
+
+fn value_to_i32(value: &Value, path: &str, key: &str) -> Result<i32> {
+    value
+        .as_i64()
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| validation(path, format!("`{key}` is out of range")))
+}
+
+fn value_to_usize(value: &Value, path: &str, key: &str) -> Result<usize> {
+    value
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| validation(path, format!("`{key}` is out of range")))
 }
 
 fn embed_ir_manifest(bytes: Vec<u8>, ir: &IrEnvelope) -> Result<Vec<u8>> {
@@ -2672,6 +2915,41 @@ mod tests {
         assert!(settings.contains("<w:adjustLineHeightInTable />"));
         assert!(settings.contains(r#"w:characterSpacingControl w:val="compressPunctuation""#));
         assert!(styles.contains(r#"<w:spacing w:val="10" />"#));
+    }
+
+    #[test]
+    fn compile_should_render_custom_style_definition() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":false,"uiPriority":5,"semiHidden":true,"unhideWhenUsed":true,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":true,"underline":"single","hidden":true},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"hangingChars":20,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles should exist")
+            .read_to_string(&mut styles)
+            .expect("styles should be UTF-8");
+
+        assert!(styles.contains(r#"w:type="paragraph" w:styleId="ReportTitle""#));
+        assert!(styles.contains(r#"<w:name w:val="Report Title" />"#));
+        assert!(styles.contains(r#"w:ascii="Noto Sans CJK SC""#));
+        assert!(styles.contains(r#"w:val="336699" w:themeColor="accent1" w:themeTint="99""#));
+        assert!(styles.contains("<w:b />") && styles.contains("<w:i />"));
+        assert!(styles.contains(r#"<w:snapToGrid w:val="false" />"#));
+        assert!(styles.contains(r#"w:after="240""#));
+        assert!(styles.contains(r#"w:left="120" w:right="0" w:firstLine="40""#));
+        assert!(styles.contains(r#"w:wrap="around""#) && styles.contains(r#"w:y="240""#));
+        assert!(styles.contains(r#"<w:uiPriority w:val="5" />"#));
+        assert!(styles.contains("<w:semiHidden />") && styles.contains("<w:unhideWhenUsed />"));
+        let report_style = styles
+            .split(r#"w:styleId="ReportTitle""#)
+            .nth(1)
+            .and_then(|value| value.split("</w:style>").next())
+            .expect("ReportTitle style body should exist");
+        assert!(!report_style.contains("<w:qFormat />"));
     }
 
     #[test]

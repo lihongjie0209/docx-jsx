@@ -122,6 +122,19 @@ components it uses and default-exports one `Document`.
   Metadata strings, IDs, property names, and variable names must be non-empty;
   maps must not be empty. These values are emitted to the standard core,
   custom-property, styles, and settings package parts.
+- `Document.styles?: StyleDefinition[]` defines reusable Word styles. Every
+  definition requires unique non-empty `id`, non-empty `name`, and `type` of
+  `paragraph`, `character`, `numbering`, or `table`. Optional metadata is
+  `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
+  `unhideWhenUsed`. `run?: {font,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden}`
+  uses the same units and color rules as `Run`.
+  `paragraph?: {align,textAlign,snapToGrid,spacingBefore,spacingAfter,lineSpacing,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
+  uses point dimensions; `firstLine` and `hanging` are mutually exclusive.
+  `textAlign` is `auto`, `baseline`, `bottom`, `center`, or `top`.
+  `frame` accepts `wrap`, `verticalAnchor`, `horizontalAnchor`, `heightRule`,
+  `xAlign`, `yAlign`, `horizontalSpace`, `verticalSpace`, `x`, `y`, `width`,
+  and `height`; its dimensions are points and coordinate/alignment pairs are
+  mutually exclusive.
 - `Section`: `pageSize?: "A4" | "Letter" | {width,height}`,
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
