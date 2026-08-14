@@ -12,7 +12,7 @@ tests, CLI round-trip coverage, and specification text.
 | Table | width, alignment, layout, grid, borders, style, indentation, cell margins, floating position | remaining public property combinations |
 | TableRow | height/rule, cant-split, inserted/deleted revisions | before/after grid widths (upstream serializer currently drops them) |
 | TableCell | width, span, vertical alignment/merge, text direction, margins, shading, borders, structured data tags, table of contents | cell indexes |
-| Document | defaults, sections, numbering, comments, footnotes, indexes | styles, settings, themes, custom properties, document protection |
+| Document | font/size/character-spacing defaults, sections, numbering, comments, footnotes, indexes, created/modified metadata, string custom properties, document ID/variables, default tab stop, odd/even headers, table line-height compatibility, character-spacing control | custom styles, themes, remaining core properties (no public setters), document protection |
 
 Reader-only docx-rs APIs and constructors marked private by docx-rs are not
 counted as build coverage until the backend exposes a public writer API.

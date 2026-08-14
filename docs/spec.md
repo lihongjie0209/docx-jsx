@@ -112,7 +112,16 @@ to structural OOXML conversion; unsupported structures are reported as errors
 instead of being silently discarded. The generated module imports only the
 components it uses and default-exports one `Document`.
 
-- `Document`: `defaultFont?: string`, `defaultSize?: number`.
+- `Document`: `defaultFont?: string`, positive `defaultSize?: number`, signed
+  `defaultCharacterSpacing?: number` (points), `createdAt?: string`,
+  `updatedAt?: string`, `customProperties?: Record<string,string>`,
+  `documentId?: string`, positive `defaultTabStop?: number` (points),
+  `documentVariables?: Record<string,string>`, `evenAndOddHeaders?: boolean`,
+  `adjustLineHeightInTable?: boolean`, and
+  `characterSpacingControl?: "doNotCompress" | "compressPunctuation" | "compressPunctuationAndJapaneseKana"`.
+  Metadata strings, IDs, property names, and variable names must be non-empty;
+  maps must not be empty. These values are emitted to the standard core,
+  custom-property, styles, and settings package parts.
 - `Section`: `pageSize?: "A4" | "Letter" | {width,height}`,
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,

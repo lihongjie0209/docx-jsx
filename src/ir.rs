@@ -568,7 +568,7 @@ fn validate_props(node: &Node, path: &str) -> Result<()> {
 
 fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
     match kind {
-        NodeKind::Document => &["defaultFont", "defaultSize"],
+        NodeKind::Document => document_props(),
         NodeKind::Section => section_props(),
         NodeKind::Paragraph => paragraph_props(),
         NodeKind::Heading => heading_props(),
@@ -672,6 +672,23 @@ fn section_props() -> &'static [&'static str] {
         "textDirection",
         "documentGrid",
         "pageNumbering",
+    ]
+}
+
+fn document_props() -> &'static [&'static str] {
+    &[
+        "defaultFont",
+        "defaultSize",
+        "defaultCharacterSpacing",
+        "createdAt",
+        "updatedAt",
+        "customProperties",
+        "documentId",
+        "defaultTabStop",
+        "documentVariables",
+        "evenAndOddHeaders",
+        "adjustLineHeightInTable",
+        "characterSpacingControl",
     ]
 }
 
@@ -921,6 +938,7 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
 }
 
 fn validate_advanced_semantics(node: &Node, path: &str) -> Result<()> {
+    validate_document_semantics(node, path)?;
     validate_section_semantics(node, path)?;
     validate_run_defaults(node, path)?;
     validate_field_semantics(node, path)?;
@@ -930,6 +948,72 @@ fn validate_advanced_semantics(node: &Node, path: &str) -> Result<()> {
     validate_annotation_semantics(node, path)?;
     validate_table_semantics(node, path)?;
     validate_structure_semantics(node, path)
+}
+
+fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
+    if node.kind != NodeKind::Document {
+        return Ok(());
+    }
+    if let Some(value) = node.props.get("defaultCharacterSpacing") {
+        value
+            .as_f64()
+            .filter(|number| number.is_finite())
+            .ok_or_else(|| validation(path, "`defaultCharacterSpacing` must be finite"))?;
+    }
+    if let Some(value) = node.props.get("defaultTabStop") {
+        require_number(value, path, "defaultTabStop", true)?;
+    }
+    for key in ["createdAt", "updatedAt", "documentId"] {
+        if node
+            .props
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` must be a non-empty string"),
+            ));
+        }
+    }
+    for key in ["customProperties", "documentVariables"] {
+        if let Some(value) = node.props.get(key) {
+            validate_string_map(value, path, key)?;
+        }
+    }
+    for key in ["evenAndOddHeaders", "adjustLineHeightInTable"] {
+        if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(path, format!("`{key}` must be a boolean")));
+        }
+    }
+    validate_optional_enum_prop(
+        node,
+        path,
+        "characterSpacingControl",
+        &[
+            "doNotCompress",
+            "compressPunctuation",
+            "compressPunctuationAndJapaneseKana",
+        ],
+    )
+}
+
+fn validate_string_map(value: &Value, path: &str, key: &str) -> Result<()> {
+    let entries = value
+        .as_object()
+        .ok_or_else(|| validation(path, format!("`{key}` must be an object")))?;
+    if entries.is_empty() {
+        return Err(validation(path, format!("`{key}` must not be empty")));
+    }
+    if entries.keys().any(String::is_empty) {
+        return Err(validation(path, format!("`{key}` names must be non-empty")));
+    }
+    if entries.values().any(|value| !value.is_string()) {
+        return Err(validation(
+            path,
+            format!("`{key}` must contain string values"),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_section_semantics(node: &Node, path: &str) -> Result<()> {
@@ -2872,6 +2956,42 @@ mod tests {
         );
         ir.validate()
             .expect("section configuration should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_document_settings_and_metadata() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        ir.validate()
+            .expect("document settings and metadata should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_document_settings_and_metadata() {
+        for (props, expected) in [
+            (r#""createdAt":"""#, "createdAt"),
+            (r#""customProperties":{}"#, "must not be empty"),
+            (r#""customProperties":{"Project":1}"#, "string values"),
+            (
+                r#""documentVariables":{"":"Ada"}"#,
+                "names must be non-empty",
+            ),
+            (r#""defaultTabStop":0"#, "positive"),
+            (r#""evenAndOddHeaders":"yes""#, "boolean"),
+            (
+                r#""characterSpacingControl":"compressAll""#,
+                "characterSpacingControl",
+            ),
+        ] {
+            let source = format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{{props}}},"children":[{{"type":"Section","props":{{}},"children":[]}}]}}}}"#
+            );
+            let error = parse(&source)
+                .validate()
+                .expect_err("fixture should be rejected");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

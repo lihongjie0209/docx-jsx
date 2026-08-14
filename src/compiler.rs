@@ -3,17 +3,18 @@ use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use docx_rs::{
-    AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, Comment, DataBinding,
-    Delete, DocGrid, DocGridType, Docx, FieldCharType, Footer, Footnote, Header, HeightRule,
-    Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC,
-    Level, LevelJc, LevelText, LineSpacing, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering,
-    NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType, PageSize, Paragraph, Pic,
-    PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo, Run, RunFonts, Section,
-    Shading, ShdType, SpecialIndentType, Start, StructuredDataTag, Sym, Tab as DocxTab,
-    TabLeaderType, TabValueType, Table, TableAlignmentType, TableBorder, TableBorderPosition,
-    TableBorders, TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders,
-    TableCellMargins, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
-    TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType, VertAlignType, WidthType,
+    AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, CharacterSpacingValues,
+    Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, FieldCharType, Footer, Footnote,
+    Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC,
+    InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing, MoveFrom, MoveTo, NumPages,
+    NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType,
+    PageSize, Paragraph, Pic, PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo,
+    Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start,
+    StructuredDataTag, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType,
+    TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
+    TableCellBorderPosition, TableCellBorders, TableCellMargins, TableLayoutType, TableOfContents,
+    TablePositionProperty, TableRow, TextBorder, TextDirectionType, ThemeColor, VAlignType,
+    VMergeType, VertAlignType, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -54,6 +55,24 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
     if let Some(size) = number_prop(&ir.document.props, "defaultSize", "Document")? {
         docx = docx.default_size(to_half_points(size, "Document/defaultSize")?);
     }
+    if let Some(spacing) = number_prop(&ir.document.props, "defaultCharacterSpacing", "Document")? {
+        docx = docx.default_spacing(to_twips_i32(spacing, "Document/defaultCharacterSpacing")?);
+    }
+    if let Some(created_at) = string_prop(&ir.document.props, "createdAt", "Document")? {
+        docx = docx.created_at(created_at);
+    }
+    if let Some(updated_at) = string_prop(&ir.document.props, "updatedAt", "Document")? {
+        docx = docx.updated_at(updated_at);
+    }
+    if let Some(properties) = object_prop(&ir.document.props, "customProperties", "Document")? {
+        for (name, value) in properties {
+            let value = value.as_str().ok_or_else(|| {
+                validation("Document", "`customProperties` values must be strings")
+            })?;
+            docx = docx.custom_property(name, value);
+        }
+    }
+    docx = docx.settings(compile_document_settings(&ir.document.props)?);
     let mut context = CompileContext::default();
     for (index, child) in ir.document.children.iter().enumerate() {
         let Child::Node(section_node) = child else {
@@ -111,6 +130,50 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
         .map_err(|error| Error::Compile(error.to_string()))?;
     let bytes = patch_external_hyperlink_relationships(cursor.into_inner(), &ir.document)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn compile_document_settings(props: &Map<String, Value>) -> Result<Settings> {
+    let path = "Document";
+    let mut settings = Settings::new();
+    if let Some(document_id) = string_prop(props, "documentId", path)? {
+        settings = settings.doc_id(document_id);
+    }
+    if let Some(tab_stop) = number_prop(props, "defaultTabStop", path)? {
+        settings = settings.default_tab_stop(to_twips_usize(tab_stop, path)?);
+    }
+    if let Some(variables) = object_prop(props, "documentVariables", path)? {
+        for (name, value) in variables {
+            let value = value
+                .as_str()
+                .ok_or_else(|| validation(path, "`documentVariables` values must be strings"))?;
+            settings = settings.add_doc_var(name, value);
+        }
+    }
+    if bool_prop(props, "evenAndOddHeaders", path)? == Some(true) {
+        settings = settings.even_and_odd_headers();
+    }
+    if bool_prop(props, "adjustLineHeightInTable", path)? == Some(true) {
+        settings = settings.adjust_line_height_in_table();
+    }
+    if let Some(value) = optional_enum(
+        props,
+        "characterSpacingControl",
+        &[
+            "doNotCompress",
+            "compressPunctuation",
+            "compressPunctuationAndJapaneseKana",
+        ],
+        path,
+    )? {
+        settings = settings.character_spacing_control(match value {
+            "compressPunctuation" => CharacterSpacingValues::CompressPunctuation,
+            "compressPunctuationAndJapaneseKana" => {
+                CharacterSpacingValues::CompressPunctuationAndJapaneseKana
+            }
+            _ => CharacterSpacingValues::DoNotCompress,
+        });
+    }
+    Ok(settings)
 }
 
 fn embed_ir_manifest(bytes: Vec<u8>, ir: &IrEnvelope) -> Result<Vec<u8>> {
@@ -2372,6 +2435,21 @@ fn string_prop<'a>(
         .transpose()
 }
 
+fn object_prop<'a>(
+    props: &'a Map<String, Value>,
+    key: &str,
+    path: &str,
+) -> Result<Option<&'a Map<String, Value>>> {
+    props
+        .get(key)
+        .map(|value| {
+            value
+                .as_object()
+                .ok_or_else(|| validation(path, format!("`{key}` must be an object")))
+        })
+        .transpose()
+}
+
 fn required_number(props: &Map<String, Value>, key: &str, path: &str) -> Result<f64> {
     number_prop(props, key, path)?.ok_or_else(|| validation(path, format!("missing `{key}`")))
 }
@@ -2549,6 +2627,51 @@ mod tests {
             r#"<w:docGrid w:type="linesAndChars" w:linePitch="360" w:charSpace="-10" />"#
         ));
         assert!(document.contains(r#"<w:pgNumType w:start="3" w:chapStyle="1" />"#));
+    }
+
+    #[test]
+    fn compile_should_render_document_settings_and_metadata() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut core = String::new();
+        archive
+            .by_name("docProps/core.xml")
+            .expect("core properties should exist")
+            .read_to_string(&mut core)
+            .expect("core properties should be UTF-8");
+        let mut custom = String::new();
+        archive
+            .by_name("docProps/custom.xml")
+            .expect("custom properties should exist")
+            .read_to_string(&mut custom)
+            .expect("custom properties should be UTF-8");
+        let mut settings = String::new();
+        archive
+            .by_name("word/settings.xml")
+            .expect("settings should exist")
+            .read_to_string(&mut settings)
+            .expect("settings should be UTF-8");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles should exist")
+            .read_to_string(&mut styles)
+            .expect("styles should be UTF-8");
+
+        assert!(core.contains("2026-08-14T00:00:00Z") && core.contains("2026-08-15T00:00:00Z"));
+        assert!(custom.contains(r#"name="Project""#) && custom.contains("Apollo"));
+        assert!(settings.contains(r#"w:defaultTabStop w:val="720""#));
+        assert!(settings.contains(r#"w15:docId w15:val="{01234567-89AB-CDEF-0123-456789ABCDEF}""#));
+        assert!(settings.contains(r#"w:name="Customer" w:val="Ada""#));
+        assert!(settings.contains("<w:evenAndOddHeaders />"));
+        assert!(settings.contains("<w:adjustLineHeightInTable />"));
+        assert!(settings.contains(r#"w:characterSpacingControl w:val="compressPunctuation""#));
+        assert!(styles.contains(r#"<w:spacing w:val="10" />"#));
     }
 
     #[test]
