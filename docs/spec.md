@@ -158,6 +158,14 @@ components it uses and default-exports one `Document`.
   `width`/`widthPercent` are mutually exclusive. `run.textBorder` reuses the
   `BorderedText` object shape. `table` and `cell` are rejected on non-table
   styles because docx-rs would otherwise omit them during serialization.
+  `basedOn` is emitted as native Word style inheritance. A locally declared
+  base must have the same type as the derived style, and inheritance cycles
+  are rejected. `Paragraph`, `Heading`, `Caption`, and `Index` may reference a
+  paragraph style; `Run` may reference a character style; `Table` may reference
+  a table style. References to locally declared styles are type-checked.
+  References not declared in `Document.styles` remain legal so built-in styles
+  from Word templates can be used. Reverse conversion preserves style ids and
+  definitions rather than expanding inherited properties onto every node.
 - `Section`: `pageSize?: "A4" | "Letter" | {width,height}`,
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,

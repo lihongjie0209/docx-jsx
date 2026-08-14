@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{Error, Result};
 
@@ -280,8 +280,114 @@ impl IrEnvelope {
             return Err(validation("Document", "root must be Document"));
         }
         validate_node(&self.document, "Document")?;
-        validate_bookmark_references(&self.document)
+        validate_bookmark_references(&self.document)?;
+        validate_style_relationships(&self.document)
     }
+}
+
+fn validate_style_relationships(root: &Node) -> Result<()> {
+    let Some(styles) = root.props.get("styles").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let mut types = HashMap::new();
+    let mut based_on = HashMap::new();
+    for style in styles {
+        let Some(style) = style.as_object() else {
+            continue;
+        };
+        let (Some(id), Some(style_type)) = (
+            style.get("id").and_then(Value::as_str),
+            style.get("type").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        types.insert(id, style_type);
+        if let Some(base) = style.get("basedOn").and_then(Value::as_str) {
+            based_on.insert(id, base);
+            if let Some(base_type) = types.get(base).copied() {
+                ensure_matching_style_types(id, style_type, base, base_type)?;
+            }
+        }
+    }
+    // A base style can be declared after its derived style.
+    for (&id, &base) in &based_on {
+        if let (Some(style_type), Some(base_type)) = (types.get(id), types.get(base)) {
+            ensure_matching_style_types(id, style_type, base, base_type)?;
+        }
+    }
+    for &start in types.keys() {
+        let mut seen = HashSet::new();
+        let mut current = start;
+        while let Some(&base) = based_on.get(current) {
+            if !seen.insert(current) {
+                return Err(validation(
+                    "Document/styles",
+                    format!(
+                        "style inheritance cycle includes `{current}`; remove or redirect one `basedOn` reference"
+                    ),
+                ));
+            }
+            if !types.contains_key(base) {
+                break;
+            }
+            current = base;
+        }
+    }
+
+    validate_style_references(root, "Document", &types)
+}
+
+fn validate_style_references(node: &Node, path: &str, types: &HashMap<&str, &str>) -> Result<()> {
+    if let Some(style) = node.props.get("style").and_then(Value::as_str)
+        && let Some(actual) = types.get(style).copied()
+    {
+        let expected = match node.kind {
+            NodeKind::Run => Some("character"),
+            NodeKind::Table => Some("table"),
+            NodeKind::Paragraph | NodeKind::Heading | NodeKind::Caption | NodeKind::Index => {
+                Some("paragraph")
+            }
+            _ => None,
+        };
+        if let Some(expected) = expected
+            && actual != expected
+        {
+            return Err(validation(
+                path,
+                format!(
+                    "{} `style` requires a {expected} style, but `{style}` is {actual}; reference a matching style id",
+                    node.kind.name()
+                ),
+            ));
+        }
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        if let Child::Node(child) = child {
+            validate_style_references(
+                child,
+                &format!("{path}/{}[{index}]", child.kind.name()),
+                types,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_matching_style_types(
+    id: &str,
+    style_type: &str,
+    base: &str,
+    base_type: &str,
+) -> Result<()> {
+    if style_type == base_type {
+        return Ok(());
+    }
+    Err(validation(
+        "Document/styles",
+        format!(
+            "style `{id}` and its base `{base}` must have the same type; use a {style_type} base style"
+        ),
+    ))
 }
 
 fn validate_bookmark_references(root: &Node) -> Result<()> {
@@ -4444,5 +4550,45 @@ mod tests {
                 .expect_err("fixture should be rejected");
             assert!(error.to_string().contains(expected), "{error}");
         }
+    }
+
+    #[test]
+    fn validate_should_accept_typed_style_references_and_inheritance() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"BodyBase","name":"Body Base","type":"paragraph","paragraph":{"spacingAfter":6}},{"id":"Body","name":"Body","type":"paragraph","basedOn":"BodyBase","run":{"font":"Arial"}},{"id":"Emphasis","name":"Emphasis","type":"character","run":{"italic":true}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"layout":"fixed"}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"Body"},"children":[{"type":"Run","props":{"style":"Emphasis"},"children":["text"]}]},{"type":"Table","props":{"style":"ReportTable"},"children":[]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_style_reference_type_mismatch() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Emphasis","name":"Emphasis","type":"character"}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"Emphasis"},"children":[]}]}]}}"#,
+        );
+        let error = ir.validate().expect_err("style type mismatch must fail");
+        assert!(
+            error.to_string().contains("requires a paragraph style"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_cyclic_style_inheritance() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"A","name":"A","type":"paragraph","basedOn":"B"},{"id":"B","name":"B","type":"paragraph","basedOn":"A"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        let error = ir.validate().expect_err("style cycle must fail");
+        assert!(error.to_string().contains("inheritance cycle"), "{error}");
+    }
+
+    #[test]
+    fn validate_should_reject_inherited_style_type_mismatch() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","basedOn":"Emphasis"},{"id":"Emphasis","name":"Emphasis","type":"character"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("inherited style type mismatch must fail");
+        assert!(error.to_string().contains("same type"), "{error}");
     }
 }

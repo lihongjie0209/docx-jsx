@@ -33,6 +33,23 @@ Reverse a generated document back to deterministic JSX:
 docx-jsx reverse report.docx -o report.jsx
 ```
 
+Define inherited Word styles once and reference them to avoid repeating
+formatting on every component:
+
+```tsx
+const styles = [
+  { id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: { spacingAfter: 6 } },
+  { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", run: { font: "Arial" } },
+  { id: "Emphasis", name: "Emphasis", type: "character", run: { italic: true } },
+];
+
+export default (
+  <Document styles={styles}>
+    <Section><Paragraph style="Body"><Run style="Emphasis">Reusable formatting</Run></Paragraph></Section>
+  </Document>
+);
+```
+
 Print the complete Agent-readable contract or its machine-readable IR schema:
 
 ```sh
@@ -48,7 +65,8 @@ Windows.
 | Area | Status | Highlights |
 | --- | --- | --- |
 | Executable JSX/TSX | Supported | Embedded V8, local ESM imports, async components, JSON data injection |
-| Document defaults and metadata | Supported | Fonts, spacing, settings, properties, variables, custom styles, Web Extensions and Custom XML |
+| Styles and inheritance | Supported | Paragraph/character/numbering/table styles, native `basedOn` inheritance, typed references and cycle detection |
+| Document defaults and metadata | Supported | Fonts, spacing, settings, properties, variables, Web Extensions and Custom XML |
 | Sections | Supported | Page size/orientation/margins, headers/footers, title pages, text direction, document grid, page numbering |
 | Paragraphs and headings | Supported | Full line spacing, indentation, frames, borders, IDs, tabs, bidi, outline and tracked format changes |
 | Runs and semantic text | Supported | Fonts, themes, emphasis, effects, borders/shading, symbols, breaks, revisions and semantic wrappers |
