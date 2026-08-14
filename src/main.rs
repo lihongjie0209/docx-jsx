@@ -32,10 +32,21 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Validate JSX/TSX without producing a DOCX file.
+    Validate(ValidateArgs),
     /// Convert a DOCX document to recompilable JSX.
     Reverse(ReverseArgs),
     /// Print the component specification for agents and tooling.
     Spec(SpecArgs),
+}
+
+#[derive(Debug, Args)]
+struct ValidateArgs {
+    /// Input .jsx or .tsx module.
+    input: PathBuf,
+    /// JSON file passed to a default-exported root function.
+    #[arg(long)]
+    data: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -53,7 +64,7 @@ enum SpecFormat {
 
 enum RunOutput {
     Path(PathBuf),
-    Text(&'static str),
+    Text(String),
 }
 
 #[derive(Debug, Args)]
@@ -106,13 +117,14 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> docx_jsx::Result<RunOutput> {
     match cli.command {
+        Some(Command::Validate(args)) => return run_validate(args).await.map(RunOutput::Text),
         Some(Command::Reverse(args)) => return run_reverse(args).map(RunOutput::Path),
         Some(Command::Spec(args)) => {
             let output = match args.format {
                 SpecFormat::Markdown => include_str!("../docs/spec.md"),
                 SpecFormat::JsonSchema => include_str!("../spec/ir-v1.schema.json"),
             };
-            return Ok(RunOutput::Text(output));
+            return Ok(RunOutput::Text(output.to_owned()));
         }
         None => {}
     }
@@ -141,6 +153,13 @@ async fn run(cli: Cli) -> docx_jsx::Result<RunOutput> {
     let bytes = compile_document(&ir, &entry_dir)?;
     write_atomic(&output, &bytes, cli.force)?;
     Ok(RunOutput::Path(output))
+}
+
+async fn run_validate(args: ValidateArgs) -> docx_jsx::Result<String> {
+    validate_input_extension(&args.input)?;
+    let data = args.data.as_deref().map(read_data).transpose()?;
+    evaluate_entry(&args.input, data.as_ref()).await?;
+    Ok(format!("valid: {}\n", args.input.display()))
 }
 
 fn run_reverse(args: ReverseArgs) -> docx_jsx::Result<PathBuf> {

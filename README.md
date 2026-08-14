@@ -21,6 +21,12 @@ cargo install --path .
 docx-jsx report.tsx --data data.json -o report.docx
 ```
 
+Validate the complete executable DSL without creating a DOCX file:
+
+```sh
+docx-jsx validate report.tsx --data data.json
+```
+
 Reverse a generated document back to deterministic JSX:
 
 ```sh

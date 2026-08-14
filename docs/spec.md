@@ -8,6 +8,7 @@ runtime dependencies.
 
 ```text
 docx-jsx <INPUT.jsx|tsx> [-o <OUTPUT.docx>] [--data <DATA.json>] [--force]
+docx-jsx validate <INPUT.jsx|tsx> [--data <DATA.json>]
 docx-jsx reverse <INPUT.docx> [-o <OUTPUT.jsx>] [--force]
 docx-jsx spec [--format markdown|json-schema]
 ```
@@ -16,6 +17,12 @@ When `-o` is omitted, the input extension is replaced with `.docx`. Existing
 outputs are rejected unless `--force` is present. Compilation completes in
 memory and output is written atomically, so a failed compilation never leaves
 a partial DOCX.
+
+`validate` runs module resolution, JSX/TSX transpilation, optional JSON data
+injection, module evaluation, IR decoding, and the complete component semantic
+validation pass without invoking the DOCX backend or writing an output file.
+It prints `valid: INPUT` and exits with status 0 on success. Invalid DSL uses
+the standard detailed diagnostic and exits with status 1.
 
 The entry module must default-export either a document JSX value or a function
 receiving the JSON value supplied by `--data`. The function and nested function

@@ -75,6 +75,58 @@ fn argument_error_should_include_fix_suggestion() {
 }
 
 #[test]
+fn validate_should_accept_valid_tsx_with_json_data_without_writing_docx() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("valid.tsx");
+    let data = directory.path().join("data.json");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default data => <Document><Section><Paragraph>{data.title}</Paragraph></Section></Document>;"#,
+    )
+    .expect("input should write");
+    fs::write(&data, r#"{"title":"Validated"}"#).expect("data should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args([
+            "validate",
+            input.to_str().expect("UTF-8 path"),
+            "--data",
+            data.to_str().expect("UTF-8 path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "valid: {}",
+            input.display()
+        )));
+    assert!(!input.with_extension("docx").exists());
+}
+
+#[test]
+fn validate_should_reject_invalid_dsl_with_actionable_diagnostic() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("invalid.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document><Section><Paragraph unknownProp /></Section></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["validate", input.to_str().expect("UTF-8 path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown property `unknownProp`"))
+        .stderr(predicate::str::contains("explanation:"))
+        .stderr(predicate::str::contains("suggestion:"))
+        .stderr(predicate::str::contains("docx-jsx spec"));
+}
+
+#[test]
 fn cli_should_compile_tsx_with_json_data() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("report.tsx");
