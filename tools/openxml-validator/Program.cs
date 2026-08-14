@@ -45,7 +45,8 @@ foreach (var path in args)
         }
     }
     catch (Exception exception) when (exception is OpenXmlPackageException
-        or IOException or UnauthorizedAccessException or InvalidDataException)
+        or IOException or UnauthorizedAccessException or InvalidDataException
+        or FileFormatException)
     {
         failed = true;
         WriteDiagnostic(new(
