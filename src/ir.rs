@@ -762,6 +762,15 @@ fn paragraph_props() -> &'static [&'static str] {
         "italic",
         "color",
         "characterSpacing",
+        "bidi",
+        "textAlign",
+        "adjustRightIndent",
+        "shading",
+        "outlineLevel",
+        "frame",
+        "inserted",
+        "deleted",
+        "propertyChange",
     ]
 }
 
@@ -788,6 +797,14 @@ fn heading_props() -> &'static [&'static str] {
         "italic",
         "color",
         "characterSpacing",
+        "bidi",
+        "textAlign",
+        "adjustRightIndent",
+        "shading",
+        "frame",
+        "inserted",
+        "deleted",
+        "propertyChange",
     ]
 }
 
@@ -916,6 +933,7 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
             "widowControl",
             "bold",
             "italic",
+            "bidi",
         ] {
             if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
                 return Err(validation(path, format!("`{key}` must be a boolean")));
@@ -933,6 +951,108 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
                 .as_f64()
                 .filter(|number| number.is_finite())
                 .ok_or_else(|| validation(path, "`characterSpacing` must be a finite number"))?;
+        }
+        validate_optional_enum_prop(
+            node,
+            path,
+            "textAlign",
+            &["auto", "baseline", "bottom", "center", "top"],
+        )?;
+        if let Some(value) = node.props.get("adjustRightIndent") {
+            value
+                .as_i64()
+                .and_then(|number| isize::try_from(number).ok())
+                .ok_or_else(|| validation(path, "`adjustRightIndent` must be an integer"))?;
+        }
+        if let Some(value) = node.props.get("outlineLevel")
+            && !matches!(value.as_u64(), Some(0..=9))
+        {
+            return Err(validation(
+                path,
+                "`outlineLevel` must be an integer from 0 through 9",
+            ));
+        }
+        if let Some(value) = node.props.get("frame") {
+            validate_style_frame(value, path)?;
+        }
+        validate_paragraph_revisions(node, path)?;
+    }
+    Ok(())
+}
+
+fn validate_paragraph_revisions(node: &Node, path: &str) -> Result<()> {
+    if node.props.contains_key("inserted") && node.props.contains_key("deleted") {
+        return Err(validation(
+            path,
+            "`inserted` and `deleted` are mutually exclusive",
+        ));
+    }
+    for key in ["inserted", "deleted"] {
+        if let Some(value) = node.props.get(key) {
+            validate_paragraph_revision_metadata(value, path, key)?;
+        }
+    }
+    let Some(value) = node.props.get("propertyChange") else {
+        return Ok(());
+    };
+    let change = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`propertyChange` must be an object"))?;
+    validate_object_keys(change, path, &["author", "date", "previous"])?;
+    for key in ["author", "date"] {
+        if change
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("`propertyChange.{key}` must be a non-empty string"),
+            ));
+        }
+    }
+    let previous = change
+        .get("previous")
+        .and_then(Value::as_object)
+        .ok_or_else(|| validation(path, "`propertyChange.previous` must be an object"))?;
+    if previous.is_empty() {
+        return Err(validation(
+            path,
+            "`propertyChange.previous` must not be empty",
+        ));
+    }
+    if let Some(key) = previous
+        .keys()
+        .find(|key| ["inserted", "deleted", "propertyChange"].contains(&key.as_str()))
+    {
+        return Err(validation(
+            path,
+            format!("`propertyChange.previous` cannot contain `{key}`"),
+        ));
+    }
+    validate_props(
+        &Node {
+            kind: NodeKind::Paragraph,
+            props: previous.clone(),
+            children: Vec::new(),
+        },
+        &format!("{path}/propertyChange/previous"),
+    )
+}
+
+fn validate_paragraph_revision_metadata(value: &Value, path: &str, key: &str) -> Result<()> {
+    let revision = value
+        .as_object()
+        .ok_or_else(|| validation(path, format!("`{key}` must be an object")))?;
+    validate_object_keys(revision, path, &["author", "date"])?;
+    for field in ["author", "date"] {
+        if revision
+            .get(field)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("`{key}.{field}` must be a non-empty string"),
+            ));
         }
     }
     Ok(())
@@ -1492,7 +1612,7 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
 fn validate_style_frame(value: &Value, path: &str) -> Result<()> {
     let frame = value
         .as_object()
-        .ok_or_else(|| validation(path, "style paragraph `frame` must be an object"))?;
+        .ok_or_else(|| validation(path, "`frame` must be an object"))?;
     validate_object_keys(
         frame,
         path,
@@ -1512,10 +1632,7 @@ fn validate_style_frame(value: &Value, path: &str) -> Result<()> {
         ],
     )?;
     if frame.is_empty() {
-        return Err(validation(
-            path,
-            "style paragraph `frame` must not be empty",
-        ));
+        return Err(validation(path, "`frame` must not be empty"));
     }
     validate_map_enum(
         frame,
@@ -1544,7 +1661,7 @@ fn validate_style_frame(value: &Value, path: &str) -> Result<()> {
             value
                 .as_f64()
                 .filter(|number| number.is_finite())
-                .ok_or_else(|| validation(path, format!("style frame `{key}` must be finite")))?;
+                .ok_or_else(|| validation(path, format!("frame `{key}` must be finite")))?;
         }
     }
     for key in ["width", "height"] {
@@ -1556,7 +1673,7 @@ fn validate_style_frame(value: &Value, path: &str) -> Result<()> {
         if frame.contains_key(coordinate) && frame.contains_key(alignment) {
             return Err(validation(
                 path,
-                format!("style frame `{coordinate}` and `{alignment}` are mutually exclusive"),
+                format!("frame `{coordinate}` and `{alignment}` are mutually exclusive"),
             ));
         }
     }
@@ -2874,6 +2991,39 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"snapToGrid":false,"widowControl":true,"font":"Noto Sans CJK SC","size":12,"bold":true,"italic":false,"color":"1a2B3c","characterSpacing":0.5},"children":["body"]},{"type":"Heading","props":{"level":2,"font":"Noto Sans CJK SC","size":16},"children":["title"]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_advanced_paragraph_properties_and_revisions() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"bidi":true,"textAlign":"baseline","adjustRightIndent":-2,"shading":"DDEEFF","outlineLevel":3,"frame":{"wrap":"around","horizontalAnchor":"page","x":12,"yAlign":"top","width":144,"height":72},"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"},"propertyChange":{"author":"Lin","date":"2026-08-13T00:00:00Z","previous":{"align":"right","spacingAfter":6,"bidi":false}}},"children":["body"]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_advanced_paragraph_properties() {
+        for (source, expected) in [
+            (
+                r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"outlineLevel":10},"children":[]}]}]}}"#,
+                "`outlineLevel` must be an integer from 0 through 9",
+            ),
+            (
+                r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"inserted":{},"deleted":{}},"children":[]}]}]}}"#,
+                "`inserted` and `deleted` are mutually exclusive",
+            ),
+            (
+                r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"propertyChange":{"previous":{}}},"children":[]}]}]}}"#,
+                "`propertyChange.previous` must not be empty",
+            ),
+            (
+                r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Heading","props":{"level":2,"outlineLevel":7},"children":[]}]}]}}"#,
+                "unknown property `outlineLevel`",
+            ),
+        ] {
+            let error = parse(source).validate().expect_err("fixture must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

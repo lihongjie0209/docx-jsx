@@ -8,13 +8,14 @@ use docx_rs::{
     Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC,
     InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing, MoveFrom, MoveTo, NumPages,
     NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType,
-    PageSize, Paragraph, Pic, PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo,
-    Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start,
-    StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table,
-    TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
-    TableCellBorderPosition, TableCellBorders, TableCellMargins, TableCellProperty,
-    TableLayoutType, TableOfContents, TablePositionProperty, TableRow, TextAlignmentType,
-    TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType, VertAlignType, WidthType,
+    PageSize, Paragraph, ParagraphPropertyChange, Pic, PositionalTab, PositionalTabAlignmentType,
+    PositionalTabRelativeTo, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
+    Start, StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab, TabLeaderType, TabValueType,
+    Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
+    TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
+    TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
+    TextAlignmentType, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
+    VertAlignType, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -1037,7 +1038,145 @@ fn compile_paragraph(
     if bool_prop(&node.props, "pageBreakBefore", path)?.unwrap_or(false) {
         paragraph = paragraph.page_break_before(true);
     }
+    paragraph = compile_advanced_paragraph_properties(paragraph, node, path)?;
     compile_paragraph_children(paragraph, &node.children, entry_dir, path, context)
+}
+
+fn compile_advanced_paragraph_properties(
+    mut paragraph: Paragraph,
+    node: &Node,
+    path: &str,
+) -> Result<Paragraph> {
+    if let Some(value) = bool_prop(&node.props, "bidi", path)? {
+        paragraph.property = paragraph.property.bidi(value);
+    }
+    if let Some(value) = optional_enum(
+        &node.props,
+        "textAlign",
+        &["auto", "baseline", "bottom", "center", "top"],
+        path,
+    )? {
+        paragraph.property = paragraph.property.text_alignment(match value {
+            "baseline" => TextAlignmentType::Baseline,
+            "bottom" => TextAlignmentType::Bottom,
+            "center" => TextAlignmentType::Center,
+            "top" => TextAlignmentType::Top,
+            _ => TextAlignmentType::Auto,
+        });
+    }
+    if let Some(value) = node.props.get("adjustRightIndent") {
+        let value = value
+            .as_i64()
+            .and_then(|value| isize::try_from(value).ok())
+            .ok_or_else(|| validation(path, "`adjustRightIndent` is out of range"))?;
+        paragraph.property = paragraph.property.adjust_right_ind(value);
+    }
+    if let Some(value) = string_prop(&node.props, "shading", path)? {
+        paragraph.property = paragraph
+            .property
+            .shading(Shading::new().fill(value.to_ascii_uppercase()));
+    }
+    if let Some(value) = node.props.get("outlineLevel") {
+        paragraph = paragraph.outline_lvl(value_to_usize(value, path, "outlineLevel")?);
+    }
+    if let Some(value) = node.props.get("frame") {
+        paragraph = compile_paragraph_frame(paragraph, value, path)?;
+    }
+    if let Some(value) = node.props.get("inserted") {
+        paragraph.property.run_property.ins = Some(compile_row_insert(value, path)?);
+    }
+    if let Some(value) = node.props.get("deleted") {
+        paragraph.property.run_property.del = Some(compile_row_delete(value, path)?);
+    }
+    if let Some(value) = node.props.get("propertyChange") {
+        paragraph = compile_paragraph_property_change(paragraph, value, path)?;
+    }
+    Ok(paragraph)
+}
+
+fn compile_paragraph_frame(
+    mut paragraph: Paragraph,
+    value: &Value,
+    path: &str,
+) -> Result<Paragraph> {
+    let frame = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`frame` must be an object"))?;
+    if let Some(value) = string_prop(frame, "wrap", path)? {
+        paragraph = paragraph.wrap(value);
+    }
+    if let Some(value) = string_prop(frame, "verticalAnchor", path)? {
+        paragraph = paragraph.v_anchor(value);
+    }
+    if let Some(value) = string_prop(frame, "horizontalAnchor", path)? {
+        paragraph = paragraph.h_anchor(value);
+    }
+    if let Some(value) = string_prop(frame, "heightRule", path)? {
+        paragraph = paragraph.h_rule(value);
+    }
+    if let Some(value) = string_prop(frame, "xAlign", path)? {
+        paragraph = paragraph.x_align(value);
+    }
+    if let Some(value) = string_prop(frame, "yAlign", path)? {
+        paragraph = paragraph.y_align(value);
+    }
+    for (key, apply) in [
+        (
+            "horizontalSpace",
+            Paragraph::h_space as fn(Paragraph, i32) -> Paragraph,
+        ),
+        ("verticalSpace", Paragraph::v_space),
+        ("x", Paragraph::frame_x),
+        ("y", Paragraph::frame_y),
+    ] {
+        if let Some(value) = number_prop(frame, key, path)? {
+            paragraph = apply(
+                paragraph,
+                to_twips_i32(value, &format!("{path}/frame/{key}"))?,
+            );
+        }
+    }
+    if let Some(value) = number_prop(frame, "width", path)? {
+        paragraph = paragraph.frame_width(to_twips_u32(value, &format!("{path}/frame/width"))?);
+    }
+    if let Some(value) = number_prop(frame, "height", path)? {
+        paragraph = paragraph.frame_height(to_twips_u32(value, &format!("{path}/frame/height"))?);
+    }
+    Ok(paragraph)
+}
+
+fn compile_paragraph_property_change(
+    mut paragraph: Paragraph,
+    value: &Value,
+    path: &str,
+) -> Result<Paragraph> {
+    let change = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`propertyChange` must be an object"))?;
+    let previous = change
+        .get("previous")
+        .and_then(Value::as_object)
+        .ok_or_else(|| validation(path, "`propertyChange.previous` must be an object"))?;
+    let previous_node = Node {
+        kind: NodeKind::Paragraph,
+        props: previous.clone(),
+        children: Vec::new(),
+    };
+    let previous = compile_paragraph(
+        &previous_node,
+        Path::new("."),
+        &format!("{path}/propertyChange/previous"),
+        &mut CompileContext::default(),
+    )?;
+    let mut revision = ParagraphPropertyChange::new().property(previous.property);
+    if let Some(author) = string_prop(change, "author", path)? {
+        revision = revision.author(author);
+    }
+    if let Some(date) = string_prop(change, "date", path)? {
+        revision = revision.date(date);
+    }
+    paragraph.property = paragraph.property.paragraph_property_change(revision);
+    Ok(paragraph)
 }
 
 fn compile_paragraph_children(
@@ -3186,6 +3325,43 @@ mod tests {
         assert!(document.contains(r#"<w:color w:val="1A2B3C" />"#));
         assert!(document.contains(r#"<w:spacing w:val="10" />"#));
         assert!(document.contains("<w:b />") && document.contains("<w:i />"));
+    }
+
+    #[test]
+    fn compile_should_render_advanced_paragraph_properties_and_revisions() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"bidi":true,"textAlign":"baseline","adjustRightIndent":-2,"shading":"DDEEFF","outlineLevel":3,"frame":{"wrap":"around","horizontalAnchor":"page","x":12,"yAlign":"top","width":144,"height":72},"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"},"propertyChange":{"author":"Lin","date":"2026-08-13T00:00:00Z","previous":{"align":"right","spacingAfter":6,"bidi":false}}},"children":["body"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(
+            document.contains("<w:bidi />")
+                && document.contains("<w:textAlignment w:val=\"baseline\" />")
+                && document.contains("<w:adjustRightInd w:val=\"-2\" />")
+                && document
+                    .contains("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"DDEEFF\" />")
+                && document.contains("<w:outlineLvl w:val=\"3\" />")
+                && document.contains("<w:framePr w:wrap=\"around\"")
+                && document.contains("w:hAnchor=\"page\"")
+                && document.contains("w:x=\"240\"")
+                && document.contains("w:yAlign=\"top\"")
+                && document.contains("w:w=\"2880\"")
+                && document.contains("w:h=\"1440\"")
+                && document.contains("<w:ins w:id=")
+                && document.contains("w:author=\"Ada\"")
+                && document.contains("<w:pPrChange w:id=")
+                && document.contains("w:author=\"Lin\"")
+                && document.contains("<w:jc w:val=\"right\" />")
+                && document.contains("<w:spacing w:after=\"120\" />"),
+            "{document}"
+        );
     }
 
     #[test]

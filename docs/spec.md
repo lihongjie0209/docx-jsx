@@ -156,11 +156,23 @@ components it uses and default-exports one `Document`.
   `spacingBefore?`, `spacingAfter?`, `lineSpacing?`, `indentLeft?`,
   `indentRight?`, `firstLine?`, `hanging?`, `keepNext?`, `keepLines?`,
   `pageBreakBefore?`. `firstLine` and `hanging` are mutually exclusive.
-- `Paragraph`: also accepts `snapToGrid?`, `widowControl?`, paragraph-default
+- `Paragraph`: also accepts `snapToGrid?`, `widowControl?`, `bidi?`,
+  `textAlign?: "auto" | "baseline" | "bottom" | "center" | "top"`, signed
+  integer `adjustRightIndent?`, six-digit RGB `shading?`, and integer
+  `outlineLevel?: 0..9`. `frame?` has the same shape, units, enumerations, and
+  coordinate/alignment conflicts as `Document.styles[].paragraph.frame`.
+  Optional `inserted?` and `deleted?` objects mark the paragraph's default run
+  formatting as revised and are mutually exclusive; both accept non-empty
+  `author?` and `date?` strings. `propertyChange?` records previous paragraph
+  formatting as `{author?, date?, previous}`. `previous` is non-empty and
+  accepts the same paragraph formatting properties except `inserted`,
+  `deleted`, and `propertyChange`.
+- `Paragraph`: also accepts paragraph-default
   `font?`, positive `size?`, `bold?`, `italic?`, six-digit RGB `color?`, and
   signed `characterSpacing?` in points.
 - `Heading`: required `level: 1..9`, optional `style`, plus all `Paragraph`
-  layout properties. It emits both a heading style and Word outline level.
+  layout properties except `outlineLevel`. Its `level` emits both a heading
+  style and the corresponding Word outline level.
 - `Run`: `themeColor?` accepts Word theme tokens `dark1`, `light1`, `dark2`,
   `light2`, `accent1` through `accent6`, `hyperlink`, `followedHyperlink`,
   `none`, `background1`, `text1`, `background2`, or `text2`. `themeShade?` and
