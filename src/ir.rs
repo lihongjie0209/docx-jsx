@@ -1029,63 +1029,15 @@ fn validate_style_definitions(value: &Value, path: &str) -> Result<()> {
                 "unhideWhenUsed",
                 "run",
                 "paragraph",
+                "table",
+                "cell",
             ],
         )?;
-        for key in ["id", "name", "type"] {
-            if style
-                .get(key)
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-            {
-                return Err(validation(
-                    &style_path,
-                    format!("style requires non-empty `{key}`"),
-                ));
-            }
-        }
-        let id = style.get("id").and_then(Value::as_str).unwrap_or_default();
+        let (id, style_type) = validate_style_metadata(style, &style_path)?;
         if !ids.insert(id) {
             return Err(validation(
                 &style_path,
                 format!("duplicate style id `{id}`"),
-            ));
-        }
-        let style_type = style
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !["paragraph", "character", "numbering", "table"].contains(&style_type) {
-            return Err(validation(
-                &style_path,
-                format!("invalid style type `{style_type}`"),
-            ));
-        }
-        for key in ["basedOn", "next", "link"] {
-            if style
-                .get(key)
-                .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
-            {
-                return Err(validation(
-                    &style_path,
-                    format!("`{key}` must be non-empty"),
-                ));
-            }
-        }
-        for key in ["quickFormat", "semiHidden", "unhideWhenUsed"] {
-            if style.get(key).is_some_and(|value| !value.is_boolean()) {
-                return Err(validation(
-                    &style_path,
-                    format!("`{key}` must be a boolean"),
-                ));
-            }
-        }
-        if style
-            .get("uiPriority")
-            .is_some_and(|value| value.as_u64().is_none())
-        {
-            return Err(validation(
-                &style_path,
-                "`uiPriority` must be a non-negative integer",
             ));
         }
         if let Some(run) = style.get("run") {
@@ -1094,8 +1046,72 @@ fn validate_style_definitions(value: &Value, path: &str) -> Result<()> {
         if let Some(paragraph) = style.get("paragraph") {
             validate_style_paragraph(paragraph, &style_path)?;
         }
+        if style_type != "table" && (style.contains_key("table") || style.contains_key("cell")) {
+            return Err(validation(
+                &style_path,
+                "style `table` and `cell` properties require type `table`",
+            ));
+        }
+        if let Some(table) = style.get("table") {
+            validate_style_table(table, &style_path)?;
+        }
+        if let Some(cell) = style.get("cell") {
+            validate_style_cell(cell, &style_path)?;
+        }
     }
     Ok(())
+}
+
+fn validate_style_metadata<'a>(
+    style: &'a Map<String, Value>,
+    path: &str,
+) -> Result<(&'a str, &'a str)> {
+    for key in ["id", "name", "type"] {
+        if style
+            .get(key)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(validation(
+                path,
+                format!("style requires non-empty `{key}`"),
+            ));
+        }
+    }
+    let id = style.get("id").and_then(Value::as_str).unwrap_or_default();
+    let style_type = style
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !["paragraph", "character", "numbering", "table"].contains(&style_type) {
+        return Err(validation(
+            path,
+            format!("invalid style type `{style_type}`"),
+        ));
+    }
+    for key in ["basedOn", "next", "link"] {
+        if style
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(path, format!("`{key}` must be non-empty")));
+        }
+    }
+    for key in ["quickFormat", "semiHidden", "unhideWhenUsed"] {
+        if style.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(path, format!("`{key}` must be a boolean")));
+        }
+    }
+    if style
+        .get("uiPriority")
+        .is_some_and(|value| value.as_u64().is_none())
+    {
+        return Err(validation(
+            path,
+            "`uiPriority` must be a non-negative integer",
+        ));
+    }
+    Ok((id, style_type))
 }
 
 fn validate_style_run(value: &Value, path: &str) -> Result<()> {
@@ -1117,6 +1133,7 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
             "italic",
             "underline",
             "hidden",
+            "textBorder",
         ],
     )?;
     if let Some(value) = run.get("size") {
@@ -1150,6 +1167,153 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
                 format!("style run `{key}` must be a boolean"),
             ));
         }
+    }
+    if let Some(border) = run.get("textBorder") {
+        validate_style_border(border, path, true)?;
+    }
+    Ok(())
+}
+
+fn validate_style_table(value: &Value, path: &str) -> Result<()> {
+    let table = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style `table` must be an object"))?;
+    validate_object_keys(
+        table,
+        path,
+        &[
+            "style",
+            "indent",
+            "width",
+            "widthPercent",
+            "align",
+            "layout",
+            "margins",
+            "border",
+        ],
+    )?;
+    if table.contains_key("width") && table.contains_key("widthPercent") {
+        return Err(validation(
+            path,
+            "style table `width` and `widthPercent` are mutually exclusive",
+        ));
+    }
+    for key in ["width", "widthPercent"] {
+        if let Some(value) = table.get(key) {
+            let number = require_number(value, path, key, true)?;
+            if key == "widthPercent" && number > 100.0 {
+                return Err(validation(
+                    path,
+                    "style table `widthPercent` must be at most 100",
+                ));
+            }
+        }
+    }
+    if let Some(value) = table.get("indent") {
+        value
+            .as_f64()
+            .filter(|number| number.is_finite())
+            .ok_or_else(|| validation(path, "style table `indent` must be finite"))?;
+    }
+    if table
+        .get("style")
+        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(validation(path, "style table `style` must be non-empty"));
+    }
+    validate_map_enum(table, path, "align", &["left", "center", "right"])?;
+    validate_map_enum(table, path, "layout", &["auto", "fixed"])?;
+    if let Some(value) = table.get("margins") {
+        validate_box_margins(value, path)?;
+    }
+    if let Some(value) = table.get("border") {
+        validate_style_border(value, path, false)?;
+    }
+    Ok(())
+}
+
+fn validate_style_cell(value: &Value, path: &str) -> Result<()> {
+    let cell = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style `cell` must be an object"))?;
+    validate_object_keys(
+        cell,
+        path,
+        &[
+            "width",
+            "colSpan",
+            "verticalAlign",
+            "verticalMerge",
+            "textDirection",
+            "shading",
+            "margins",
+            "border",
+        ],
+    )?;
+    if let Some(value) = cell.get("width") {
+        require_number(value, path, "cell.width", true)?;
+    }
+    if cell
+        .get("colSpan")
+        .is_some_and(|value| value.as_u64().is_none_or(|span| span == 0))
+    {
+        return Err(validation(
+            path,
+            "style cell `colSpan` must be a positive integer",
+        ));
+    }
+    validate_map_enum(cell, path, "verticalAlign", &["top", "center", "bottom"])?;
+    validate_map_enum(cell, path, "verticalMerge", &["restart", "continue"])?;
+    validate_map_enum(
+        cell,
+        path,
+        "textDirection",
+        &[
+            "lr", "lrV", "rl", "rlV", "tb", "tbV", "tbRlV", "tbRl", "btLr", "lrTbV",
+        ],
+    )?;
+    if let Some(value) = cell.get("shading") {
+        validate_rgb(value, path, "style cell `shading`")?;
+    }
+    if let Some(value) = cell.get("margins") {
+        validate_box_margins(value, path)?;
+    }
+    if let Some(value) = cell.get("border") {
+        validate_style_border(value, path, false)?;
+    }
+    Ok(())
+}
+
+fn validate_style_border(value: &Value, path: &str, allow_space: bool) -> Result<()> {
+    let border = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style border must be an object"))?;
+    let allowed = if allow_space {
+        &["style", "size", "color", "space"][..]
+    } else {
+        &["style", "size", "color"][..]
+    };
+    validate_object_keys(border, path, allowed)?;
+    validate_map_enum(
+        border,
+        path,
+        "style",
+        &["single", "double", "dotted", "dashed"],
+    )?;
+    if let Some(value) = border.get("size") {
+        require_number(value, path, "border.size", true)?;
+    }
+    if let Some(value) = border.get("color") {
+        validate_rgb(value, path, "style border `color`")?;
+    }
+    if border
+        .get("space")
+        .is_some_and(|value| value.as_u64().is_none())
+    {
+        return Err(validation(
+            path,
+            "style text border `space` must be non-negative integer",
+        ));
     }
     Ok(())
 }
@@ -3373,7 +3537,7 @@ mod tests {
     #[test]
     fn validate_should_accept_custom_style_definitions() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single"},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"style":"BaseTable","indent":6,"widthPercent":80,"align":"center","layout":"fixed","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         );
         ir.validate().expect("custom style should validate");
     }
@@ -3401,6 +3565,14 @@ mod tests {
             ),
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"frame":{"x":1,"xAlign":"left"}}}]"#,
+                "mutually exclusive",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","table":{"align":"center"}}]"#,
+                "require type `table`",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"table","table":{"width":10,"widthPercent":50}}]"#,
                 "mutually exclusive",
             ),
         ] {

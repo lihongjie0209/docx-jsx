@@ -12,9 +12,9 @@ use docx_rs::{
     Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start,
     StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table,
     TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
-    TableCellBorderPosition, TableCellBorders, TableCellMargins, TableLayoutType, TableOfContents,
-    TablePositionProperty, TableRow, TextAlignmentType, TextBorder, TextDirectionType, ThemeColor,
-    VAlignType, VMergeType, VertAlignType, WidthType,
+    TableCellBorderPosition, TableCellBorders, TableCellMargins, TableCellProperty,
+    TableLayoutType, TableOfContents, TablePositionProperty, TableRow, TextAlignmentType,
+    TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType, VertAlignType, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -221,6 +221,12 @@ fn compile_style(value: &Value, path: &str) -> Result<Style> {
     if let Some(paragraph) = definition.get("paragraph") {
         style = compile_style_paragraph(style, paragraph, path)?;
     }
+    if let Some(table) = definition.get("table") {
+        style = compile_style_table(style, table, path)?;
+    }
+    if let Some(cell) = definition.get("cell") {
+        style = compile_style_cell(style, cell, path)?;
+    }
     Ok(style)
 }
 
@@ -267,6 +273,115 @@ fn compile_style_run(mut style: Style, value: &Value, path: &str) -> Result<Styl
     if bool_prop(run, "hidden", path)? == Some(true) {
         style = style.vanish();
     }
+    if let Some(value) = run.get("textBorder") {
+        let spec = parse_border_spec(value, path, true)?;
+        let space = value
+            .as_object()
+            .and_then(|border| border.get("space"))
+            .and_then(Value::as_u64)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| validation(path, "style text border `space` is out of range"))?
+            .unwrap_or(0);
+        style = style.text_border(
+            TextBorder::new()
+                .border_type(spec.border_type)
+                .size(spec.size)
+                .color(spec.color)
+                .space(space),
+        );
+    }
+    Ok(style)
+}
+
+fn compile_style_table(mut style: Style, value: &Value, path: &str) -> Result<Style> {
+    let table = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style `table` must be an object"))?;
+    if let Some(value) = string_prop(table, "style", path)? {
+        style = style.style(value);
+    }
+    if let Some(value) = number_prop(table, "indent", path)? {
+        style = style.table_indent(to_twips_i32(value, path)?);
+    }
+    if let Some(value) = number_prop(table, "width", path)? {
+        style = style.width(to_twips_usize(value, path)?, WidthType::Dxa);
+    }
+    if let Some(value) = number_prop(table, "widthPercent", path)? {
+        style = style.width(percent_to_fiftieths(value, path)?, WidthType::Pct);
+    }
+    if let Some(value) = string_prop(table, "align", path)? {
+        style = style.table_align(match value {
+            "center" => TableAlignmentType::Center,
+            "right" => TableAlignmentType::Right,
+            _ => TableAlignmentType::Left,
+        });
+    }
+    if let Some(value) = string_prop(table, "layout", path)? {
+        style = style.layout(if value == "fixed" {
+            TableLayoutType::Fixed
+        } else {
+            TableLayoutType::Autofit
+        });
+    }
+    if let Some(value) = table.get("margins") {
+        let [top, right, bottom, left] = parse_box_margins(value, path)?;
+        style = style.margins(TableCellMargins::new().margin(top, right, bottom, left));
+    }
+    if let Some(value) = table.get("border") {
+        style = style.set_borders(table_borders(&parse_border(value, path)?));
+    }
+    Ok(style)
+}
+
+fn compile_style_cell(mut style: Style, value: &Value, path: &str) -> Result<Style> {
+    let cell = value
+        .as_object()
+        .ok_or_else(|| validation(path, "style `cell` must be an object"))?;
+    let mut property = TableCellProperty::new();
+    if let Some(value) = number_prop(cell, "width", path)? {
+        property = property.width(to_twips_usize(value, path)?, WidthType::Dxa);
+    }
+    if let Some(value) = cell.get("colSpan") {
+        property = property.grid_span(value_to_usize(value, path, "colSpan")?);
+    }
+    if let Some(value) = string_prop(cell, "verticalAlign", path)? {
+        property = property.vertical_align(match value {
+            "center" => VAlignType::Center,
+            "bottom" => VAlignType::Bottom,
+            _ => VAlignType::Top,
+        });
+    }
+    if let Some(value) = string_prop(cell, "verticalMerge", path)? {
+        property = property.vertical_merge(if value == "restart" {
+            VMergeType::Restart
+        } else {
+            VMergeType::Continue
+        });
+    }
+    if let Some(value) = string_prop(cell, "textDirection", path)? {
+        let direction = value
+            .parse::<TextDirectionType>()
+            .map_err(|_| validation(path, format!("invalid text direction `{value}`")))?;
+        property = property.text_direction(direction);
+    }
+    if let Some(value) = string_prop(cell, "shading", path)? {
+        property = property.shading(Shading::new().fill(value.to_ascii_uppercase()));
+    }
+    if let Some(value) = cell.get("margins") {
+        let [top, right, bottom, left] = parse_box_margins(value, path)?;
+        property = property.margins(
+            CellMargins::new()
+                .margin_top(top, WidthType::Dxa)
+                .margin_right(right, WidthType::Dxa)
+                .margin_bottom(bottom, WidthType::Dxa)
+                .margin_left(left, WidthType::Dxa),
+        );
+    }
+    if let Some(value) = cell.get("border") {
+        property = property.set_borders(cell_borders(&parse_border(value, path)?));
+    }
+    style = style.table_cell_property(property);
     Ok(style)
 }
 
@@ -2414,11 +2529,15 @@ struct BorderSpec {
 }
 
 fn parse_border(value: &Value, path: &str) -> Result<BorderSpec> {
+    parse_border_spec(value, path, false)
+}
+
+fn parse_border_spec(value: &Value, path: &str, allow_space: bool) -> Result<BorderSpec> {
     let object = value
         .as_object()
         .ok_or_else(|| validation(path, "`border` must be an object"))?;
     for key in object.keys() {
-        if !["style", "size", "color"].contains(&key.as_str()) {
+        if !(["style", "size", "color"].contains(&key.as_str()) || allow_space && key == "space") {
             return Err(validation(path, format!("unknown border property `{key}`")));
         }
     }
@@ -2920,7 +3039,7 @@ mod tests {
     #[test]
     fn compile_should_render_custom_style_definition() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":false,"uiPriority":5,"semiHidden":true,"unhideWhenUsed":true,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":true,"underline":"single","hidden":true},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"hangingChars":20,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":false,"uiPriority":5,"semiHidden":true,"unhideWhenUsed":true,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":true,"underline":"single","hidden":true,"textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"hangingChars":20,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"style":"BaseTable","indent":6,"widthPercent":80,"align":"center","layout":"fixed","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         )
         .expect("fixture should parse");
         ir.validate().expect("fixture should validate");
@@ -2938,6 +3057,9 @@ mod tests {
         assert!(styles.contains(r#"w:ascii="Noto Sans CJK SC""#));
         assert!(styles.contains(r#"w:val="336699" w:themeColor="accent1" w:themeTint="99""#));
         assert!(styles.contains("<w:b />") && styles.contains("<w:i />"));
+        assert!(
+            styles.contains(r#"<w:bdr w:val="double" w:sz="8" w:space="2" w:color="336699" />"#)
+        );
         assert!(styles.contains(r#"<w:snapToGrid w:val="false" />"#));
         assert!(styles.contains(r#"w:after="240""#));
         assert!(styles.contains(r#"w:left="120" w:right="0" w:firstLine="40""#));
@@ -2950,6 +3072,13 @@ mod tests {
             .and_then(|value| value.split("</w:style>").next())
             .expect("ReportTitle style body should exist");
         assert!(!report_style.contains("<w:qFormat />"));
+        assert!(styles.contains(r#"w:type="table" w:styleId="ReportTable""#));
+        assert!(styles.contains(r#"<w:tblStyle w:val="BaseTable" />"#));
+        assert!(styles.contains(r#"<w:tblW w:w="4000" w:type="pct" />"#));
+        assert!(styles.contains(r#"<w:tblLayout w:type="fixed" />"#));
+        assert!(styles.contains(r#"<w:gridSpan w:val="2" />"#));
+        assert!(styles.contains(r#"<w:textDirection w:val="tbRl" />"#));
+        assert!(styles.contains(r#"<w:shd w:val="clear" w:color="auto" w:fill="FFF2CC" />"#));
     }
 
     #[test]

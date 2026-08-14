@@ -126,7 +126,7 @@ components it uses and default-exports one `Document`.
   definition requires unique non-empty `id`, non-empty `name`, and `type` of
   `paragraph`, `character`, `numbering`, or `table`. Optional metadata is
   `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
-  `unhideWhenUsed`. `run?: {font,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden}`
+  `unhideWhenUsed`. `run?: {font,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden,textBorder}`
   uses the same units and color rules as `Run`.
   `paragraph?: {align,textAlign,snapToGrid,spacingBefore,spacingAfter,lineSpacing,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
   uses point dimensions; `firstLine` and `hanging` are mutually exclusive.
@@ -135,6 +135,13 @@ components it uses and default-exports one `Document`.
   `xAlign`, `yAlign`, `horizontalSpace`, `verticalSpace`, `x`, `y`, `width`,
   and `height`; its dimensions are points and coordinate/alignment pairs are
   mutually exclusive.
+  Table styles additionally accept
+  `table?: {style,indent,width,widthPercent,align,layout,margins,border}` and
+  `cell?: {width,colSpan,verticalAlign,verticalMerge,textDirection,shading,margins,border}`.
+  These reuse the corresponding `Table` and `TableCell` property formats;
+  `width`/`widthPercent` are mutually exclusive. `run.textBorder` reuses the
+  `BorderedText` object shape. `table` and `cell` are rejected on non-table
+  styles because docx-rs would otherwise omit them during serialization.
 - `Section`: `pageSize?: "A4" | "Letter" | {width,height}`,
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
