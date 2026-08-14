@@ -241,7 +241,7 @@ export default <Document><Section>
   <TableOfFigures label="Figure" alias="Figures" />
   <TableOfEntries identifier="manual" alias="Manual entries" />
   <Paragraph><Hyperlink href="https://example.com" history><Run underline color="0000FF">Example</Run></Hyperlink></Paragraph>
-  <Bookmark name="intro"><Heading level={1}>Introduction</Heading><Paragraph style="Quote">Bookmarked text</Paragraph></Bookmark>
+  <Bookmark name="intro"><Heading level={1} font="Noto Sans CJK SC" size={16}>Introduction</Heading><Paragraph style="Quote" snapToGrid={false} widowControl font="Noto Sans CJK SC" size={12} bold italic={false} color="1a2B3c" characterSpacing={0.5}>Bookmarked text</Paragraph></Bookmark>
   <Paragraph><Hyperlink anchor="intro">Jump to introduction</Hyperlink></Paragraph>
   <Paragraph><TabStop position={72} align="right" leader="dot" /><TocEntry text="Manual entry" level={2} identifier="manual" />Introduction is on page <PageReference bookmark="intro" placeholder="?" relativePosition />.<Tab /><ContentControl alias="Customer" xpath="/root/customer">Ada</ContentControl><CarriageReturn /><MovedFrom author="Ada">old</MovedFrom><MovedTo author="Ada"><Run bold>new</Run></MovedTo><PositionalTab align="right" relativeTo="margin" leader="dot" /></Paragraph>
   <Paragraph><Comment text="Please verify" author="Ada">Reviewed text</Comment><Tab /><Symbol font="Wingdings" char="F0A7" /><Footnote>Footnote content</Footnote></Paragraph>

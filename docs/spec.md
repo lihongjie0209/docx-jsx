@@ -97,6 +97,9 @@ components it uses and default-exports one `Document`.
   `spacingBefore?`, `spacingAfter?`, `lineSpacing?`, `indentLeft?`,
   `indentRight?`, `firstLine?`, `hanging?`, `keepNext?`, `keepLines?`,
   `pageBreakBefore?`. `firstLine` and `hanging` are mutually exclusive.
+- `Paragraph`: also accepts `snapToGrid?`, `widowControl?`, paragraph-default
+  `font?`, positive `size?`, `bold?`, `italic?`, six-digit RGB `color?`, and
+  signed `characterSpacing?` in points.
 - `Heading`: required `level: 1..9`, optional `style`, plus all `Paragraph`
   layout properties. It emits both a heading style and Word outline level.
 - `Caption`: required Word identifier `label`; optional Word identifier

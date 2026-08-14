@@ -558,21 +558,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::Document => &["defaultFont", "defaultSize"],
         NodeKind::Section => &["pageSize", "orientation", "margins"],
         NodeKind::Paragraph => paragraph_props(),
-        NodeKind::Heading => &[
-            "level",
-            "style",
-            "align",
-            "spacingBefore",
-            "spacingAfter",
-            "lineSpacing",
-            "indentLeft",
-            "indentRight",
-            "firstLine",
-            "hanging",
-            "keepNext",
-            "keepLines",
-            "pageBreakBefore",
-        ],
+        NodeKind::Heading => heading_props(),
         NodeKind::Caption => caption_props(),
         NodeKind::Run => &[
             "style",
@@ -712,6 +698,40 @@ fn paragraph_props() -> &'static [&'static str] {
         "keepNext",
         "keepLines",
         "pageBreakBefore",
+        "snapToGrid",
+        "widowControl",
+        "font",
+        "size",
+        "bold",
+        "italic",
+        "color",
+        "characterSpacing",
+    ]
+}
+
+fn heading_props() -> &'static [&'static str] {
+    &[
+        "level",
+        "style",
+        "align",
+        "spacingBefore",
+        "spacingAfter",
+        "lineSpacing",
+        "indentLeft",
+        "indentRight",
+        "firstLine",
+        "hanging",
+        "keepNext",
+        "keepLines",
+        "pageBreakBefore",
+        "snapToGrid",
+        "widowControl",
+        "font",
+        "size",
+        "bold",
+        "italic",
+        "color",
+        "characterSpacing",
     ]
 }
 
@@ -773,6 +793,7 @@ fn validate_semantics(node: &Node, path: &str) -> Result<()> {
             "`firstLine` and `hanging` are mutually exclusive",
         ));
     }
+    validate_paragraph_defaults(node, path)?;
     if node.props.contains_key("width") && node.props.contains_key("widthPercent") {
         return Err(validation(
             path,
@@ -820,6 +841,38 @@ fn validate_semantics(node: &Node, path: &str) -> Result<()> {
         let number = require_number(value, path, "widthPercent", true)?;
         if number > 100.0 {
             return Err(validation(path, "`widthPercent` must be at most 100"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
+    if matches!(node.kind, NodeKind::Paragraph | NodeKind::Heading) {
+        for key in [
+            "keepNext",
+            "keepLines",
+            "pageBreakBefore",
+            "snapToGrid",
+            "widowControl",
+            "bold",
+            "italic",
+        ] {
+            if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
+                return Err(validation(path, format!("`{key}` must be a boolean")));
+            }
+        }
+        if node
+            .props
+            .get("font")
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(path, "`font` must be a non-empty string"));
+        }
+        if let Some(value) = node.props.get("characterSpacing") {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| validation(path, "`characterSpacing` must be a finite number"))?;
         }
     }
     Ok(())
@@ -1685,6 +1738,34 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"startLevel":1,"endLevel":3},"children":[]},{"type":"Bookmark","props":{"name":"intro"},"children":[{"type":"Heading","props":{"level":1},"children":["Intro"]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_paragraph_and_heading_run_defaults() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"snapToGrid":false,"widowControl":true,"font":"Noto Sans CJK SC","size":12,"bold":true,"italic":false,"color":"1a2B3c","characterSpacing":0.5},"children":["body"]},{"type":"Heading","props":{"level":2,"font":"Noto Sans CJK SC","size":16},"children":["title"]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_paragraph_run_defaults() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"snapToGrid":"yes","font":""},"children":[]}]}]}}"#,
+        );
+        let error = ir.validate().expect_err("invalid defaults must fail");
+        assert!(error.to_string().contains("snapToGrid"));
+
+        let empty_font = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Heading","props":{"level":1,"font":""},"children":[]}]}]}}"#,
+        );
+        assert!(
+            empty_font
+                .validate()
+                .expect_err("empty font must fail")
+                .to_string()
+                .contains("non-empty string")
+        );
     }
 
     #[test]

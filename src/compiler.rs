@@ -509,6 +509,37 @@ fn compile_paragraph(
     if left.is_some() || right.is_some() || special.is_some() {
         paragraph = paragraph.indent(left, special, right, None);
     }
+    if let Some(value) = bool_prop(&node.props, "snapToGrid", path)? {
+        paragraph = paragraph.snap_to_grid(value);
+    }
+    if let Some(value) = bool_prop(&node.props, "widowControl", path)? {
+        paragraph = paragraph.widow_control(value);
+    }
+    if let Some(font) = string_prop(&node.props, "font", path)? {
+        paragraph = paragraph.fonts(
+            RunFonts::new()
+                .ascii(font)
+                .hi_ansi(font)
+                .east_asia(font)
+                .cs(font),
+        );
+    }
+    if let Some(size) = number_prop(&node.props, "size", path)? {
+        paragraph = paragraph.size(to_half_points(size, &format!("{path}/size"))?);
+    }
+    if bool_prop(&node.props, "bold", path)?.unwrap_or(false) {
+        paragraph = paragraph.bold();
+    }
+    if bool_prop(&node.props, "italic", path)?.unwrap_or(false) {
+        paragraph = paragraph.italic();
+    }
+    if let Some(color) = string_prop(&node.props, "color", path)? {
+        paragraph = paragraph.color(color.to_ascii_uppercase());
+    }
+    if let Some(spacing) = number_prop(&node.props, "characterSpacing", path)? {
+        paragraph = paragraph
+            .character_spacing(to_twips_i32(spacing, &format!("{path}/characterSpacing"))?);
+    }
     if bool_prop(&node.props, "keepNext", path)?.unwrap_or(false) {
         paragraph = paragraph.keep_next(true);
     }
@@ -2219,6 +2250,31 @@ mod tests {
         assert_eq!(to_half_points(12.0, "test").expect("valid"), 24);
         assert_eq!(to_twips_u32(72.0, "test").expect("valid"), 1440);
         assert_eq!(to_emu(1.0, "test").expect("valid"), 12_700);
+    }
+
+    #[test]
+    fn compile_should_render_paragraph_run_defaults() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"snapToGrid":false,"widowControl":true,"font":"Noto Sans CJK SC","size":12,"bold":true,"italic":true,"color":"1a2B3c","characterSpacing":0.5},"children":["body"]},{"type":"Heading","props":{"level":2,"font":"Noto Sans CJK SC","size":16},"children":["title"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+
+        assert!(document.contains(r#"<w:snapToGrid w:val="false" />"#));
+        assert!(document.contains(r#"<w:widowControl w:val="1" />"#));
+        assert!(document.contains(r#"<w:rFonts w:ascii="Noto Sans CJK SC""#));
+        assert!(document.contains(r#"<w:sz w:val="24" />"#));
+        assert!(document.contains(r#"<w:color w:val="1A2B3C" />"#));
+        assert!(document.contains(r#"<w:spacing w:val="10" />"#));
+        assert!(document.contains("<w:b />") && document.contains("<w:i />"));
     }
 
     #[test]
