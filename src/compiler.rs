@@ -837,6 +837,19 @@ fn compile_moved_from(node: &Node, entry_dir: &Path, path: &str) -> Result<MoveF
 fn compile_semantic_text(node: &Node, entry_dir: &Path, path: &str) -> Result<Run> {
     let mut run = Run::new();
     match node.kind {
+        NodeKind::Bold => run = run.bold(),
+        NodeKind::Italic => run = run.italic(),
+        NodeKind::Underline => {
+            let underline = optional_enum(
+                &node.props,
+                "type",
+                &["single", "double", "dotted", "dash", "wave"],
+                path,
+            )?
+            .unwrap_or("single");
+            run = run.underline(underline);
+        }
+        NodeKind::StrikeThrough => run = run.strike(),
         NodeKind::Superscript => {
             run.run_property = run.run_property.vert_align(VertAlignType::SuperScript);
         }
@@ -876,60 +889,64 @@ fn compile_semantic_text(node: &Node, entry_dir: &Path, path: &str) -> Result<Ru
                 .map_err(|_| validation(path, "FitText id is out of range"))?;
             run.run_property = run.run_property.fit_text(width, id);
         }
-        NodeKind::BorderedText => {
-            let style = optional_enum(
-                &node.props,
-                "style",
-                &["single", "double", "dotted", "dashed"],
-                path,
-            )?
-            .unwrap_or("single");
-            let size = number_prop(&node.props, "size", path)?.unwrap_or(0.5);
-            let color = string_prop(&node.props, "color", path)?.unwrap_or("000000");
-            let space = node
-                .props
-                .get("space")
-                .and_then(Value::as_u64)
-                .map(usize::try_from)
-                .transpose()
-                .map_err(|_| validation(path, "BorderedText space is out of range"))?
-                .unwrap_or(0);
-            let border = TextBorder::new()
-                .border_type(match style {
-                    "double" => BorderType::Double,
-                    "dotted" => BorderType::Dotted,
-                    "dashed" => BorderType::Dashed,
-                    _ => BorderType::Single,
-                })
-                .size(f64_to_usize(size * 8.0, path)?)
-                .color(color.to_ascii_uppercase())
-                .space(space);
-            run = run.text_border(border);
-        }
-        NodeKind::ShadedText => {
-            let fill = required_string(&node.props, "fill", path)?;
-            let color = string_prop(&node.props, "color", path)?.unwrap_or("auto");
-            let pattern = string_prop(&node.props, "pattern", path)?.unwrap_or("clear");
-            let shading_type = pattern
-                .parse::<ShdType>()
-                .map_err(|_| validation(path, "ShadedText pattern is invalid"))?;
-            run = run.shading(
-                Shading::new()
-                    .shd_type(shading_type)
-                    .fill(fill.to_ascii_uppercase())
-                    .color(if color == "auto" {
-                        color.to_owned()
-                    } else {
-                        color.to_ascii_uppercase()
-                    }),
-            );
-        }
+        NodeKind::BorderedText => run = compile_bordered_text(run, node, path)?,
+        NodeKind::ShadedText => run = compile_shaded_text(run, node, path)?,
         _ => return Err(validation(path, "unsupported semantic text component")),
     }
     for (index, child) in node.children.iter().enumerate() {
         run = compile_run_child(run, child, entry_dir, &format!("{path}/child[{index}]"))?;
     }
     Ok(run)
+}
+
+fn compile_bordered_text(run: Run, node: &Node, path: &str) -> Result<Run> {
+    let style = optional_enum(
+        &node.props,
+        "style",
+        &["single", "double", "dotted", "dashed"],
+        path,
+    )?
+    .unwrap_or("single");
+    let size = number_prop(&node.props, "size", path)?.unwrap_or(0.5);
+    let color = string_prop(&node.props, "color", path)?.unwrap_or("000000");
+    let space = node
+        .props
+        .get("space")
+        .and_then(Value::as_u64)
+        .map(usize::try_from)
+        .transpose()
+        .map_err(|_| validation(path, "BorderedText space is out of range"))?
+        .unwrap_or(0);
+    let border = TextBorder::new()
+        .border_type(match style {
+            "double" => BorderType::Double,
+            "dotted" => BorderType::Dotted,
+            "dashed" => BorderType::Dashed,
+            _ => BorderType::Single,
+        })
+        .size(f64_to_usize(size * 8.0, path)?)
+        .color(color.to_ascii_uppercase())
+        .space(space);
+    Ok(run.text_border(border))
+}
+
+fn compile_shaded_text(run: Run, node: &Node, path: &str) -> Result<Run> {
+    let fill = required_string(&node.props, "fill", path)?;
+    let color = string_prop(&node.props, "color", path)?.unwrap_or("auto");
+    let pattern = string_prop(&node.props, "pattern", path)?.unwrap_or("clear");
+    let shading_type = pattern
+        .parse::<ShdType>()
+        .map_err(|_| validation(path, "ShadedText pattern is invalid"))?;
+    Ok(run.shading(
+        Shading::new()
+            .shd_type(shading_type)
+            .fill(fill.to_ascii_uppercase())
+            .color(if color == "auto" {
+                color.to_owned()
+            } else {
+                color.to_ascii_uppercase()
+            }),
+    ))
 }
 
 fn compile_moved_to(node: &Node, entry_dir: &Path, path: &str) -> Result<MoveTo> {
@@ -2670,6 +2687,39 @@ mod tests {
                 && document.contains("<w:caps w:val=\"true\" />")
                 && document.contains("<w:vanish />")
                 && document.contains("</w:r><w:r><w:rPr><w:vertAlign"),
+            "{document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_basic_formatting_wrappers() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [{
+                    "type": "Paragraph", "props": {}, "children": [
+                        {"type": "Bold", "props": {}, "children": ["bold"]},
+                        {"type": "Italic", "props": {}, "children": ["italic"]},
+                        {"type": "Underline", "props": {"type": "wave"}, "children": ["underlined"]},
+                        {"type": "StrikeThrough", "props": {}, "children": ["removed"]}
+                    ]
+                }]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(
+            document.contains("<w:b />")
+                && document.contains("<w:i />")
+                && document.contains("<w:u w:val=\"wave\"")
+                && document.contains("<w:strike />"),
             "{document}"
         );
     }

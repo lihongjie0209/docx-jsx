@@ -41,7 +41,7 @@ children are text. Pure whitespace between structural elements is ignored.
 | `Document` | one or more `Section` |
 | `Section` | `Header`, `Footer`, `Heading`, `Paragraph`, `Caption`, `Index`, `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `Bookmark`, `Table`, `List` |
 | `Header`, `Footer` | `Paragraph`, `Caption`, `Table`, `List` |
-| `Paragraph` | `Run`, `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Hyperlink`, `ContentControl`, `Field`, `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField`, `IndexEntry`, `Comment`, `Inserted`, `Deleted`, `MovedFrom`, `MovedTo`, `Footnote`, `Tab`, `TabStop`, `PositionalTab`, `Symbol`, `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText`, `PageNumber`, `TotalPages`, `PageReference`, `TocEntry`, string, number |
+| `Paragraph` | `Run`, `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Hyperlink`, `ContentControl`, `Field`, `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField`, `IndexEntry`, `Comment`, `Inserted`, `Deleted`, `MovedFrom`, `MovedTo`, `Footnote`, `Tab`, `TabStop`, `PositionalTab`, `Symbol`, `Bold`, `Italic`, `Underline`, `StrikeThrough`, `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText`, `PageNumber`, `TotalPages`, `PageReference`, `TocEntry`, string, number |
 | `Heading` | same inline children as `Paragraph` |
 | `Caption` | same inline children as `Paragraph` |
 | `Run` | `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Footnote`, `Tab`, `Symbol`, string, number |
@@ -55,7 +55,7 @@ children are text. Pure whitespace between structural elements is ignored.
 | `Field` | `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Tab`, `PositionalTab`, `Symbol`, string, number |
 | `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField` | same result children as `Field` |
 | `Text` | string, number |
-| `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText` | `Text`, string, number |
+| `Bold`, `Italic`, `Underline`, `StrikeThrough`, `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText` | `Text`, string, number |
 | `Table` | `TableRow` |
 | `TableRow` | `TableCell` |
 | `TableCell` | `Paragraph`, `Caption`, `Table`, `List` |
@@ -146,6 +146,10 @@ components it uses and default-exports one `Document`.
   require text content. Each emits an independent Run with native
   `w:vertAlign`, `w:caps`, or `w:vanish` formatting, so surrounding text is
   unaffected.
+- `Bold`, `Italic`, `StrikeThrough`: no properties and require text content;
+  they emit independent runs with native `w:b`, `w:i`, or `w:strike` formatting.
+  `Underline` requires text content and accepts `type?: "single" | "double" |
+  "dotted" | "dash" | "wave"` (default `single`), emitting native `w:u`.
 - `DoubleStrike`: no properties; emits native `w:dstrike` formatting.
 - `SpacedText`: required finite `amount` in points. Positive values expand and
   negative values condense character spacing; the value is converted to

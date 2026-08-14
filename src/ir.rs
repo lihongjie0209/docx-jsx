@@ -62,6 +62,10 @@ pub enum NodeKind {
     Tab,
     TabStop,
     Symbol,
+    Bold,
+    Italic,
+    Underline,
+    StrikeThrough,
     Superscript,
     Subscript,
     AllCaps,
@@ -133,6 +137,10 @@ impl NodeKind {
             Self::Tab => "Tab",
             Self::TabStop => "TabStop",
             Self::Symbol => "Symbol",
+            Self::Bold => "Bold",
+            Self::Italic => "Italic",
+            Self::Underline => "Underline",
+            Self::StrikeThrough => "StrikeThrough",
             Self::Superscript => "Superscript",
             Self::Subscript => "Subscript",
             Self::AllCaps => "AllCaps",
@@ -169,7 +177,11 @@ impl NodeKind {
     pub(crate) fn is_semantic_text(self) -> bool {
         matches!(
             self,
-            Self::Superscript
+            Self::Bold
+                | Self::Italic
+                | Self::Underline
+                | Self::StrikeThrough
+                | Self::Superscript
                 | Self::Subscript
                 | Self::AllCaps
                 | Self::HiddenText
@@ -424,7 +436,11 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         | NodeKind::Symbol
         | NodeKind::PageReference
         | NodeKind::PositionalTab => false,
-        NodeKind::Superscript
+        NodeKind::Bold
+        | NodeKind::Italic
+        | NodeKind::Underline
+        | NodeKind::StrikeThrough
+        | NodeKind::Superscript
         | NodeKind::Subscript
         | NodeKind::AllCaps
         | NodeKind::HiddenText
@@ -437,11 +453,7 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         | NodeKind::ShadedText => child == NodeKind::Text,
         NodeKind::Table => child == NodeKind::TableRow,
         NodeKind::TableRow => child == NodeKind::TableCell,
-        NodeKind::TableCell => matches!(
-            child,
-            NodeKind::Paragraph | NodeKind::Caption | NodeKind::Table | NodeKind::List
-        ),
-        NodeKind::Header | NodeKind::Footer => matches!(
+        NodeKind::TableCell | NodeKind::Header | NodeKind::Footer => matches!(
             child,
             NodeKind::Paragraph | NodeKind::Caption | NodeKind::Table | NodeKind::List
         ),
@@ -588,7 +600,11 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         | NodeKind::NonBreakingSpace
         | NodeKind::SoftHyphen
         | NodeKind::NonBreakingHyphen => &[],
-        kind @ (NodeKind::Superscript
+        kind @ (NodeKind::Bold
+        | NodeKind::Italic
+        | NodeKind::Underline
+        | NodeKind::StrikeThrough
+        | NodeKind::Superscript
         | NodeKind::Subscript
         | NodeKind::AllCaps
         | NodeKind::HiddenText
@@ -621,13 +637,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::Inserted | NodeKind::Deleted | NodeKind::MovedFrom | NodeKind::MovedTo => {
             &["author", "date"]
         }
-        NodeKind::PageReference | NodeKind::ReferenceField => &[
-            "bookmark",
-            "hyperlink",
-            "relativePosition",
-            "placeholder",
-            "dirty",
-        ],
+        NodeKind::PageReference | NodeKind::ReferenceField => reference_props(),
         NodeKind::PositionalTab => &["align", "relativeTo", "leader"],
         NodeKind::ContentControl => &["alias", "xpath", "prefixMappings", "storeItemId"],
         NodeKind::Field => &["instruction", "dirty"],
@@ -678,6 +688,16 @@ fn index_entry_props() -> &'static [&'static str] {
     ]
 }
 
+fn reference_props() -> &'static [&'static str] {
+    &[
+        "bookmark",
+        "hyperlink",
+        "relativePosition",
+        "placeholder",
+        "dirty",
+    ]
+}
+
 fn paragraph_props() -> &'static [&'static str] {
     &[
         "style",
@@ -697,6 +717,7 @@ fn paragraph_props() -> &'static [&'static str] {
 
 fn semantic_text_props(kind: NodeKind) -> &'static [&'static str] {
     match kind {
+        NodeKind::Underline => &["type"],
         NodeKind::SpacedText => &["amount"],
         NodeKind::ScaledText => &["percent"],
         NodeKind::FitText => &["width", "id"],
@@ -819,6 +840,14 @@ fn validate_text_effect_semantics(node: &Node, path: &str) -> Result<()> {
             path,
             format!("{} requires text content", node.kind.name()),
         ));
+    }
+    if node.kind == NodeKind::Underline {
+        validate_optional_enum_prop(
+            node,
+            path,
+            "type",
+            &["single", "double", "dotted", "dash", "wave"],
+        )?;
     }
     if node.kind == NodeKind::SpacedText {
         let amount = node
@@ -2127,6 +2156,27 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["H",{"type":"Subscript","props":{},"children":[2]},"O x",{"type":"Superscript","props":{},"children":[{"type":"Text","props":{"value":2},"children":[]}]},{"type":"AllCaps","props":{},"children":["draft"]},{"type":"HiddenText","props":{},"children":["internal"]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_basic_formatting_wrappers() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Bold","props":{},"children":["bold"]},{"type":"Italic","props":{},"children":["italic"]},{"type":"Underline","props":{"type":"wave"},"children":["underlined"]},{"type":"StrikeThrough","props":{},"children":["removed"]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_underline_type() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Underline","props":{"type":"invalid"},"children":["text"]}]}]}]}}"#,
+        );
+        assert!(
+            ir.validate()
+                .expect_err("invalid underline type must fail")
+                .to_string()
+                .contains("invalid `type`")
+        );
     }
 
     #[test]

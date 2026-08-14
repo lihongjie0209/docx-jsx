@@ -233,7 +233,7 @@ fn cli_should_compile_advanced_document_components() {
     let recompiled = directory.path().join("advanced.recompiled.docx");
     fs::write(
         &input,
-        r##"import { Document, Section, Header, Footer, Heading, Caption, Index, IndexEntry, Paragraph, Hyperlink, PageNumber, TotalPages, List, ListItem, Run, Bookmark, TableOfContents, TableOfFigures, TableOfEntries, TocEntry, Comment, Footnote, Tab, TabStop, CarriageReturn, NonBreakingSpace, SoftHyphen, NonBreakingHyphen, Symbol, Superscript, Subscript, AllCaps, HiddenText, SpecialHiddenText, DoubleStrike, SpacedText, ScaledText, FitText, BorderedText, ShadedText, Inserted, Deleted, MovedFrom, MovedTo, PageReference, PositionalTab, ContentControl, Field, DateField, TimeField, FileNameField, AuthorField, TitleField, SubjectField, SequenceField, ReferenceField, MergeField, DocumentPropertyField, FormulaField } from "docx-jsx";
+        r##"import { Document, Section, Header, Footer, Heading, Caption, Index, IndexEntry, Paragraph, Hyperlink, PageNumber, TotalPages, List, ListItem, Run, Bookmark, TableOfContents, TableOfFigures, TableOfEntries, TocEntry, Comment, Footnote, Tab, TabStop, CarriageReturn, NonBreakingSpace, SoftHyphen, NonBreakingHyphen, Symbol, Bold, Italic, Underline, StrikeThrough, Superscript, Subscript, AllCaps, HiddenText, SpecialHiddenText, DoubleStrike, SpacedText, ScaledText, FitText, BorderedText, ShadedText, Inserted, Deleted, MovedFrom, MovedTo, PageReference, PositionalTab, ContentControl, Field, DateField, TimeField, FileNameField, AuthorField, TitleField, SubjectField, SequenceField, ReferenceField, MergeField, DocumentPropertyField, FormulaField } from "docx-jsx";
 export default <Document><Section>
   <Header><Paragraph>Report header</Paragraph></Header>
   <Footer><Paragraph>Page <PageNumber /> of <TotalPages /></Paragraph></Footer>
@@ -247,6 +247,7 @@ export default <Document><Section>
   <Paragraph><Comment text="Please verify" author="Ada">Reviewed text</Comment><Tab /><Symbol font="Wingdings" char="F0A7" /><Footnote>Footnote content</Footnote></Paragraph>
   <Paragraph>keep<NonBreakingSpace />together soft<SoftHyphen />hyphen non<NonBreakingHyphen />breaking</Paragraph>
   <Paragraph>H<Subscript>2</Subscript>O x<Superscript>2</Superscript> <AllCaps>draft</AllCaps><HiddenText>internal</HiddenText></Paragraph>
+  <Paragraph><Bold>bold</Bold><Italic>italic</Italic><Underline type="wave">underlined</Underline><StrikeThrough>removed</StrikeThrough></Paragraph>
   <Paragraph><DoubleStrike>obsolete</DoubleStrike><SpacedText amount={1.5}>wide</SpacedText><ScaledText percent={125}>scaled</ScaledText><FitText width={42} id={7}>fitted</FitText><BorderedText style="double" size={1} color="336699" space={2}>bordered</BorderedText><ShadedText fill="FFF2CC" color="336699" pattern="pct20">shaded</ShadedText><SpecialHiddenText>metadata</SpecialHiddenText></Paragraph>
   <Paragraph>Generated: <Field instruction={' DATE \\@ "yyyy-MM-dd" '} dirty={false}><Run bold>2026-08-14</Run></Field></Paragraph>
   <Paragraph><DateField format="yyyy-MM-dd">2026-08-14</DateField><TimeField format="HH:mm" /><FileNameField fullPath>report.docx</FileNameField><AuthorField /><TitleField /><SubjectField /></Paragraph>
