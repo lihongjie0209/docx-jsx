@@ -114,7 +114,15 @@ components it uses and default-exports one `Document`.
 
 - `Document`: `defaultFont?: string`, `defaultSize?: number`.
 - `Section`: `pageSize?: "A4" | "Letter" | {width,height}`,
-  `orientation?: "portrait" | "landscape"`, and `margins?: {top,right,bottom,left,header?,footer?,gutter?}`.
+  `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
+  `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
+  `documentGrid?: {type,linePitch?,charSpace?}`, and
+  `pageNumbering?: {start?,chapterStyle?}`. Document-grid `type` is `default`,
+  `lines`, `linesAndChars`, or `snapToChars`; `linePitch` is a positive point
+  measurement, while `charSpace` is a signed integer in OOXML 1/4096-em units.
+  `pageNumbering.start` is a non-negative integer and `chapterStyle` is a
+  non-empty Word chapter-style value. Both configuration objects must be
+  non-empty.
 - `Paragraph`: `align?: "left" | "center" | "right" | "both"`,
   `spacingBefore?`, `spacingAfter?`, `lineSpacing?`, `indentLeft?`,
   `indentRight?`, `firstLine?`, `hanging?`, `keepNext?`, `keepLines?`,

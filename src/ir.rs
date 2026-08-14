@@ -569,7 +569,7 @@ fn validate_props(node: &Node, path: &str) -> Result<()> {
 fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
     match kind {
         NodeKind::Document => &["defaultFont", "defaultSize"],
-        NodeKind::Section => &["pageSize", "orientation", "margins"],
+        NodeKind::Section => section_props(),
         NodeKind::Paragraph => paragraph_props(),
         NodeKind::Heading => heading_props(),
         NodeKind::Caption => caption_props(),
@@ -661,6 +661,18 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::DocumentPropertyField => &["name", "placeholder", "dirty"],
         NodeKind::FormulaField => &["expression", "numberFormat", "placeholder", "dirty"],
     }
+}
+
+fn section_props() -> &'static [&'static str] {
+    &[
+        "pageSize",
+        "orientation",
+        "margins",
+        "titlePage",
+        "textDirection",
+        "documentGrid",
+        "pageNumbering",
+    ]
 }
 
 fn caption_props() -> &'static [&'static str] {
@@ -909,6 +921,7 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
 }
 
 fn validate_advanced_semantics(node: &Node, path: &str) -> Result<()> {
+    validate_section_semantics(node, path)?;
     validate_run_defaults(node, path)?;
     validate_field_semantics(node, path)?;
     validate_index_semantics(node, path)?;
@@ -917,6 +930,108 @@ fn validate_advanced_semantics(node: &Node, path: &str) -> Result<()> {
     validate_annotation_semantics(node, path)?;
     validate_table_semantics(node, path)?;
     validate_structure_semantics(node, path)
+}
+
+fn validate_section_semantics(node: &Node, path: &str) -> Result<()> {
+    if node.kind != NodeKind::Section {
+        return Ok(());
+    }
+    if node
+        .props
+        .get("titlePage")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(validation(path, "`titlePage` must be a boolean"));
+    }
+    validate_optional_enum_prop(
+        node,
+        path,
+        "textDirection",
+        &["lrTb", "tbRl", "btLr", "lrTbV", "tbRlV"],
+    )?;
+    if let Some(value) = node.props.get("documentGrid") {
+        validate_document_grid(value, path)?;
+    }
+    if let Some(value) = node.props.get("pageNumbering") {
+        validate_page_numbering(value, path)?;
+    }
+    Ok(())
+}
+
+fn validate_document_grid(value: &Value, path: &str) -> Result<()> {
+    let grid = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`documentGrid` must be an object"))?;
+    if grid.is_empty() {
+        return Err(validation(path, "`documentGrid` must not be empty"));
+    }
+    for key in grid.keys() {
+        if !["type", "linePitch", "charSpace"].contains(&key.as_str()) {
+            return Err(validation(
+                path,
+                format!("unknown documentGrid property `{key}`"),
+            ));
+        }
+    }
+    let grid_type = grid
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| validation(path, "`documentGrid.type` must be a string"))?;
+    if !["default", "lines", "linesAndChars", "snapToChars"].contains(&grid_type) {
+        return Err(validation(
+            path,
+            format!("invalid `documentGrid.type` value `{grid_type}`"),
+        ));
+    }
+    if let Some(value) = grid.get("linePitch") {
+        require_number(value, path, "documentGrid.linePitch", true)?;
+    }
+    if grid
+        .get("charSpace")
+        .is_some_and(|value| value.as_i64().is_none())
+    {
+        return Err(validation(
+            path,
+            "`documentGrid.charSpace` must be a signed integer",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_page_numbering(value: &Value, path: &str) -> Result<()> {
+    let numbering = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`pageNumbering` must be an object"))?;
+    if numbering.is_empty() {
+        return Err(validation(path, "`pageNumbering` must not be empty"));
+    }
+    for key in numbering.keys() {
+        if !["start", "chapterStyle"].contains(&key.as_str()) {
+            return Err(validation(
+                path,
+                format!("unknown pageNumbering property `{key}`"),
+            ));
+        }
+    }
+    if numbering
+        .get("start")
+        .is_some_and(|value| value.as_u64().is_none())
+    {
+        return Err(validation(
+            path,
+            "`pageNumbering.start` must be a non-negative integer",
+        ));
+    }
+    if numbering
+        .get("chapterStyle")
+        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(validation(
+            path,
+            "`pageNumbering.chapterStyle` must be a non-empty string",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
@@ -1815,6 +1930,9 @@ fn validate_annotation_semantics(node: &Node, path: &str) -> Result<()> {
 }
 
 fn validate_structure_semantics(node: &Node, path: &str) -> Result<()> {
+    if matches!(node.kind, NodeKind::Header | NodeKind::Footer) {
+        validate_optional_enum_prop(node, path, "type", &["default", "first", "even"])?;
+    }
     if node.kind == NodeKind::Heading {
         let level = node.props.get("level").and_then(Value::as_u64);
         if level.is_none_or(|level| !(1..=9).contains(&level)) {
@@ -2745,5 +2863,37 @@ mod tests {
                 .to_string()
                 .contains("pattern")
         );
+    }
+
+    #[test]
+    fn validate_should_accept_section_page_configuration() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1"}},"children":[]}]}}"#,
+        );
+        ir.validate()
+            .expect("section configuration should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_section_page_configuration() {
+        for (props, expected) in [
+            (r#""documentGrid":{}"#, "must not be empty"),
+            (r#""documentGrid":{"type":"diagonal"}"#, "documentGrid.type"),
+            (
+                r#""documentGrid":{"type":"lines","linePitch":0}"#,
+                "linePitch",
+            ),
+            (r#""pageNumbering":{}"#, "must not be empty"),
+            (r#""pageNumbering":{"start":1.5}"#, "non-negative integer"),
+            (r#""titlePage":"yes""#, "boolean"),
+        ] {
+            let source = format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{}},"children":[{{"type":"Section","props":{{{props}}},"children":[]}}]}}}}"#
+            );
+            let error = parse(&source)
+                .validate()
+                .expect_err("fixture should be rejected");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 }

@@ -286,9 +286,9 @@ fn cli_should_compile_advanced_document_components() {
     fs::write(
         &input,
         r##"import { Document, Section, Header, Footer, Heading, Caption, Index, IndexEntry, Paragraph, Hyperlink, PageNumber, TotalPages, List, ListItem, Run, Bookmark, Table, TableRow, TableCell, TableOfContents, TableOfFigures, TableOfEntries, TocEntry, Comment, Footnote, Tab, TabStop, CarriageReturn, NonBreakingSpace, SoftHyphen, NonBreakingHyphen, Symbol, Bold, Italic, Underline, StrikeThrough, Superscript, Subscript, AllCaps, HiddenText, SpecialHiddenText, DoubleStrike, SpacedText, ScaledText, FitText, BorderedText, ShadedText, Inserted, Deleted, MovedFrom, MovedTo, PageReference, PositionalTab, ContentControl, Field, DateField, TimeField, FileNameField, AuthorField, TitleField, SubjectField, SequenceField, ReferenceField, MergeField, DocumentPropertyField, FormulaField } from "docx-jsx";
-export default <Document><Section>
-  <Header><Paragraph>Report header</Paragraph></Header>
-  <Footer><Paragraph>Page <PageNumber /> of <TotalPages /></Paragraph></Footer>
+export default <Document><Section titlePage textDirection="tbRl" documentGrid={{type: "linesAndChars", linePitch: 18, charSpace: -10}} pageNumbering={{start: 3, chapterStyle: "1"}}>
+  <Header type="first"><Paragraph>Report header</Paragraph></Header>
+  <Footer type="even"><Paragraph>Page <PageNumber /> of <TotalPages /></Paragraph></Footer>
   <TableOfContents startLevel={1} endLevel={2} alias="Contents" />
   <TableOfFigures label="Figure" alias="Figures" />
   <TableOfEntries identifier="manual" alias="Manual entries" />

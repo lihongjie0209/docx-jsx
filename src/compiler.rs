@@ -4,16 +4,16 @@ use std::path::Path;
 
 use docx_rs::{
     AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, Comment, DataBinding,
-    Delete, Docx, FieldCharType, Footer, Footnote, Header, HeightRule, Hyperlink, HyperlinkType,
-    IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelText,
-    LineSpacing, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin,
-    PageNum, PageOrientationType, PageSize, Paragraph, Pic, PositionalTab,
-    PositionalTabAlignmentType, PositionalTabRelativeTo, Run, RunFonts, Section, Shading, ShdType,
-    SpecialIndentType, Start, StructuredDataTag, Sym, Tab as DocxTab, TabLeaderType, TabValueType,
-    Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
-    TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins, TableLayoutType,
-    TableOfContents, TablePositionProperty, TableRow, TextBorder, TextDirectionType, ThemeColor,
-    VAlignType, VMergeType, VertAlignType, WidthType,
+    Delete, DocGrid, DocGridType, Docx, FieldCharType, Footer, Footnote, Header, HeightRule,
+    Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC,
+    Level, LevelJc, LevelText, LineSpacing, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering,
+    NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType, PageSize, Paragraph, Pic,
+    PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo, Run, RunFonts, Section,
+    Shading, ShdType, SpecialIndentType, Start, StructuredDataTag, Sym, Tab as DocxTab,
+    TabLeaderType, TabValueType, Table, TableAlignmentType, TableBorder, TableBorderPosition,
+    TableBorders, TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders,
+    TableCellMargins, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
+    TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType, VertAlignType, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -424,6 +424,23 @@ fn compile_section(
     if let Some(margins) = node.props.get("margins") {
         section = section.page_margin(parse_margins(margins, path)?);
     }
+    if bool_prop(&node.props, "titlePage", path)? == Some(true) {
+        section = section.title_pg();
+    }
+    if let Some(direction) = optional_enum(
+        &node.props,
+        "textDirection",
+        &["lrTb", "tbRl", "btLr", "lrTbV", "tbRlV"],
+        path,
+    )? {
+        section = section.text_direction(direction.to_owned());
+    }
+    if let Some(value) = node.props.get("documentGrid") {
+        section = section.doc_grid(parse_document_grid(value, path)?);
+    }
+    if let Some(value) = node.props.get("pageNumbering") {
+        section = section.page_num_type(parse_page_numbering(value, path)?);
+    }
     for (index, child) in node.children.iter().enumerate() {
         let Child::Node(child) = child else {
             return Err(validation(path, "Section only accepts structural children"));
@@ -456,6 +473,55 @@ fn compile_section(
         };
     }
     Ok(section)
+}
+
+fn parse_document_grid(value: &Value, path: &str) -> Result<DocGrid> {
+    let grid = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`documentGrid` must be an object"))?;
+    let grid_type = string_prop(grid, "type", path)?
+        .ok_or_else(|| validation(path, "`documentGrid.type` is required"))?;
+    let mut result = DocGrid::with_empty().grid_type(match grid_type {
+        "default" => DocGridType::Default,
+        "lines" => DocGridType::Lines,
+        "linesAndChars" => DocGridType::LinesAndChars,
+        "snapToChars" => DocGridType::SnapToChars,
+        value => {
+            return Err(validation(
+                path,
+                format!("invalid document grid type `{value}`"),
+            ));
+        }
+    });
+    if let Some(line_pitch) = number_prop(grid, "linePitch", path)? {
+        result = result.line_pitch(to_twips_usize(line_pitch, path)?);
+    }
+    if let Some(char_space) = grid.get("charSpace") {
+        let value = char_space
+            .as_i64()
+            .and_then(|value| isize::try_from(value).ok())
+            .ok_or_else(|| validation(path, "`documentGrid.charSpace` is out of range"))?;
+        result = result.char_space(value);
+    }
+    Ok(result)
+}
+
+fn parse_page_numbering(value: &Value, path: &str) -> Result<PageNumType> {
+    let numbering = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`pageNumbering` must be an object"))?;
+    let mut result = PageNumType::new();
+    if let Some(start) = numbering.get("start") {
+        let start = start
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| validation(path, "`pageNumbering.start` is out of range"))?;
+        result = result.start(start);
+    }
+    if let Some(chapter_style) = string_prop(numbering, "chapterStyle", path)? {
+        result = result.chap_style(chapter_style);
+    }
+    Ok(result)
 }
 
 fn compile_paragraph(
@@ -2459,6 +2525,30 @@ mod tests {
         assert_eq!(to_half_points(12.0, "test").expect("valid"), 24);
         assert_eq!(to_twips_u32(72.0, "test").expect("valid"), 1440);
         assert_eq!(to_emu(1.0, "test").expect("valid"), 12_700);
+    }
+
+    #[test]
+    fn compile_should_render_section_page_configuration() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1"}},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+
+        assert!(document.contains(r"<w:titlePg />"));
+        assert!(document.contains(r#"<w:textDirection w:val="tbRl" />"#));
+        assert!(document.contains(
+            r#"<w:docGrid w:type="linesAndChars" w:linePitch="360" w:charSpace="-10" />"#
+        ));
+        assert!(document.contains(r#"<w:pgNumType w:start="3" w:chapStyle="1" />"#));
     }
 
     #[test]
