@@ -85,7 +85,14 @@ Colors are uppercase or lowercase six-digit RGB strings without `#`.
 
 - `Table`: optional non-empty `style`, signed `indent` in points, and `margins`
   object with required non-negative `top`, `right`, `bottom`, and `left` point
-  values.
+  values. Optional `position` supports non-negative `leftFromText` and
+  `rightFromText`, `verticalAnchor`/`horizontalAnchor: "margin" | "page" |
+  "text"`, `xAlign: "center" | "inside" | "left" | "outside" | "right"`,
+  `yAlign: "bottom" | "center" | "inline" | "inside" | "outside" | "top"`,
+  and signed point coordinates `x`/`y`. `x` conflicts with `xAlign`; `y`
+  conflicts with `yAlign`.
+- `TableRow`: optional `inserted` or `deleted` revision metadata object with
+  string `author?` and `date?`; the two revision states are mutually exclusive.
 - `TableCell`: optional `verticalMerge: "restart" | "continue"`,
   `textDirection: "lr" | "lrV" | "rl" | "rlV" | "tb" | "tbV" | "tbRlV" |
   "tbRl" | "btLr" | "lrTbV"`, and a `margins` object with the same four

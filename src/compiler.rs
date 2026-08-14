@@ -12,8 +12,8 @@ use docx_rs::{
     SpecialIndentType, Start, StructuredDataTag, Sym, Tab as DocxTab, TabLeaderType, TabValueType,
     Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
     TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins, TableLayoutType,
-    TableOfContents, TableRow, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
-    VertAlignType, WidthType,
+    TableOfContents, TablePositionProperty, TableRow, TextBorder, TextDirectionType, ThemeColor,
+    VAlignType, VMergeType, VertAlignType, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -1513,6 +1513,9 @@ fn compile_table(
         let [top, right, bottom, left] = parse_box_margins(margins, path)?;
         table = table.margins(TableCellMargins::new().margin(top, right, bottom, left));
     }
+    if let Some(position) = node.props.get("position") {
+        table = table.position(parse_table_position(position, path)?);
+    }
     if let Some(width) = number_prop(&node.props, "width", path)? {
         table = table.width(
             to_twips_usize(width, &format!("{path}/width"))?,
@@ -1602,6 +1605,12 @@ fn compile_row(
     }
     if bool_prop(&node.props, "cantSplit", path)?.unwrap_or(false) {
         row = row.cant_split();
+    }
+    if let Some(revision) = node.props.get("inserted") {
+        row = row.insert(compile_row_insert(revision, path)?);
+    }
+    if let Some(revision) = node.props.get("deleted") {
+        row = row.delete(compile_row_delete(revision, path)?);
     }
     Ok(row)
 }
@@ -2130,6 +2139,78 @@ fn parse_box_margins(value: &Value, path: &str) -> Result<[usize; 4]> {
     ])
 }
 
+fn parse_table_position(value: &Value, path: &str) -> Result<TablePositionProperty> {
+    let position = value
+        .as_object()
+        .ok_or_else(|| validation(path, "Table `position` must be an object"))?;
+    let mut output = TablePositionProperty::new();
+    if let Some(value) = number_prop(position, "leftFromText", path)? {
+        if value < 0.0 {
+            return Err(validation(
+                path,
+                "position.leftFromText must be non-negative",
+            ));
+        }
+        output = output.left_from_text(to_twips_i32(value, path)?);
+    }
+    if let Some(value) = number_prop(position, "rightFromText", path)? {
+        if value < 0.0 {
+            return Err(validation(
+                path,
+                "position.rightFromText must be non-negative",
+            ));
+        }
+        output = output.right_from_text(to_twips_i32(value, path)?);
+    }
+    if let Some(value) = string_prop(position, "verticalAnchor", path)? {
+        output = output.vertical_anchor(value);
+    }
+    if let Some(value) = string_prop(position, "horizontalAnchor", path)? {
+        output = output.horizontal_anchor(value);
+    }
+    if let Some(value) = string_prop(position, "xAlign", path)? {
+        output = output.position_x_alignment(value);
+    }
+    if let Some(value) = string_prop(position, "yAlign", path)? {
+        output = output.position_y_alignment(value);
+    }
+    if let Some(value) = number_prop(position, "x", path)? {
+        output = output.position_x(to_twips_i32(value, path)?);
+    }
+    if let Some(value) = number_prop(position, "y", path)? {
+        output = output.position_y(to_twips_i32(value, path)?);
+    }
+    Ok(output)
+}
+
+fn compile_row_insert(value: &Value, path: &str) -> Result<Insert> {
+    let revision = value
+        .as_object()
+        .ok_or_else(|| validation(path, "TableRow `inserted` must be an object"))?;
+    let mut inserted = Insert::new_with_empty();
+    if let Some(author) = string_prop(revision, "author", path)? {
+        inserted = inserted.author(author);
+    }
+    if let Some(date) = string_prop(revision, "date", path)? {
+        inserted = inserted.date(date);
+    }
+    Ok(inserted)
+}
+
+fn compile_row_delete(value: &Value, path: &str) -> Result<Delete> {
+    let revision = value
+        .as_object()
+        .ok_or_else(|| validation(path, "TableRow `deleted` must be an object"))?;
+    let mut deleted = Delete::new();
+    if let Some(author) = string_prop(revision, "author", path)? {
+        deleted = deleted.author(author);
+    }
+    if let Some(date) = string_prop(revision, "date", path)? {
+        deleted = deleted.date(date);
+    }
+    Ok(deleted)
+}
+
 fn parse_page_size(value: &Value, path: &str) -> Result<(u32, u32)> {
     if let Some(name) = value.as_str() {
         return match name {
@@ -2443,12 +2524,13 @@ mod tests {
                             "style": "GridTable4",
                             "indent": 12,
                             "margins": {"top": 2, "right": 3, "bottom": 4, "left": 5},
+                            "position": {"leftFromText": 7.1, "rightFromText": 7.1, "verticalAnchor": "text", "horizontalAnchor": "margin", "xAlign": "right", "y": 25.5},
                             "layout": "fixed",
                             "columnWidths": [100, 100],
                             "border": {"style": "single", "size": 0.5, "color": "112233"}
                         },
                         "children": [{
-                            "type": "TableRow", "props": {"cantSplit": true}, "children": [{
+                            "type": "TableRow", "props": {"cantSplit": true, "inserted": {"author": "Ada", "date": "2026-08-14T00:00:00Z"}}, "children": [{
                                 "type": "TableCell",
                                 "props": {"colSpan": 2, "verticalAlign": "center", "verticalMerge": "restart", "textDirection": "tbRl", "margins": {"top": 1, "right": 2, "bottom": 3, "left": 4}, "shading": "EEEEEE"},
                                 "children": [
@@ -2456,6 +2538,10 @@ mod tests {
                                     {"type": "TableOfContents", "props": {}, "children": []},
                                     {"type": "ContentControl", "props": {"alias": "Cell"}, "children": ["value"]}
                                 ]
+                            }]
+                        }, {
+                            "type": "TableRow", "props": {"deleted": {"author": "Linus"}}, "children": [{
+                                "type": "TableCell", "props": {}, "children": []
                             }]
                         }]
                     }]
@@ -2483,6 +2569,16 @@ mod tests {
                 && document.contains(r#"<w:textDirection w:val="tbRl" />"#)
                 && document.contains("<w:sdt>")
                 && document.contains("TOC")
+                && document.contains(r#"w:leftFromText="142""#)
+                && document.contains(r#"w:rightFromText="142""#)
+                && document.contains(r#"w:vertAnchor="text""#)
+                && document.contains(r#"w:horzAnchor="margin""#)
+                && document.contains(r#"w:tblpXSpec="right""#)
+                && document.contains(r#"w:tblpY="510""#)
+                && document.contains(r"<w:ins w:id=")
+                && document.contains(r#"w:author="Ada""#)
+                && document.contains(r"<w:del w:id=")
+                && document.contains(r#"w:author="Linus""#)
         );
     }
 

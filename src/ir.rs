@@ -592,7 +592,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::Break | NodeKind::Header | NodeKind::Footer => &["type"],
         NodeKind::Image => &["src", "width", "height"],
         NodeKind::Table => table_props(),
-        NodeKind::TableRow => &["height", "heightRule", "cantSplit"],
+        NodeKind::TableRow => &["height", "heightRule", "cantSplit", "inserted", "deleted"],
         NodeKind::TableCell => &[
             "width",
             "colSpan",
@@ -783,6 +783,7 @@ fn table_props() -> &'static [&'static str] {
         "style",
         "indent",
         "margins",
+        "position",
         "border",
     ]
 }
@@ -933,6 +934,9 @@ fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
                 .filter(|number| number.is_finite())
                 .ok_or_else(|| validation(path, "Table `indent` must be a finite number"))?;
         }
+        if let Some(value) = node.props.get("position") {
+            validate_table_position(value, path)?;
+        }
     }
     if matches!(node.kind, NodeKind::Table | NodeKind::TableCell)
         && let Some(value) = node.props.get("margins")
@@ -952,6 +956,136 @@ fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
             if node.props.contains_key(key) {
                 validate_optional_enum_prop(node, path, key, allowed)?;
             }
+        }
+    }
+    if node.kind == NodeKind::TableRow {
+        if node.props.contains_key("inserted") && node.props.contains_key("deleted") {
+            return Err(validation(
+                path,
+                "TableRow `inserted` and `deleted` are mutually exclusive",
+            ));
+        }
+        for key in ["inserted", "deleted"] {
+            if let Some(value) = node.props.get(key) {
+                validate_row_revision(value, path, key)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_table_position(value: &Value, path: &str) -> Result<()> {
+    let position = value
+        .as_object()
+        .ok_or_else(|| validation(path, "Table `position` must be an object"))?;
+    let allowed = [
+        "leftFromText",
+        "rightFromText",
+        "verticalAnchor",
+        "horizontalAnchor",
+        "xAlign",
+        "yAlign",
+        "x",
+        "y",
+    ];
+    if position.is_empty() {
+        return Err(validation(path, "Table `position` must not be empty"));
+    }
+    for key in position.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(validation(
+                path,
+                format!("unknown position property `{key}`"),
+            ));
+        }
+    }
+    for key in ["leftFromText", "rightFromText"] {
+        if let Some(value) = position.get(key) {
+            require_number(value, path, &format!("position.{key}"), false)?;
+        }
+    }
+    for key in ["x", "y"] {
+        if let Some(value) = position.get(key) {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| validation(path, format!("position.{key} must be finite")))?;
+        }
+    }
+    validate_position_enum(
+        position,
+        path,
+        "verticalAnchor",
+        &["margin", "page", "text"],
+    )?;
+    validate_position_enum(
+        position,
+        path,
+        "horizontalAnchor",
+        &["margin", "page", "text"],
+    )?;
+    validate_position_enum(
+        position,
+        path,
+        "xAlign",
+        &["center", "inside", "left", "outside", "right"],
+    )?;
+    validate_position_enum(
+        position,
+        path,
+        "yAlign",
+        &["bottom", "center", "inline", "inside", "outside", "top"],
+    )?;
+    for (coordinate, alignment) in [("x", "xAlign"), ("y", "yAlign")] {
+        if position.contains_key(coordinate) && position.contains_key(alignment) {
+            return Err(validation(
+                path,
+                format!("position `{coordinate}` and `{alignment}` are mutually exclusive"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_position_enum(
+    position: &Map<String, Value>,
+    path: &str,
+    key: &str,
+    allowed: &[&str],
+) -> Result<()> {
+    let Some(value) = position.get(key) else {
+        return Ok(());
+    };
+    let value = value
+        .as_str()
+        .ok_or_else(|| validation(path, format!("position `{key}` must be a string")))?;
+    if !allowed.contains(&value) {
+        return Err(validation(
+            path,
+            format!("invalid position `{key}` value `{value}`"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_row_revision(value: &Value, path: &str, key: &str) -> Result<()> {
+    let revision = value
+        .as_object()
+        .ok_or_else(|| validation(path, format!("TableRow `{key}` must be an object")))?;
+    for field in revision.keys() {
+        if !["author", "date"].contains(&field.as_str()) {
+            return Err(validation(
+                path,
+                format!("unknown {key} property `{field}`"),
+            ));
+        }
+    }
+    for field in ["author", "date"] {
+        if revision.get(field).is_some_and(|value| !value.is_string()) {
+            return Err(validation(
+                path,
+                format!("TableRow `{key}.{field}` must be a string"),
+            ));
         }
     }
     Ok(())
@@ -1909,6 +2043,39 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"style":"GridTable4","indent":12,"margins":{"top":2,"right":3,"bottom":4,"left":5}},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"verticalMerge":"restart","textDirection":"tbRl","margins":{"top":1,"right":2,"bottom":3,"left":4}},"children":[{"type":"TableOfContents","props":{},"children":[]},{"type":"ContentControl","props":{"alias":"Cell"},"children":["value"]}]}]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_floating_table_and_row_revisions() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"position":{"leftFromText":7.1,"rightFromText":7.1,"verticalAnchor":"text","horizontalAnchor":"margin","xAlign":"right","y":25.5}},"children":[{"type":"TableRow","props":{"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"}},"children":[{"type":"TableCell","props":{},"children":[]}]},{"type":"TableRow","props":{"deleted":{"author":"Linus"}},"children":[{"type":"TableCell","props":{},"children":[]}]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_conflicting_table_position_and_row_revisions() {
+        let position = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"position":{"x":10,"xAlign":"right"}},"children":[]}]}]}}"#,
+        );
+        assert!(
+            position
+                .validate()
+                .expect_err("x position modes must be exclusive")
+                .to_string()
+                .contains("mutually exclusive")
+        );
+
+        let revisions = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{},"children":[{"type":"TableRow","props":{"inserted":{},"deleted":{}},"children":[]}]}]}]}}"#,
+        );
+        assert!(
+            revisions
+                .validate()
+                .expect_err("row revisions must be exclusive")
+                .to_string()
+                .contains("mutually exclusive")
+        );
     }
 
     #[test]

@@ -310,7 +310,7 @@ export default <Document><Section>
   <Paragraph><MergeField name="CustomerName" placeholder="Ada" /><DocumentPropertyField name="Project Name">Apollo</DocumentPropertyField><FormulaField expression="SUM(ABOVE)" numberFormat="#,##0.00">42.00</FormulaField></Paragraph>
   <Paragraph><Deleted author="Ada" date="2026-08-14T00:00:00Z"><Run bold>Old text</Run></Deleted><Inserted author="Ada"><Run bold>New text</Run></Inserted></Paragraph>
   <List type="ordered" start={3}><ListItem>Third</ListItem><ListItem level={1}>Nested</ListItem></List>
-  <Table style="GridTable4" indent={12} margins={{top: 2, right: 3, bottom: 4, left: 5}}><TableRow><TableCell verticalMerge="restart" textDirection="tbRl" margins={{top: 1, right: 2, bottom: 3, left: 4}}><Paragraph>Cell</Paragraph><TableOfContents startLevel={1} endLevel={2} /><ContentControl alias="CellValue">value</ContentControl></TableCell></TableRow></Table>
+  <Table style="GridTable4" indent={12} margins={{top: 2, right: 3, bottom: 4, left: 5}} position={{leftFromText: 7.1, rightFromText: 7.1, verticalAnchor: "text", horizontalAnchor: "margin", xAlign: "right", y: 25.5}}><TableRow inserted={{author: "Ada", date: "2026-08-14T00:00:00Z"}}><TableCell verticalMerge="restart" textDirection="tbRl" margins={{top: 1, right: 2, bottom: 3, left: 4}}><Paragraph>Cell</Paragraph><TableOfContents startLevel={1} endLevel={2} /><ContentControl alias="CellValue">value</ContentControl></TableCell></TableRow><TableRow deleted={{author: "Linus"}}><TableCell><Paragraph>Removed row</Paragraph></TableCell></TableRow></Table>
 </Section></Document>;"##,
     )
     .expect("input should write");
