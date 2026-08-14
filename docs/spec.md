@@ -65,7 +65,7 @@ children are text. Pure whitespace between structural elements is ignored.
 | `Bold`, `Italic`, `Underline`, `StrikeThrough`, `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText` | `Text`, string, number |
 | `Table` | `TableRow` |
 | `TableRow` | `TableCell` |
-| `TableCell` | `Paragraph`, `Caption`, `Table`, `List` |
+| `TableCell` | `Paragraph`, `Caption`, `Table`, `List`, `TableOfContents`, `ContentControl` |
 | `List` | one or more `ListItem` |
 | `ListItem` | `Run`, `Text`, `Break`, `Image`, string, number |
 | `Bookmark` | `Heading`, `Paragraph`, `Caption`, `Table`, `List` |
@@ -82,6 +82,14 @@ errors and include a component path in diagnostics.
 All numeric dimensions use points (`pt`). Font sizes convert to half-points,
 layout dimensions to twentieths of a point, and image dimensions to EMU.
 Colors are uppercase or lowercase six-digit RGB strings without `#`.
+
+- `Table`: optional non-empty `style`, signed `indent` in points, and `margins`
+  object with required non-negative `top`, `right`, `bottom`, and `left` point
+  values.
+- `TableCell`: optional `verticalMerge: "restart" | "continue"`,
+  `textDirection: "lr" | "lrV" | "rl" | "rlV" | "tb" | "tbV" | "tbRlV" |
+  "tbRl" | "btLr" | "lrTbV"`, and a `margins` object with the same four
+  required point values as `Table.margins`.
 
 ## DOCX reverse conversion
 

@@ -3,16 +3,17 @@ use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use docx_rs::{
-    AbstractNumbering, AlignmentType, BorderType, BreakType, Comment, DataBinding, Delete, Docx,
-    FieldCharType, Footer, Footnote, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel,
-    Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing,
-    MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin, PageNum,
-    PageOrientationType, PageSize, Paragraph, Pic, PositionalTab, PositionalTabAlignmentType,
-    PositionalTabRelativeTo, Run, RunFonts, Section, Shading, ShdType, SpecialIndentType, Start,
-    StructuredDataTag, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType,
-    TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
-    TableCellBorderPosition, TableCellBorders, TableLayoutType, TableOfContents, TableRow,
-    TextBorder, ThemeColor, VAlignType, VertAlignType, WidthType,
+    AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, Comment, DataBinding,
+    Delete, Docx, FieldCharType, Footer, Footnote, Header, HeightRule, Hyperlink, HyperlinkType,
+    IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelText,
+    LineSpacing, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin,
+    PageNum, PageOrientationType, PageSize, Paragraph, Pic, PositionalTab,
+    PositionalTabAlignmentType, PositionalTabRelativeTo, Run, RunFonts, Section, Shading, ShdType,
+    SpecialIndentType, Start, StructuredDataTag, Sym, Tab as DocxTab, TabLeaderType, TabValueType,
+    Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
+    TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins, TableLayoutType,
+    TableOfContents, TableRow, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
+    VertAlignType, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -1502,6 +1503,16 @@ fn compile_table(
         )?);
     }
     let mut table = Table::new(rows);
+    if let Some(style) = string_prop(&node.props, "style", path)? {
+        table = table.style(style);
+    }
+    if let Some(indent) = number_prop(&node.props, "indent", path)? {
+        table = table.indent(to_twips_i32(indent, &format!("{path}/indent"))?);
+    }
+    if let Some(margins) = node.props.get("margins") {
+        let [top, right, bottom, left] = parse_box_margins(margins, path)?;
+        table = table.margins(TableCellMargins::new().margin(top, right, bottom, left));
+    }
     if let Some(width) = number_prop(&node.props, "width", path)? {
         table = table.width(
             to_twips_usize(width, &format!("{path}/width"))?,
@@ -1628,6 +1639,38 @@ fn compile_cell(
     if let Some(color) = string_prop(&node.props, "shading", path)? {
         cell = cell.shading(Shading::new().fill(color.to_ascii_uppercase()));
     }
+    if let Some(merge) =
+        optional_enum(&node.props, "verticalMerge", &["restart", "continue"], path)?
+    {
+        cell = cell.vertical_merge(if merge == "restart" {
+            VMergeType::Restart
+        } else {
+            VMergeType::Continue
+        });
+    }
+    if let Some(direction) = optional_enum(
+        &node.props,
+        "textDirection",
+        &[
+            "lr", "lrV", "rl", "rlV", "tb", "tbV", "tbRlV", "tbRl", "btLr", "lrTbV",
+        ],
+        path,
+    )? {
+        let direction = direction.parse::<TextDirectionType>().map_err(|_| {
+            validation(path, format!("invalid `textDirection` value `{direction}`"))
+        })?;
+        cell = cell.text_direction(direction);
+    }
+    if let Some(margins) = node.props.get("margins") {
+        let [top, right, bottom, left] = parse_box_margins(margins, path)?;
+        cell.property = cell.property.margins(
+            CellMargins::new()
+                .margin_top(top, WidthType::Dxa)
+                .margin_right(right, WidthType::Dxa)
+                .margin_bottom(bottom, WidthType::Dxa)
+                .margin_left(left, WidthType::Dxa),
+        );
+    }
     if let Some(border) = node.props.get("border") {
         cell = cell.set_borders(cell_borders(&parse_border(border, path)?));
     }
@@ -1650,6 +1693,14 @@ fn compile_cell(
                 cell.add_table(compile_table(child, entry_dir, &child_path, context)?)
             }
             NodeKind::List => add_list_to_cell(cell, child, entry_dir, &child_path, context)?,
+            NodeKind::TableOfContents => {
+                cell.add_table_of_contents(compile_table_of_contents(child, &child_path)?)
+            }
+            NodeKind::ContentControl => cell.add_structured_data_tag(compile_content_control(
+                child,
+                entry_dir,
+                &child_path,
+            )?),
             _ => return Err(validation(&child_path, "unsupported TableCell child")),
         };
     }
@@ -2055,6 +2106,30 @@ fn cell_borders(spec: &BorderSpec) -> TableCellBorders {
     })
 }
 
+fn parse_box_margins(value: &Value, path: &str) -> Result<[usize; 4]> {
+    let margins = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`margins` must be an object"))?;
+    for key in margins.keys() {
+        if !["top", "right", "bottom", "left"].contains(&key.as_str()) {
+            return Err(validation(
+                path,
+                format!("unknown margins property `{key}`"),
+            ));
+        }
+    }
+    let value = |key: &str| {
+        required_number(margins, key, path)
+            .and_then(|value| to_twips_usize(value, &format!("{path}/margins/{key}")))
+    };
+    Ok([
+        value("top")?,
+        value("right")?,
+        value("bottom")?,
+        value("left")?,
+    ])
+}
+
 fn parse_page_size(value: &Value, path: &str) -> Result<(u32, u32)> {
     if let Some(name) = value.as_str() {
         return match name {
@@ -2365,6 +2440,9 @@ mod tests {
                         "type": "Table",
                         "props": {
                             "widthPercent": 100,
+                            "style": "GridTable4",
+                            "indent": 12,
+                            "margins": {"top": 2, "right": 3, "bottom": 4, "left": 5},
                             "layout": "fixed",
                             "columnWidths": [100, 100],
                             "border": {"style": "single", "size": 0.5, "color": "112233"}
@@ -2372,8 +2450,12 @@ mod tests {
                         "children": [{
                             "type": "TableRow", "props": {"cantSplit": true}, "children": [{
                                 "type": "TableCell",
-                                "props": {"colSpan": 2, "verticalAlign": "center", "shading": "EEEEEE"},
-                                "children": [{"type": "Paragraph", "props": {}, "children": ["cell"]}]
+                                "props": {"colSpan": 2, "verticalAlign": "center", "verticalMerge": "restart", "textDirection": "tbRl", "margins": {"top": 1, "right": 2, "bottom": 3, "left": 4}, "shading": "EEEEEE"},
+                                "children": [
+                                    {"type": "Paragraph", "props": {}, "children": ["cell"]},
+                                    {"type": "TableOfContents", "props": {}, "children": []},
+                                    {"type": "ContentControl", "props": {"alias": "Cell"}, "children": ["value"]}
+                                ]
                             }]
                         }]
                     }]
@@ -2393,6 +2475,14 @@ mod tests {
             document.contains("<w:tbl>")
                 && document.contains("w:gridSpan")
                 && document.contains("w:fill=\"EEEEEE\"")
+                && document.contains(r#"<w:tblStyle w:val="GridTable4" />"#)
+                && document.contains(r#"<w:tblInd w:w="240" w:type="dxa" />"#)
+                && document.contains("<w:tblCellMar>")
+                && document.contains("<w:tcMar>")
+                && document.contains(r#"<w:vMerge w:val="restart" />"#)
+                && document.contains(r#"<w:textDirection w:val="tbRl" />"#)
+                && document.contains("<w:sdt>")
+                && document.contains("TOC")
         );
     }
 

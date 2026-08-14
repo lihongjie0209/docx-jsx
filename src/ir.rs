@@ -453,7 +453,8 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         | NodeKind::ShadedText => child == NodeKind::Text,
         NodeKind::Table => child == NodeKind::TableRow,
         NodeKind::TableRow => child == NodeKind::TableCell,
-        NodeKind::TableCell | NodeKind::Header | NodeKind::Footer => matches!(
+        NodeKind::TableCell => allows_table_cell_child(child),
+        NodeKind::Header | NodeKind::Footer => matches!(
             child,
             NodeKind::Paragraph | NodeKind::Caption | NodeKind::Table | NodeKind::List
         ),
@@ -492,6 +493,18 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         }
         NodeKind::Deleted => matches!(child, NodeKind::Run | NodeKind::Text),
     }
+}
+
+fn allows_table_cell_child(child: NodeKind) -> bool {
+    matches!(
+        child,
+        NodeKind::Paragraph
+            | NodeKind::Caption
+            | NodeKind::Table
+            | NodeKind::List
+            | NodeKind::TableOfContents
+            | NodeKind::ContentControl
+    )
 }
 
 fn allows_run_child(child: NodeKind) -> bool {
@@ -580,7 +593,16 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::Image => &["src", "width", "height"],
         NodeKind::Table => table_props(),
         NodeKind::TableRow => &["height", "heightRule", "cantSplit"],
-        NodeKind::TableCell => &["width", "colSpan", "verticalAlign", "shading", "border"],
+        NodeKind::TableCell => &[
+            "width",
+            "colSpan",
+            "verticalAlign",
+            "verticalMerge",
+            "textDirection",
+            "margins",
+            "shading",
+            "border",
+        ],
         NodeKind::Hyperlink => &["href", "anchor", "history"],
         NodeKind::PageNumber
         | NodeKind::TotalPages
@@ -758,6 +780,9 @@ fn table_props() -> &'static [&'static str] {
         "align",
         "layout",
         "columnWidths",
+        "style",
+        "indent",
+        "margins",
         "border",
     ]
 }
@@ -889,7 +914,68 @@ fn validate_advanced_semantics(node: &Node, path: &str) -> Result<()> {
     validate_text_effect_semantics(node, path)?;
     validate_revision_and_control_semantics(node, path)?;
     validate_annotation_semantics(node, path)?;
+    validate_table_semantics(node, path)?;
     validate_structure_semantics(node, path)
+}
+
+fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
+    if node.kind == NodeKind::Table {
+        if node
+            .props
+            .get("style")
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(path, "Table `style` must be a non-empty string"));
+        }
+        if let Some(value) = node.props.get("indent") {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| validation(path, "Table `indent` must be a finite number"))?;
+        }
+    }
+    if matches!(node.kind, NodeKind::Table | NodeKind::TableCell)
+        && let Some(value) = node.props.get("margins")
+    {
+        validate_box_margins(value, path)?;
+    }
+    if node.kind == NodeKind::TableCell {
+        for (key, allowed) in [
+            ("verticalMerge", &["restart", "continue"][..]),
+            (
+                "textDirection",
+                &[
+                    "lr", "lrV", "rl", "rlV", "tb", "tbV", "tbRlV", "tbRl", "btLr", "lrTbV",
+                ][..],
+            ),
+        ] {
+            if node.props.contains_key(key) {
+                validate_optional_enum_prop(node, path, key, allowed)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_box_margins(value: &Value, path: &str) -> Result<()> {
+    let margins = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`margins` must be an object"))?;
+    for key in margins.keys() {
+        if !["top", "right", "bottom", "left"].contains(&key.as_str()) {
+            return Err(validation(
+                path,
+                format!("unknown margins property `{key}`"),
+            ));
+        }
+    }
+    for key in ["top", "right", "bottom", "left"] {
+        let value = margins
+            .get(key)
+            .ok_or_else(|| validation(path, format!("`margins` requires `{key}`")))?;
+        require_number(value, path, &format!("margins.{key}"), false)?;
+    }
+    Ok(())
 }
 
 fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
@@ -1815,6 +1901,39 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"color":"2E74B5","themeColor":"accent1","themeShade":"BF","themeTint":"99","bold":false,"italic":false,"strike":false,"doubleStrike":true},"children":["themed"]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_extended_table_and_cell_properties() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"style":"GridTable4","indent":12,"margins":{"top":2,"right":3,"bottom":4,"left":5}},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"verticalMerge":"restart","textDirection":"tbRl","margins":{"top":1,"right":2,"bottom":3,"left":4}},"children":[{"type":"TableOfContents","props":{},"children":[]},{"type":"ContentControl","props":{"alias":"Cell"},"children":["value"]}]}]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_table_margins_and_text_direction() {
+        let margins = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"margins":{"top":1,"right":1,"bottom":1}},"children":[]}]}]}}"#,
+        );
+        assert!(
+            margins
+                .validate()
+                .expect_err("incomplete margins must fail")
+                .to_string()
+                .contains("margins")
+        );
+
+        let direction = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"textDirection":"sideways"},"children":[]}]}]}]}]}}"#,
+        );
+        assert!(
+            direction
+                .validate()
+                .expect_err("unknown direction must fail")
+                .to_string()
+                .contains("textDirection")
+        );
     }
 
     #[test]
