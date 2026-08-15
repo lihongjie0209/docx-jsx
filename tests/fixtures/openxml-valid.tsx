@@ -33,7 +33,7 @@ export default (
     ]}
     styles={[
       { id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: { spacingAfter: 6 } },
-      { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: { font: "Noto Sans CJK SC", size: 11 } },
+      { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: { fonts: { ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC", hint: "eastAsia" }, size: 11 } },
       { id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: { italic: true } },
       { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center" } },
     ]}
@@ -43,7 +43,9 @@ export default (
       <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.
       </Paragraph>
-      <Paragraph><Run style="BodyChar">Linked character style</Run></Paragraph>
+      <Paragraph fonts={{ ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC" }}>
+        <Run style="BodyChar" fonts={{ asciiTheme: "minorHAnsi", eastAsiaTheme: "minorEastAsia", hint: "eastAsia" }}>Linked character style</Run>
+      </Paragraph>
       <Table style="ValidationTable" widthPercent={100} border={{ style: "single", size: 0.5, color: "808080" }}>
         <TableRow>
           <TableCell shading="D9EAF7"><Paragraph>Component</Paragraph></TableCell>

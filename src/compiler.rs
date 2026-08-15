@@ -306,6 +306,9 @@ fn compile_style_run(mut style: Style, value: &Value, path: &str) -> Result<Styl
                 .cs(font),
         );
     }
+    if let Some(fonts) = object_prop(run, "fonts", path)? {
+        style = style.fonts(compile_run_fonts(fonts, &format!("{path}/run/fonts"))?);
+    }
     if let Some(size) = number_prop(run, "size", path)? {
         style = style.size(to_half_points(size, path)?);
     }
@@ -1695,15 +1698,7 @@ fn compile_paragraph(
     if let Some(value) = bool_prop(&node.props, "widowControl", path)? {
         paragraph = paragraph.widow_control(value);
     }
-    if let Some(font) = string_prop(&node.props, "font", path)? {
-        paragraph = paragraph.fonts(
-            RunFonts::new()
-                .ascii(font)
-                .hi_ansi(font)
-                .east_asia(font)
-                .cs(font),
-        );
-    }
+    paragraph = compile_paragraph_fonts(paragraph, &node.props, path)?;
     if let Some(size) = number_prop(&node.props, "size", path)? {
         paragraph = paragraph.size(to_half_points(size, &format!("{path}/size"))?);
     }
@@ -1731,6 +1726,26 @@ fn compile_paragraph(
     }
     paragraph = compile_advanced_paragraph_properties(paragraph, node, path)?;
     compile_paragraph_children(paragraph, &node.children, entry_dir, path, context)
+}
+
+fn compile_paragraph_fonts(
+    mut paragraph: Paragraph,
+    props: &Map<String, Value>,
+    path: &str,
+) -> Result<Paragraph> {
+    if let Some(font) = string_prop(props, "font", path)? {
+        paragraph = paragraph.fonts(
+            RunFonts::new()
+                .ascii(font)
+                .hi_ansi(font)
+                .east_asia(font)
+                .cs(font),
+        );
+    }
+    if let Some(fonts) = object_prop(props, "fonts", path)? {
+        paragraph = paragraph.fonts(compile_run_fonts(fonts, &format!("{path}/fonts"))?);
+    }
+    Ok(paragraph)
 }
 
 fn compile_advanced_paragraph_properties(
@@ -2406,6 +2421,9 @@ fn compile_run_properties(props: &Map<String, Value>, path: &str) -> Result<Run>
                 .east_asia(font)
                 .cs(font),
         );
+    }
+    if let Some(fonts) = object_prop(props, "fonts", path)? {
+        run = run.fonts(compile_run_fonts(fonts, &format!("{path}/fonts"))?);
     }
     if let Some(size) = number_prop(props, "size", path)? {
         run = run.size(to_half_points(size, &format!("{path}/size"))?);
@@ -4442,6 +4460,38 @@ mod tests {
         assert!(document.contains(r#"<w:color w:val="1A2B3C" />"#));
         assert!(document.contains(r#"<w:spacing w:val="10" />"#));
         assert!(document.contains("<w:b />") && document.contains("<w:i />"));
+    }
+
+    #[test]
+    fn compile_should_render_font_slots_on_runs_paragraphs_and_styles() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","run":{"fonts":{"ascii":"Style Latin","eastAsia":"样式中文"}}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"fonts":{"ascii":"Paragraph Latin","eastAsia":"段落中文"}},"children":[{"type":"Run","props":{"fonts":{"ascii":"Run Latin","hiAnsi":"Run ANSI","eastAsia":"运行中文","cs":"Run CS","hint":"eastAsia"}},"children":["mixed"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part should exist")
+            .read_to_string(&mut styles)
+            .expect("styles XML should be UTF-8");
+
+        assert!(document.contains(r#"w:ascii="Paragraph Latin""#));
+        assert!(document.contains(r#"w:eastAsia="段落中文""#));
+        assert!(document.contains(r#"w:ascii="Run Latin""#));
+        assert!(document.contains(r#"w:hAnsi="Run ANSI""#));
+        assert!(document.contains(r#"w:eastAsia="运行中文""#));
+        assert!(document.contains(r#"w:cs="Run CS""#));
+        assert!(document.contains(r#"w:hint="eastAsia""#));
+        assert!(styles.contains(r#"w:ascii="Style Latin""#));
+        assert!(styles.contains(r#"w:eastAsia="样式中文""#));
     }
 
     #[test]

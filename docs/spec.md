@@ -147,7 +147,7 @@ components it uses and default-exports one `Document`.
   definition requires unique non-empty `id`, non-empty `name`, and `type` of
   `paragraph`, `character`, `numbering`, or `table`. Optional metadata is
   `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
-  `unhideWhenUsed`. `run?: {font,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden,textBorder}`
+  `unhideWhenUsed`. `run?: {font,fonts,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden,textBorder}`
   uses the same units and color rules as `Run`.
   `paragraph?: {align,textAlign,snapToGrid,spacingBefore,spacingAfter,lineSpacing,spacingBeforeLines,spacingAfterLines,lineRule,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
   uses point dimensions; `firstLine` and `hanging` are mutually exclusive.
@@ -224,7 +224,7 @@ components it uses and default-exports one `Document`.
   `threeDEngrave`, `outset`, `inset`, `apples`, `archedScallops`,
   `babyPacifier`, and `babyRattle`.
 - `Paragraph`: also accepts paragraph-default
-  `font?`, positive `size?`, `bold?`, `italic?`, six-digit RGB `color?`, and
+  `font?` or `fonts?`, positive `size?`, `bold?`, `italic?`, six-digit RGB `color?`, and
   signed `characterSpacing?` in points.
 - `Heading`: required `level: 1..9`, optional `style`, plus all `Paragraph`
   layout properties except `outlineLevel`. Its `level` emits both a heading
@@ -241,8 +241,12 @@ components it uses and default-exports one `Document`.
   `Caption`, `numberSeparator?` defaults to one space, and `textSeparator?`
   defaults to `: `. It emits a styled paragraph containing the visible label,
   a native `SEQ` field, the separator, and its inline children.
-- `Run`: `font?`, `size?`, `bold?`, `italic?`, `strike?`, `underline?`,
+- `Run`: `font?`, `fonts?`, `size?`, `bold?`, `italic?`, `strike?`, `underline?`,
   `color?`, `highlight?`, `style?`.
+- `fonts` on `Run`, `Paragraph`, `Heading`, and `StyleDefinition.run` has the
+  same nine optional fields as `Document.defaultFonts`. It is mutually
+  exclusive with `font`, must not be empty, and preserves distinct physical,
+  theme, and hint values during external-DOCX reverse conversion.
 - `Paragraph`: also accepts `style?: string` for custom or built-in styles.
 - `Text`: optional `value`; it may alternatively contain string/number children.
 - `Break`: `type?: "line" | "page" | "column"` (default `line`).

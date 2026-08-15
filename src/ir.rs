@@ -797,6 +797,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::Run => &[
             "style",
             "font",
+            "fonts",
             "size",
             "bold",
             "italic",
@@ -1006,6 +1007,7 @@ fn paragraph_props() -> &'static [&'static str] {
         "snapToGrid",
         "widowControl",
         "font",
+        "fonts",
         "size",
         "bold",
         "italic",
@@ -1046,6 +1048,7 @@ fn heading_props() -> &'static [&'static str] {
         "snapToGrid",
         "widowControl",
         "font",
+        "fonts",
         "size",
         "bold",
         "italic",
@@ -1317,13 +1320,7 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
                 return Err(validation(path, format!("`{key}` must be a boolean")));
             }
         }
-        if node
-            .props
-            .get("font")
-            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
-        {
-            return Err(validation(path, "`font` must be a non-empty string"));
-        }
+        validate_font_choice(&node.props, path, "font", "fonts")?;
         if let Some(value) = node.props.get("characterSpacing") {
             value
                 .as_f64()
@@ -1861,6 +1858,7 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
         path,
         &[
             "font",
+            "fonts",
             "size",
             "color",
             "themeColor",
@@ -1877,7 +1875,8 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
     if let Some(value) = run.get("size") {
         require_number(value, path, "run.size", true)?;
     }
-    for key in ["font", "highlight"] {
+    validate_font_choice(run, path, "font", "fonts")?;
+    for key in ["highlight"] {
         if run
             .get(key)
             .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
@@ -2712,6 +2711,7 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
     if node.kind != NodeKind::Run {
         return Ok(());
     }
+    validate_font_choice(&node.props, path, "font", "fonts")?;
     if node.props.contains_key("themeColor") {
         validate_optional_enum_prop(
             node,
@@ -2760,6 +2760,64 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
             path,
             "enabled `strike` and `doubleStrike` are mutually exclusive",
         ));
+    }
+    Ok(())
+}
+
+fn validate_font_choice(
+    props: &Map<String, Value>,
+    path: &str,
+    shorthand_key: &str,
+    slots_key: &str,
+) -> Result<()> {
+    if props.contains_key(shorthand_key) && props.contains_key(slots_key) {
+        return Err(validation(
+            path,
+            format!(
+                "`{shorthand_key}` and `{slots_key}` cannot be used together; use `{slots_key}` when font slots differ"
+            ),
+        ));
+    }
+    if props
+        .get(shorthand_key)
+        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(validation(
+            path,
+            format!("`{shorthand_key}` must be a non-empty string"),
+        ));
+    }
+    let Some(value) = props.get(slots_key) else {
+        return Ok(());
+    };
+    let fonts = value
+        .as_object()
+        .ok_or_else(|| validation(path, format!("`{slots_key}` must be an object")))?;
+    validate_object_keys(
+        fonts,
+        path,
+        &[
+            "ascii",
+            "hiAnsi",
+            "eastAsia",
+            "cs",
+            "asciiTheme",
+            "hiAnsiTheme",
+            "eastAsiaTheme",
+            "csTheme",
+            "hint",
+        ],
+    )?;
+    if fonts.is_empty() {
+        return Err(validation(path, format!("`{slots_key}` must not be empty")));
+    }
+    for (key, value) in fonts {
+        if value.as_str().is_none_or(str::is_empty) {
+            return Err(validation(
+                path,
+                format!("`{slots_key}.{key}` must be a non-empty string"),
+            ));
+        }
     }
     Ok(())
 }
@@ -3629,6 +3687,32 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"snapToGrid":false,"widowControl":true,"font":"Noto Sans CJK SC","size":12,"bold":true,"italic":false,"color":"1a2B3c","characterSpacing":0.5},"children":["body"]},{"type":"Heading","props":{"level":2,"font":"Noto Sans CJK SC","size":16},"children":["title"]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_font_slots_on_runs_paragraphs_and_styles() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","run":{"fonts":{"ascii":"Times New Roman","eastAsia":"宋体","hint":"eastAsia"}}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"fonts":{"ascii":"Arial","eastAsia":"黑体"}},"children":[{"type":"Run","props":{"fonts":{"hiAnsi":"Calibri","csTheme":"minorBidi"}},"children":["mixed"]}]},{"type":"Heading","props":{"level":1,"fonts":{"eastAsiaTheme":"majorEastAsia"}},"children":["title"]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("font slots should validate everywhere");
+    }
+
+    #[test]
+    fn validate_should_reject_ambiguous_font_slots_everywhere() {
+        for source in [
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"font":"Arial","fonts":{"eastAsia":"宋体"}},"children":[]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"font":"Arial","fonts":{"eastAsia":"宋体"}},"children":[]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","run":{"font":"Arial","fonts":{"eastAsia":"宋体"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        ] {
+            let error = parse(source)
+                .validate()
+                .expect_err("ambiguous fonts must fail");
+            assert!(
+                error.to_string().contains("cannot be used together"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

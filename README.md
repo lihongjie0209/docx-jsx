@@ -68,8 +68,8 @@ Windows.
 | Styles and inheritance | Supported | Paragraph/character/numbering/table styles, native `basedOn`, paragraph `next`, linked styles, typed references and cycle detection |
 | Document defaults and metadata | Supported | Independent ASCII/High ANSI/East Asian/complex-script fonts, font themes/hint, spacing, settings, properties, variables, Web Extensions and Custom XML |
 | Sections | Supported | Page size/orientation/margins, headers/footers, title pages, text direction, document grid, page numbering |
-| Paragraphs and headings | Supported | Full line spacing, indentation, frames, borders, IDs, tabs, bidi, outline and tracked format changes |
-| Runs and semantic text | Supported | Fonts, themes, emphasis, effects, borders/shading, symbols, breaks, revisions and semantic wrappers |
+| Paragraphs and headings | Supported | Full line spacing, indentation, nine-slot run-default fonts, frames, borders, IDs, tabs, bidi, outline and tracked format changes |
+| Runs and semantic text | Supported | Independent physical/theme font slots and hint, emphasis, effects, borders/shading, symbols, breaks, revisions and semantic wrappers |
 | Tables | Supported | Grid/width/layout, positioning, margins, all border positions/styles, row revisions and cell layout |
 | Fields and indexes | Supported | Generic and typed fields, TOC/figures/entries, captions, index fields and cross-references |
 | Annotations and controls | Supported | Bookmarks, comments, footnotes, hyperlinks and bound content controls |

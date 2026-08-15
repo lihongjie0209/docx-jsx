@@ -311,6 +311,13 @@ impl Writer {
                 attrs.push(point_attr(target, value));
             }
         }
+        if let Some((name, value)) = reverse_fonts_property(
+            property.get("runProperty").unwrap_or(&Value::Null),
+            "font",
+            "fonts",
+        ) {
+            attrs.push(jsx_prop(&name, &value)?);
+        }
         self.line(depth, &format!("<Paragraph{}>", attrs.concat()));
         for child in &paragraph.children {
             self.paragraph_child(child, depth + 1)?;
@@ -485,10 +492,8 @@ impl Writer {
             };
             attrs.push(format!(" size={{{size}}}"));
         }
-        if let Some(value) = nested_string(&property, &["fonts", "ascii"])
-            .or_else(|| nested_string(&property, &["fonts", "eastAsia"]))
-        {
-            attrs.push(attr("font", value));
+        if let Some((name, value)) = reverse_fonts_property(&property, "font", "fonts") {
+            attrs.push(jsx_prop(&name, &value)?);
         }
         if let Some(value) = property
             .get("style")
@@ -837,15 +842,59 @@ fn reverse_run_properties(source: &Value) -> Result<Option<Map<String, Value>>> 
             .map_err(|_| Error::Reverse("style font size exceeds supported range".to_owned()))?;
         output.insert("size".to_owned(), scaled_decimal_value(value, 2)?);
     }
-    if let Some(value) = nested_string(source, &["fonts", "ascii"])
-        .or_else(|| nested_string(source, &["fonts", "eastAsia"]))
-    {
-        output.insert("font".to_owned(), Value::String(value.to_owned()));
+    if let Some((name, value)) = reverse_fonts_property(source, "font", "fonts") {
+        output.insert(name, value);
     }
     if let Some(value) = source.get("underline").and_then(scalar_string) {
         output.insert("underline".to_owned(), Value::String(value.to_owned()));
     }
     Ok((!output.is_empty()).then_some(output))
+}
+
+fn reverse_fonts_property(source: &Value, singular: &str, plural: &str) -> Option<(String, Value)> {
+    let fonts = source.get("fonts").and_then(Value::as_object)?;
+    let mut output = Map::new();
+    for key in [
+        "ascii",
+        "hiAnsi",
+        "eastAsia",
+        "cs",
+        "asciiTheme",
+        "hiAnsiTheme",
+        "eastAsiaTheme",
+        "csTheme",
+        "hint",
+    ] {
+        if let Some(value) = fonts.get(key).and_then(Value::as_str) {
+            output.insert(key.to_owned(), Value::String(value.to_owned()));
+        }
+    }
+    if output.is_empty() {
+        return None;
+    }
+    let physical =
+        ["ascii", "hiAnsi", "eastAsia", "cs"].map(|key| output.get(key).and_then(Value::as_str));
+    let can_collapse = physical[0].is_some()
+        && physical.iter().all(|value| *value == physical[0])
+        && !output
+            .keys()
+            .any(|key| key.ends_with("Theme") || key == "hint");
+    if can_collapse {
+        return Some((
+            singular.to_owned(),
+            Value::String(physical[0].unwrap_or_default().to_owned()),
+        ));
+    }
+    Some((plural.to_owned(), Value::Object(output)))
+}
+
+fn jsx_prop(name: &str, value: &Value) -> Result<String> {
+    match value {
+        Value::String(value) => Ok(attr(name, value)),
+        value => serde_json::to_string(value)
+            .map(|value| format!(" {name}={{{value}}}"))
+            .map_err(|error| Error::Reverse(error.to_string())),
+    }
 }
 
 fn reverse_paragraph_properties(source: &Value) -> Result<Option<Map<String, Value>>> {
@@ -1127,6 +1176,54 @@ mod tests {
                 && jsx.contains(r#"<Run style="Emphasis">"#),
             "{jsx}"
         );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_font_slots_on_runs_paragraphs_and_styles() {
+        let mut bytes = Cursor::new(Vec::new());
+        Docx::new()
+            .add_style(
+                Style::new("Body", StyleType::Paragraph)
+                    .name("Body")
+                    .fonts(RunFonts::new().ascii("Style Latin").east_asia("样式中文")),
+            )
+            .add_paragraph(
+                Paragraph::new()
+                    .fonts(
+                        RunFonts::new()
+                            .ascii("Paragraph Latin")
+                            .east_asia("段落中文"),
+                    )
+                    .add_run(
+                        Run::new()
+                            .fonts(
+                                RunFonts::new()
+                                    .ascii("Run Latin")
+                                    .hi_ansi("Run ANSI")
+                                    .east_asia("运行中文")
+                                    .cs("Run CS")
+                                    .hint("eastAsia"),
+                            )
+                            .add_text("mixed"),
+                    ),
+            )
+            .build()
+            .pack(&mut bytes)
+            .expect("external DOCX fixture should pack");
+
+        let jsx = reverse_document(&bytes.into_inner()).expect("external DOCX should reverse");
+
+        assert!(
+            jsx.contains(r#"run":{"fonts":{"ascii":"Style Latin","eastAsia":"样式中文"}}"#),
+            "{jsx}"
+        );
+        assert!(
+            jsx.contains(
+                r#"<Paragraph fonts={{"ascii":"Paragraph Latin","eastAsia":"段落中文"}}>"#
+            ),
+            "{jsx}"
+        );
+        assert!(jsx.contains(r#"<Run fonts={{"ascii":"Run Latin","hiAnsi":"Run ANSI","eastAsia":"运行中文","cs":"Run CS","hint":"eastAsia"}}>"#), "{jsx}");
     }
 
     #[test]
