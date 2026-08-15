@@ -55,6 +55,9 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
             .cs(font);
         docx = docx.default_fonts(fonts);
     }
+    if let Some(fonts) = object_prop(&ir.document.props, "defaultFonts", "Document")? {
+        docx = docx.default_fonts(compile_run_fonts(fonts, "Document/defaultFonts")?);
+    }
     if let Some(size) = number_prop(&ir.document.props, "defaultSize", "Document")? {
         docx = docx.default_size(to_half_points(size, "Document/defaultSize")?);
     }
@@ -3931,6 +3934,38 @@ fn required_string<'a>(props: &'a Map<String, Value>, key: &str, path: &str) -> 
     Ok(value)
 }
 
+fn compile_run_fonts(props: &Map<String, Value>, path: &str) -> Result<RunFonts> {
+    let mut fonts = RunFonts::new();
+    if let Some(value) = string_prop(props, "ascii", path)? {
+        fonts = fonts.ascii(value);
+    }
+    if let Some(value) = string_prop(props, "hiAnsi", path)? {
+        fonts = fonts.hi_ansi(value);
+    }
+    if let Some(value) = string_prop(props, "eastAsia", path)? {
+        fonts = fonts.east_asia(value);
+    }
+    if let Some(value) = string_prop(props, "cs", path)? {
+        fonts = fonts.cs(value);
+    }
+    if let Some(value) = string_prop(props, "asciiTheme", path)? {
+        fonts = fonts.ascii_theme(value);
+    }
+    if let Some(value) = string_prop(props, "hiAnsiTheme", path)? {
+        fonts = fonts.hi_ansi_theme(value);
+    }
+    if let Some(value) = string_prop(props, "eastAsiaTheme", path)? {
+        fonts = fonts.east_asia_theme(value);
+    }
+    if let Some(value) = string_prop(props, "csTheme", path)? {
+        fonts = fonts.cs_theme(value);
+    }
+    if let Some(value) = string_prop(props, "hint", path)? {
+        fonts = fonts.hint(value);
+    }
+    Ok(fonts)
+}
+
 fn string_prop<'a>(
     props: &'a Map<String, Value>,
     key: &str,
@@ -4117,6 +4152,39 @@ mod tests {
             .read_to_string(&mut document)
             .expect("document XML should be UTF-8");
         assert!(document.contains("Hello") && document.contains("w:b"));
+    }
+
+    #[test]
+    fn compile_should_render_distinct_default_font_slots() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultFonts":{"ascii":"Times New Roman","hiAnsi":"Arial","eastAsia":"宋体","cs":"Traditional Arabic","asciiTheme":"majorHAnsi","hiAnsiTheme":"minorHAnsi","eastAsiaTheme":"majorEastAsia","csTheme":"minorBidi","hint":"eastAsia"}},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part should exist")
+            .read_to_string(&mut styles)
+            .expect("styles XML should be UTF-8");
+
+        for attribute in [
+            r#"w:ascii="Times New Roman""#,
+            r#"w:hAnsi="Arial""#,
+            r#"w:eastAsia="宋体""#,
+            r#"w:cs="Traditional Arabic""#,
+            r#"w:asciiTheme="majorHAnsi""#,
+            r#"w:hAnsiTheme="minorHAnsi""#,
+            r#"w:eastAsiaTheme="majorEastAsia""#,
+            r#"w:cstheme="minorBidi""#,
+            r#"w:hint="eastAsia""#,
+        ] {
+            assert!(
+                styles.contains(attribute),
+                "missing {attribute} in {styles}"
+            );
+        }
     }
 
     #[test]

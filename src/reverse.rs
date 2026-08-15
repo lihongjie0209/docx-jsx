@@ -1,6 +1,7 @@
 //! DOCX to deterministic, recompilable JSX conversion.
 
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Write as _;
 use std::io::{Cursor, Read};
 
 use docx_rs::{
@@ -585,6 +586,46 @@ fn reverse_document_attributes(
     docx: &docx_rs::Docx,
     metadata: &HashMap<String, StyleMetadata>,
 ) -> Result<String> {
+    let mut attributes = String::new();
+    let defaults = json(&docx.styles.doc_defaults)?;
+    if let Some(fonts) = nested(&defaults, &["runPropertyDefault", "runProperty", "fonts"])
+        .and_then(Value::as_object)
+    {
+        let mut output = Map::new();
+        for key in [
+            "ascii",
+            "hiAnsi",
+            "eastAsia",
+            "cs",
+            "asciiTheme",
+            "hiAnsiTheme",
+            "eastAsiaTheme",
+            "csTheme",
+            "hint",
+        ] {
+            if let Some(value) = fonts.get(key).and_then(Value::as_str) {
+                output.insert(key.to_owned(), Value::String(value.to_owned()));
+            }
+        }
+        if !output.is_empty() {
+            let physical = ["ascii", "hiAnsi", "eastAsia", "cs"]
+                .map(|key| output.get(key).and_then(Value::as_str));
+            let can_collapse = physical[0].is_some()
+                && physical.iter().all(|value| *value == physical[0])
+                && !output
+                    .keys()
+                    .any(|key| key.ends_with("Theme") || key == "hint");
+            if can_collapse {
+                attributes.push_str(&attr("defaultFont", physical[0].unwrap_or_default()));
+            } else {
+                let fonts = serde_json::to_string(&output).map_err(|error| {
+                    Error::Reverse(format!("cannot serialize default font slots: {error}"))
+                })?;
+                write!(attributes, " defaultFonts={{{fonts}}}")
+                    .expect("writing to a String cannot fail");
+            }
+        }
+    }
     let styles = docx
         .styles
         .styles
@@ -592,11 +633,12 @@ fn reverse_document_attributes(
         .map(|style| reverse_style_definition(style, metadata.get(&style.style_id)))
         .collect::<Result<Vec<_>>>()?;
     if styles.is_empty() {
-        return Ok(String::new());
+        return Ok(attributes);
     }
     let styles = serde_json::to_string(&styles)
         .map_err(|error| Error::Reverse(format!("cannot serialize style definitions: {error}")))?;
-    Ok(format!(" styles={{{styles}}}"))
+    write!(attributes, " styles={{{styles}}}").expect("writing to a String cannot fail");
+    Ok(attributes)
 }
 
 fn reverse_style_definition(
@@ -953,8 +995,8 @@ fn unsupported(context: &str, value: &impl std::fmt::Debug) -> Error {
 mod tests {
     use super::*;
     use docx_rs::{
-        Docx, Footer, LineSpacing, LineSpacingType, Paragraph, Run, SpecialIndentType, Style,
-        StyleType, Table, TableCell, TableRow,
+        Docx, Footer, LineSpacing, LineSpacingType, Paragraph, Run, RunFonts, SpecialIndentType,
+        Style, StyleType, Table, TableCell, TableRow,
     };
 
     fn external_docx(paragraph: Paragraph) -> Vec<u8> {
@@ -965,6 +1007,56 @@ mod tests {
             .pack(&mut bytes)
             .expect("external DOCX fixture should pack");
         bytes.into_inner()
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_distinct_default_font_slots() {
+        let mut bytes = Cursor::new(Vec::new());
+        Docx::new()
+            .default_fonts(
+                RunFonts::new()
+                    .ascii("Times New Roman")
+                    .hi_ansi("Arial")
+                    .east_asia("宋体")
+                    .cs("Traditional Arabic")
+                    .ascii_theme("majorHAnsi")
+                    .hi_ansi_theme("minorHAnsi")
+                    .east_asia_theme("majorEastAsia")
+                    .cs_theme("minorBidi")
+                    .hint("eastAsia"),
+            )
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("body")))
+            .build()
+            .pack(&mut bytes)
+            .expect("external DOCX fixture should pack");
+
+        let jsx = reverse_document(&bytes.into_inner()).expect("external DOCX should reverse");
+
+        assert!(
+            jsx.contains(r#"defaultFonts={{"ascii":"Times New Roman","hiAnsi":"Arial","eastAsia":"宋体","cs":"Traditional Arabic","asciiTheme":"majorHAnsi","hiAnsiTheme":"minorHAnsi","eastAsiaTheme":"majorEastAsia","csTheme":"minorBidi","hint":"eastAsia"}}"#),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_collapse_equal_default_font_slots() {
+        let mut bytes = Cursor::new(Vec::new());
+        Docx::new()
+            .default_fonts(
+                RunFonts::new()
+                    .ascii("Arial")
+                    .hi_ansi("Arial")
+                    .east_asia("Arial")
+                    .cs("Arial"),
+            )
+            .build()
+            .pack(&mut bytes)
+            .expect("external DOCX fixture should pack");
+
+        let jsx = reverse_document(&bytes.into_inner()).expect("external DOCX should reverse");
+
+        assert!(jsx.contains(r#"defaultFont="Arial""#), "{jsx}");
+        assert!(!jsx.contains("defaultFonts="), "{jsx}");
     }
 
     #[test]

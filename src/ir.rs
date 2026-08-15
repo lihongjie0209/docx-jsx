@@ -920,6 +920,7 @@ fn section_props() -> &'static [&'static str] {
 fn document_props() -> &'static [&'static str] {
     &[
         "defaultFont",
+        "defaultFonts",
         "defaultSize",
         "defaultCharacterSpacing",
         "defaultLineSpacing",
@@ -1507,6 +1508,7 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
     if node.kind != NodeKind::Document {
         return Ok(());
     }
+    validate_default_fonts(node, path)?;
     if let Some(value) = node.props.get("defaultCharacterSpacing") {
         value
             .as_f64()
@@ -1591,6 +1593,47 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
     )?;
     if let Some(value) = node.props.get("styles") {
         validate_style_definitions(value, path)?;
+    }
+    Ok(())
+}
+
+fn validate_default_fonts(node: &Node, path: &str) -> Result<()> {
+    if node.props.contains_key("defaultFont") && node.props.contains_key("defaultFonts") {
+        return Err(validation(
+            path,
+            "`defaultFont` and `defaultFonts` cannot be used together; use `defaultFonts` when font slots differ",
+        ));
+    }
+    if let Some(value) = node.props.get("defaultFonts") {
+        let fonts = value
+            .as_object()
+            .ok_or_else(|| validation(path, "`defaultFonts` must be an object"))?;
+        validate_object_keys(
+            fonts,
+            path,
+            &[
+                "ascii",
+                "hiAnsi",
+                "eastAsia",
+                "cs",
+                "asciiTheme",
+                "hiAnsiTheme",
+                "eastAsiaTheme",
+                "csTheme",
+                "hint",
+            ],
+        )?;
+        if fonts.is_empty() {
+            return Err(validation(path, "`defaultFonts` must not be empty"));
+        }
+        for (key, value) in fonts {
+            if value.as_str().is_none_or(str::is_empty) {
+                return Err(validation(
+                    path,
+                    format!("`defaultFonts.{key}` must be a non-empty string"),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -4453,6 +4496,39 @@ mod tests {
         );
         ir.validate()
             .expect("document settings and metadata should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_distinct_default_font_slots() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultFonts":{"ascii":"Times New Roman","hiAnsi":"Times New Roman","eastAsia":"宋体","cs":"Times New Roman","asciiTheme":"minorHAnsi","eastAsiaTheme":"minorEastAsia","hint":"eastAsia"}},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        ir.validate().expect("default font slots should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_or_ambiguous_default_fonts() {
+        for (props, expected) in [
+            (r#"{"defaultFonts":{}}"#, "must not be empty"),
+            (
+                r#"{"defaultFonts":{"eastAsia":""}}"#,
+                "must be a non-empty string",
+            ),
+            (
+                r#"{"defaultFonts":{"unknown":"Arial"}}"#,
+                "unknown property `unknown`",
+            ),
+            (
+                r#"{"defaultFont":"Arial","defaultFonts":{"eastAsia":"宋体"}}"#,
+                "cannot be used together",
+            ),
+        ] {
+            let ir = parse(&format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{props},"children":[{{"type":"Section","props":{{}},"children":[]}}]}}}}"#
+            ));
+            let error = ir.validate().expect_err("fixture must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

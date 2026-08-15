@@ -14,7 +14,13 @@ export default (
   <Document
     createdAt="2026-08-14T00:00:00Z"
     updatedAt="2026-08-14T00:00:00Z"
-    defaultFont="Noto Sans CJK SC"
+    defaultFonts={{
+      ascii: "Times New Roman",
+      hiAnsi: "Times New Roman",
+      eastAsia: "Noto Sans CJK SC",
+      cs: "Times New Roman",
+      hint: "eastAsia",
+    }}
     defaultSize={11}
     defaultLineSpacing={{ after: 6, line: 14, lineRule: "atLeast" }}
     customProperties={{ Generator: "docx-jsx" }}

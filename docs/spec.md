@@ -112,7 +112,13 @@ to structural OOXML conversion; unsupported structures are reported as errors
 instead of being silently discarded. The generated module imports only the
 components it uses and default-exports one `Document`.
 
-- `Document`: `defaultFont?: string`, positive `defaultSize?: number`, signed
+- `Document`: `defaultFont?: string` is a shorthand that assigns the same font
+  to all four physical font slots. `defaultFonts?: {ascii?,hiAnsi?,eastAsia?,cs?,asciiTheme?,hiAnsiTheme?,eastAsiaTheme?,csTheme?,hint?}`
+  exposes every field of `docx_rs::RunFonts`; it must contain at least one
+  non-empty string. `defaultFont` and `defaultFonts` are mutually exclusive.
+  Reverse conversion collapses four equal physical slots to `defaultFont` only
+  when no theme or hint is present; otherwise it emits `defaultFonts` without
+  merging slots. Positive `defaultSize?: number`, signed
   `defaultCharacterSpacing?: number` (points), `createdAt?: string`,
   `updatedAt?: string`, `customProperties?: Record<string,string>`,
   `documentId?: string`, positive `defaultTabStop?: number` (points),
