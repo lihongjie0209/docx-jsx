@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 - 2026-08-15
+
+- Reconstruct hyperlink composite children (`ContentControl`, `Inserted`,
+  `Deleted`, `InlineBookmark`, `Comment`) on compile and external reverse.
+- Compile document-level block `ContentControl` through
+  `Docx::add_structured_data_tag`, and reverse body/cell structured tags
+  without the IR manifest.
+- Preserve distinct section page sizes, and reverse TOC/TOF/TOE fields as
+  dedicated components instead of empty content controls.
+- Reverse raster drawings as `Image`, extract package media beside the JSX,
+  and restore section `margins` / `documentGrid`.
+- Restore paragraph and style `keepNext`, `keepLines`, and `outlineLevel`,
+  plus run `themeColor` / `themeShade` / `themeTint` from OOXML.
+- Omit unused empty `comments`, `footnotes`, and `numbering` parts the
+  backend would otherwise inject, and skip a stock `Normal` style so
+  recompilation does not duplicate it.
+- Add `reverse_package` so `docx-jsx reverse` writes extracted image assets
+  next to the JSX module.
+
 ## 0.3.1 - 2026-08-15
 
 - Harden domestic-mirror downloads in CI and cargo-dist release builds with retries,
