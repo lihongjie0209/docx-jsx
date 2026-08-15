@@ -26,7 +26,12 @@ fn spec_should_output_agent_readable_markdown() {
         .success()
         .stdout(predicate::str::contains("# docx-jsx v1 specification"))
         .stdout(predicate::str::contains("## Component tree"))
-        .stdout(predicate::str::contains("`IndexEntry`"));
+        .stdout(predicate::str::contains("`IndexEntry`"))
+        .stdout(predicate::str::contains("docx-jsx pdf"))
+        .stdout(predicate::str::contains("-o <OUTPUT.docx|pdf>"))
+        .stdout(predicate::str::contains("inferred from the `-o` suffix"))
+        .stdout(predicate::str::contains("DOCX_JSX_SOFFICE"))
+        .stdout(predicate::str::contains("--engine"));
 }
 
 #[test]
@@ -295,6 +300,181 @@ fn reverse_should_refuse_to_overwrite_without_force() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("--force"));
+}
+
+#[test]
+fn cli_should_infer_pdf_output_from_extension() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("report.jsx");
+    let output = directory.path().join("report.pdf");
+    fs::write(
+        &input,
+        r#"import { Document, Section } from "docx-jsx"; export default <Document><Section /></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .env_remove("DOCX_JSX_SOFFICE")
+        .env_remove("DOCX_JSX_WORD")
+        .env_remove("DOCX_JSX_WPS")
+        .args([
+            input.to_str().expect("UTF-8 path"),
+            "-o",
+            output.to_str().expect("UTF-8 path"),
+            "--soffice",
+            "/no/such/soffice",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("explanation:"))
+        .stderr(predicate::str::contains("DOCX_JSX_SOFFICE"))
+        .stderr(predicate::str::contains("LibreOffice"));
+    assert!(!output.exists(), "failed PDF compile must not write output");
+    assert!(
+        !directory.path().join("report.docx").exists(),
+        "PDF compile must not leave a sibling DOCX"
+    );
+}
+
+#[test]
+fn cli_should_reject_unknown_compile_output_extension() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("report.jsx");
+    let output = directory.path().join("report.txt");
+    fs::write(
+        &input,
+        r#"import { Document, Section } from "docx-jsx"; export default <Document><Section /></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args([
+            input.to_str().expect("UTF-8 path"),
+            "-o",
+            output.to_str().expect("UTF-8 path"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(".docx"))
+        .stderr(predicate::str::contains(".pdf"))
+        .stderr(predicate::str::contains("suffix"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn cli_should_reject_pdf_flags_when_writing_docx() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("report.jsx");
+    let output = directory.path().join("report.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section } from "docx-jsx"; export default <Document><Section /></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args([
+            input.to_str().expect("UTF-8 path"),
+            "-o",
+            output.to_str().expect("UTF-8 path"),
+            "--engine",
+            "word",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--engine"))
+        .stderr(predicate::str::contains(".pdf"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn pdf_should_explain_how_to_install_and_configure_soffice() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("source.jsx");
+    let docx = directory.path().join("source.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section } from "docx-jsx"; export default <Document><Section /></Document>;"#,
+    )
+    .expect("input should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args([
+            input.to_str().expect("UTF-8 path"),
+            "-o",
+            docx.to_str().expect("UTF-8 path"),
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .env_remove("DOCX_JSX_SOFFICE")
+        .args([
+            "pdf",
+            docx.to_str().expect("UTF-8 path"),
+            "--soffice",
+            "/no/such/soffice",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("explanation:"))
+        .stderr(predicate::str::contains("LibreOffice"))
+        .stderr(predicate::str::contains("DOCX_JSX_SOFFICE"))
+        .stderr(predicate::str::contains("--soffice"))
+        .stderr(predicate::str::contains("libreoffice.org"))
+        .stderr(predicate::str::contains("WPS"))
+        .stderr(predicate::str::contains("DOCX_JSX_WORD"));
+    assert!(!docx.with_extension("pdf").exists());
+}
+
+#[test]
+fn pdf_should_reject_missing_word_engine() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("source.jsx");
+    let docx = directory.path().join("source.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section } from "docx-jsx"; export default <Document><Section /></Document>;"#,
+    )
+    .expect("input should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args([
+            input.to_str().expect("UTF-8 path"),
+            "-o",
+            docx.to_str().expect("UTF-8 path"),
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .env_remove("DOCX_JSX_WORD")
+        .env_remove("DOCX_JSX_SOFFICE")
+        .args([
+            "pdf",
+            docx.to_str().expect("UTF-8 path"),
+            "--engine",
+            "word",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("word"))
+        .stderr(predicate::str::contains("DOCX_JSX_WORD"));
+}
+
+#[test]
+fn pdf_should_reject_non_docx_input() {
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["pdf", "notes.txt"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(".docx"));
 }
 
 #[test]

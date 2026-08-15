@@ -23,6 +23,8 @@ pub enum Error {
     Compile(String),
     #[error("reverse: {0}")]
     Reverse(String),
+    #[error("pdf: {0}")]
+    Pdf(String),
     #[error("output {path}: {source}")]
     Output {
         path: PathBuf,
@@ -58,6 +60,9 @@ impl Error {
             Self::Resource { .. } => "A referenced local file could not be read.",
             Self::Compile(_) => "The validated component tree could not be encoded as DOCX.",
             Self::Reverse(_) => "The DOCX package could not be converted to supported JSX.",
+            Self::Pdf(_) => {
+                "PDF export requires a local Microsoft Word, WPS Writer, or LibreOffice install and does not ship a layout engine."
+            }
             Self::Output { .. } => "The requested output could not be written safely.",
         }
     }
@@ -65,10 +70,16 @@ impl Error {
     fn suggestion(&self) -> &'static str {
         match self {
             Self::Input(message) if message.contains("missing JSX/TSX") => {
-                "Pass an entry file, for example: `docx-jsx report.tsx -o report.docx`."
+                "Pass an entry file, for example: `docx-jsx report.tsx -o report.docx` or `docx-jsx report.tsx -o report.pdf`."
+            }
+            Self::Input(message) if message.contains("compile output must have") => {
+                "Pass `-o OUTPUT.docx` or `-o OUTPUT.pdf`; the format is inferred from the suffix."
+            }
+            Self::Input(message) if message.contains("require a .pdf output") => {
+                "Compile to PDF with `-o OUTPUT.pdf`, or drop `--engine` / `--soffice` when writing DOCX."
             }
             Self::Input(message) if message.contains("extension") => {
-                "Use a .jsx or .tsx entry; for DOCX input use `docx-jsx reverse INPUT.docx`."
+                "Use a .jsx or .tsx entry; write `-o OUTPUT.docx` or `-o OUTPUT.pdf`. For an existing DOCX use `docx-jsx reverse INPUT.docx` or `docx-jsx pdf INPUT.docx`."
             }
             Self::Transpile(_) => {
                 "Fix the reported JSX/TypeScript syntax at the indicated source location."
@@ -118,6 +129,9 @@ impl Error {
             Self::Reverse(_) => {
                 "Use a valid .docx package; unsupported external OOXML must be simplified before retrying."
             }
+            Self::Pdf(_) => {
+                "Install Microsoft Word, WPS Office, or LibreOffice, then rerun `docx-jsx report.tsx -o report.pdf` or `docx-jsx pdf INPUT.docx`. Pin an engine with `--engine word|wps|libreoffice` or `DOCX_JSX_PDF_ENGINE`. Pin a binary with `--soffice` / `DOCX_JSX_SOFFICE` (LibreOffice), `DOCX_JSX_WORD` (WINWORD.exe or Microsoft Word.app), or `DOCX_JSX_WPS` (wps.exe). LibreOffice: `sudo apt install libreoffice-writer`, `brew install --cask libreoffice`, or https://www.libreoffice.org/download/. Word and WPS PDF export use the installed desktop app on Windows; Word on macOS uses AppleScript."
+            }
             Self::Output { source, .. } if source.kind() == std::io::ErrorKind::AlreadyExists => {
                 "Pass `--force` to replace the existing output, or choose a different `--output` path."
             }
@@ -159,5 +173,35 @@ mod tests {
         .render_diagnostic();
 
         assert!(diagnostic.contains("matching style type"), "{diagnostic}");
+    }
+
+    #[test]
+    fn compile_output_extension_diagnostic_should_name_docx_and_pdf() {
+        let diagnostic =
+            Error::Input("compile output must have a .docx or .pdf extension".to_owned())
+                .render_diagnostic();
+        assert!(
+            diagnostic.contains("OUTPUT.docx")
+                && diagnostic.contains("OUTPUT.pdf")
+                && diagnostic.contains("suffix"),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn pdf_diagnostic_should_explain_libreoffice_install_and_config() {
+        let diagnostic =
+            Error::Pdf("LibreOffice `soffice` was not found".to_owned()).render_diagnostic();
+        assert!(
+            diagnostic.contains("LibreOffice")
+                && diagnostic.contains("Microsoft Word")
+                && diagnostic.contains("WPS")
+                && diagnostic.contains("DOCX_JSX_SOFFICE")
+                && diagnostic.contains("DOCX_JSX_WORD")
+                && diagnostic.contains("DOCX_JSX_WPS")
+                && diagnostic.contains("--engine")
+                && diagnostic.contains("libreoffice.org"),
+            "{diagnostic}"
+        );
     }
 }

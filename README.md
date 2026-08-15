@@ -19,6 +19,7 @@ export default ({ name = "World" } = {}) => (
 ```sh
 cargo install --path .
 docx-jsx report.tsx --data data.json -o report.docx
+docx-jsx report.tsx -o report.pdf
 ```
 
 Validate the complete executable DSL without creating a DOCX file:
@@ -32,6 +33,19 @@ Reverse a generated document back to deterministic JSX:
 ```sh
 docx-jsx reverse report.docx -o report.jsx
 ```
+
+Compile can write PDF when `-o` ends with `.pdf`. `docx-jsx pdf` still converts
+an existing DOCX. Both use a local office app (not bundled):
+
+```sh
+docx-jsx report.tsx -o report.pdf --engine word
+docx-jsx pdf report.docx -o report.pdf
+docx-jsx pdf report.docx --engine wps --force
+```
+
+`auto` uses Microsoft Word, then WPS, then LibreOffice when those are
+installed. If none is found, the command prints install steps and how to set
+`--engine`, `--soffice`, `DOCX_JSX_SOFFICE`, `DOCX_JSX_WORD`, or `DOCX_JSX_WPS`.
 
 Define inherited Word styles once and reference them to avoid repeating
 formatting on every component:
@@ -77,6 +91,7 @@ Windows.
 | Images | Supported | Raster embedding, dimensions, rotation, floating anchors, alignment/offsets, relative origins, distances, overlap and layer height. External reverse extracts body, header, and footer package media beside the JSX |
 | DOCX to JSX | Supported | Component-level 1:1 reversal for generated DOCX; external styles/inheritance, section margins/grids, paragraph keep/outline, theme colors, body/header/footer raster images, document settings/metadata, custom XML data-store items, revisions, nested bookmark/comment ranges, hyperlink composite children and footer text-box fallback. Reverse→recompile omits empty comments/footnotes/numbering parts the backend would inject |
 | Validation and Agent spec | Supported | DSL validation, repair-oriented diagnostics, Agent contract, JSON Schema, and .NET Open XML conformance tests |
+| PDF export | Optional | Compile `-o file.pdf` or `docx-jsx pdf` auto-detects Microsoft Word, WPS, or LibreOffice; `--engine` pins one. Install/config diagnostics when none is present. Not shipped in the release binary |
 | Backend-limited APIs | Not emitted | Character-unit paragraph indentation, row before/after grids, image simple-position, theme parts and embedded fonts are dropped or hardcoded by docx-rs 0.4.22 |
 
 The detailed writer-API audit is maintained in

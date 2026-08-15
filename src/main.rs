@@ -5,24 +5,33 @@ use std::process::ExitCode;
 
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use docx_jsx::{Error, compile_document, evaluate_entry, reverse_package};
+use docx_jsx::{
+    Error, PdfEngine, PdfOptions, compile_document, convert_docx_bytes_to_pdf,
+    convert_docx_to_pdf_with, evaluate_entry, reverse_package,
+};
 use serde_json::Value;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "docx-jsx",
     version,
-    about = "Compile executable JSX/TSX to DOCX"
+    about = "Compile executable JSX/TSX to DOCX or PDF; PDF uses a local Word, WPS, or LibreOffice install"
 )]
 struct Cli {
     /// Entry .jsx or .tsx module.
     input: Option<PathBuf>,
-    /// Output DOCX path; defaults to INPUT with a .docx extension.
+    /// Output path; `.docx` or `.pdf` is inferred from the suffix. Defaults to INPUT.docx.
     #[arg(short, long)]
     output: Option<PathBuf>,
     /// JSON file passed to a default-exported root function.
     #[arg(long)]
     data: Option<PathBuf>,
+    /// PDF converter when `-o` ends with `.pdf`.
+    #[arg(long, value_enum)]
+    engine: Option<PdfEngineArg>,
+    /// `LibreOffice` `soffice` binary when compiling to PDF.
+    #[arg(long)]
+    soffice: Option<PathBuf>,
     /// Allow replacing an existing output file.
     #[arg(long)]
     force: bool,
@@ -36,6 +45,12 @@ enum Command {
     Validate(ValidateArgs),
     /// Convert a DOCX document to recompilable JSX.
     Reverse(ReverseArgs),
+    /// Convert a DOCX document to PDF using Word, WPS, or `LibreOffice`.
+    ///
+    /// Office apps are not bundled. `auto` detects Microsoft Word, then WPS,
+    /// then `LibreOffice`. Pin with `--engine`, `--soffice`, `DOCX_JSX_WORD`,
+    /// `DOCX_JSX_WPS`, or `DOCX_JSX_SOFFICE`.
+    Pdf(PdfArgs),
     /// Print the component specification for agents and tooling.
     Spec(SpecArgs),
 }
@@ -62,6 +77,25 @@ enum SpecFormat {
     JsonSchema,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PdfEngineArg {
+    Auto,
+    Libreoffice,
+    Word,
+    Wps,
+}
+
+impl From<PdfEngineArg> for PdfEngine {
+    fn from(value: PdfEngineArg) -> Self {
+        match value {
+            PdfEngineArg::Auto => Self::Auto,
+            PdfEngineArg::Libreoffice => Self::LibreOffice,
+            PdfEngineArg::Word => Self::Word,
+            PdfEngineArg::Wps => Self::Wps,
+        }
+    }
+}
+
 enum RunOutput {
     Path(PathBuf),
     Text(String),
@@ -74,6 +108,24 @@ struct ReverseArgs {
     /// Output JSX path; defaults to INPUT with a .jsx extension.
     #[arg(short, long)]
     output: Option<PathBuf>,
+    /// Allow replacing an existing output file.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Args)]
+struct PdfArgs {
+    /// Input .docx file.
+    input: PathBuf,
+    /// Output PDF path; defaults to INPUT with a .pdf extension.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Converter: `auto` (detect Word, WPS, then `LibreOffice`), `word`, `wps`, or `libreoffice`.
+    #[arg(long, value_enum, default_value_t = PdfEngineArg::Auto)]
+    engine: PdfEngineArg,
+    /// `LibreOffice` `soffice` binary. Overrides `DOCX_JSX_SOFFICE` and selects `LibreOffice`.
+    #[arg(long)]
+    soffice: Option<PathBuf>,
     /// Allow replacing an existing output file.
     #[arg(long)]
     force: bool,
@@ -119,6 +171,7 @@ async fn run(cli: Cli) -> docx_jsx::Result<RunOutput> {
     match cli.command {
         Some(Command::Validate(args)) => return run_validate(args).await.map(RunOutput::Text),
         Some(Command::Reverse(args)) => return run_reverse(args).map(RunOutput::Path),
+        Some(Command::Pdf(args)) => return run_pdf(args).map(RunOutput::Path),
         Some(Command::Spec(args)) => {
             let output = match args.format {
                 SpecFormat::Markdown => include_str!("../docs/spec.md"),
@@ -132,15 +185,14 @@ async fn run(cli: Cli) -> docx_jsx::Result<RunOutput> {
         .input
         .ok_or_else(|| Error::Input("missing JSX/TSX entry".to_owned()))?;
     validate_input_extension(&input)?;
-    let output = cli.output.unwrap_or_else(|| input.with_extension("docx"));
+    let (output, format) = resolve_compile_output(cli.output, &input)?;
+    if matches!(format, CompileFormat::Docx) && (cli.engine.is_some() || cli.soffice.is_some()) {
+        return Err(Error::Input(
+            "`--engine` and `--soffice` require a .pdf output path".to_owned(),
+        ));
+    }
     if output.exists() && !cli.force {
-        return Err(Error::Output {
-            path: output,
-            source: std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "output exists; pass --force to replace it",
-            ),
-        });
+        return Err(output_exists(output));
     }
     let data = cli.data.as_deref().map(read_data).transpose()?;
     let ir = evaluate_entry(&input, data.as_ref()).await?;
@@ -151,7 +203,18 @@ async fn run(cli: Cli) -> docx_jsx::Result<RunOutput> {
         .ok_or_else(|| Error::Input("entry has no parent directory".to_owned()))?
         .to_path_buf();
     let bytes = compile_document(&ir, &entry_dir)?;
-    write_atomic(&output, &bytes, cli.force)?;
+    match format {
+        CompileFormat::Docx => write_atomic(&output, &bytes, cli.force)?,
+        CompileFormat::Pdf => convert_docx_bytes_to_pdf(
+            &bytes,
+            &output,
+            PdfOptions {
+                engine: cli.engine.map(PdfEngine::from).unwrap_or_default(),
+                soffice: cli.soffice.as_deref(),
+                force: cli.force,
+            },
+        )?,
+    }
     Ok(RunOutput::Path(output))
 }
 
@@ -191,6 +254,22 @@ fn run_reverse(args: ReverseArgs) -> docx_jsx::Result<PathBuf> {
     Ok(output)
 }
 
+fn run_pdf(args: PdfArgs) -> docx_jsx::Result<PathBuf> {
+    let output = args
+        .output
+        .unwrap_or_else(|| args.input.with_extension("pdf"));
+    convert_docx_to_pdf_with(
+        &args.input,
+        &output,
+        PdfOptions {
+            engine: PdfEngine::from(args.engine),
+            soffice: args.soffice.as_deref(),
+            force: args.force,
+        },
+    )?;
+    Ok(output)
+}
+
 fn output_exists(path: PathBuf) -> Error {
     Error::Output {
         path,
@@ -199,6 +278,35 @@ fn output_exists(path: PathBuf) -> Error {
             "output exists; pass --force to replace it",
         ),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompileFormat {
+    Docx,
+    Pdf,
+}
+
+fn resolve_compile_output(
+    output: Option<PathBuf>,
+    input: &Path,
+) -> docx_jsx::Result<(PathBuf, CompileFormat)> {
+    let output = output.unwrap_or_else(|| input.with_extension("docx"));
+    let format = match output
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "docx" => CompileFormat::Docx,
+        "pdf" => CompileFormat::Pdf,
+        _ => {
+            return Err(Error::Input(
+                "compile output must have a .docx or .pdf extension".to_owned(),
+            ));
+        }
+    };
+    Ok((output, format))
 }
 
 fn validate_input_extension(path: &Path) -> docx_jsx::Result<()> {

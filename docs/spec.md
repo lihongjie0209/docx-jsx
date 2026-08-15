@@ -7,15 +7,21 @@ runtime dependencies.
 ## Command line
 
 ```text
-docx-jsx <INPUT.jsx|tsx> [-o <OUTPUT.docx>] [--data <DATA.json>] [--force]
+docx-jsx <INPUT.jsx|tsx> [-o <OUTPUT.docx|pdf>] [--data <DATA.json>] [--engine auto|libreoffice|word|wps] [--soffice <PATH>] [--force]
 docx-jsx validate <INPUT.jsx|tsx> [--data <DATA.json>]
 docx-jsx reverse <INPUT.docx> [-o <OUTPUT.jsx>] [--force]
+docx-jsx pdf <INPUT.docx> [-o <OUTPUT.pdf>] [--engine auto|libreoffice|word|wps] [--soffice <PATH>] [--force]
 docx-jsx spec [--format markdown|json-schema]
 ```
 
-When `-o` is omitted, the input extension is replaced with `.docx`. Existing
-outputs are rejected unless `--force` is present. Compilation completes in
-memory and output is written atomically, so a failed compilation never leaves
+When `-o` is omitted, the input extension is replaced with `.docx`. The output
+format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`
+compiles the document in memory and converts that archive with the same local
+office detection as `docx-jsx pdf`. The intermediate DOCX is not kept beside
+the PDF. Other suffixes are rejected. `--engine` and `--soffice` on the compile
+command apply only to `.pdf` output and are rejected when writing `.docx`.
+Existing outputs are rejected unless `--force` is present. Compilation completes
+in memory and output is written atomically, so a failed compilation never leaves
 a partial DOCX. The compiler then drops backend-injected annotation and
 numbering parts that the document does not use: `word/comments.xml`,
 `word/commentsExtended.xml`, `word/footnotes.xml`, and `word/numbering.xml`,
@@ -29,6 +35,26 @@ injection, module evaluation, IR decoding, and the complete component semantic
 validation pass without invoking the DOCX backend or writing an output file.
 It prints `valid: INPUT` and exits with status 0 on success. Invalid DSL uses
 the standard detailed diagnostic and exits with status 1.
+
+`pdf` converts an existing `.docx` file to PDF by calling a local office
+application. The compiler does not bundle a layout engine. `--engine` is
+`auto` (default), `libreoffice`, `word`, or `wps`.
+
+- `libreoffice` uses `soffice --headless --convert-to pdf`. Layout follows
+  LibreOffice Writer.
+- `word` uses Microsoft Word (`Word.Application` on Windows, AppleScript on
+  macOS). Layout follows Word. Linux has no Word automation path.
+- `wps` uses WPS Writer (`KWPS.Application` / `wps.Application` on Windows).
+  WPS on Linux/macOS can be detected but has no supported headless PDF export.
+
+`auto` prefers Word, then WPS, then LibreOffice on Windows and macOS, and
+LibreOffice then WPS on Linux. Explicit `--soffice` or `DOCX_JSX_SOFFICE`
+selects LibreOffice. `DOCX_JSX_WORD` and `DOCX_JSX_WPS` pin those binaries
+when present. `DOCX_JSX_PDF_ENGINE` sets the default engine. When `-o` is
+omitted the input extension is replaced with `.pdf`. Existing outputs are
+rejected unless `--force` is present. If no usable converter is found the
+command fails with install and configuration instructions instead of writing
+a PDF. A successful run prints the output path.
 
 The entry module must default-export either a document JSX value or a function
 receiving the JSON value supplied by `--data`. The function and nested function
