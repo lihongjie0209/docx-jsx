@@ -6,11 +6,12 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 
 use docx_rs::{
-    Comment, CommentChild, Delete, DeleteChild, DocumentChild, DrawingData, DrawingPosition,
-    DrawingPositionType, FooterChild, HeaderChild, Hyperlink, HyperlinkData, Insert, InsertChild,
-    MoveFrom, MoveFromChild, MoveTo, MoveToChild, ParagraphChild, Pic, PicAlign, RelativeFromHType,
-    RelativeFromVType, RunChild, StructuredDataTag, StructuredDataTagChild, TableCellContent,
-    TableChild, TableRowChild, TextBoxContentChild,
+    AbstractNumbering, Comment, CommentChild, Delete, DeleteChild, DocumentChild, DrawingData,
+    DrawingPosition, DrawingPositionType, FooterChild, HeaderChild, Hyperlink, HyperlinkData,
+    Insert, InsertChild, Level, MoveFrom, MoveFromChild, MoveTo, MoveToChild, Numbering,
+    ParagraphChild, Pic, PicAlign, RelativeFromHType, RelativeFromVType, RunChild,
+    StructuredDataTag, StructuredDataTagChild, TableCellContent, TableChild, TableRowChild,
+    TextBoxContentChild,
 };
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
@@ -58,13 +59,17 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
     let mut images = collect_package_images(bytes)?;
-    for (id, asset) in collect_images(&docx) {
-        images.entry(id).or_insert(asset);
+    for (id, asset) in collect_images(&docx, &images.used_names) {
+        images.by_id.entry(id).or_insert(asset);
     }
     let mut writer = Writer {
         images,
+        image_scope: Some("word/document.xml".to_owned()),
+        header_footer_parts: collect_header_footer_parts(bytes)?,
         style_theme_colors: theme_colors.styles,
         run_theme_colors: theme_colors.runs,
+        abstract_nums: docx.numberings.abstract_nums.clone(),
+        numbering_instances: docx.numberings.numberings.clone(),
         ..Writer::default()
     };
     writer.components.insert("Document");
@@ -81,7 +86,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         .map(|(id, path, _)| (id.clone(), path.clone()))
         .collect();
     writer.sdt_plan = parse_sdt_plan(bytes)?;
-    let document_attrs = reverse_document_attributes(&docx, &style_metadata, &writer)?;
+    let document_attrs = reverse_document_attributes(&docx, &style_metadata, &writer, bytes)?;
     writer.line(0, &format!("<Document{document_attrs}>"));
     writer.emit_sections(&docx)?;
     writer.line(0, "</Document>");
@@ -203,17 +208,44 @@ struct Writer {
     body_sdt_index: usize,
     cell_sdt_index: usize,
     apply_sdt: bool,
-    images: HashMap<String, ImageAsset>,
+    images: ImageCatalog,
+    image_scope: Option<String>,
+    header_footer_parts: HashMap<String, String>,
     assets: BTreeMap<String, Vec<u8>>,
     style_theme_colors: HashMap<String, ThemeColorInfo>,
     run_theme_colors: Vec<ThemeColorInfo>,
     run_theme_index: usize,
+    abstract_nums: Vec<AbstractNumbering>,
+    numbering_instances: Vec<Numbering>,
 }
 
 #[derive(Clone, Debug)]
 struct ImageAsset {
     src: String,
     bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ImageCatalog {
+    scoped: HashMap<String, HashMap<String, ImageAsset>>,
+    by_id: HashMap<String, ImageAsset>,
+    used_names: BTreeSet<String>,
+}
+
+impl ImageCatalog {
+    fn insert(&mut self, owner: &str, id: String, asset: ImageAsset) {
+        self.by_id.entry(id.clone()).or_insert(asset.clone());
+        self.scoped
+            .entry(owner.to_owned())
+            .or_default()
+            .insert(id, asset);
+    }
+
+    fn get(&self, owner: Option<&str>, id: &str) -> Option<&ImageAsset> {
+        owner
+            .and_then(|owner| self.scoped.get(owner)?.get(id))
+            .or_else(|| self.by_id.get(id))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -237,21 +269,44 @@ impl Writer {
         if groups.is_empty() {
             groups.push((nested.as_slice(), None));
         }
-        for (index, (children, break_property)) in groups.into_iter().enumerate() {
+        for (children, break_property) in groups {
             let property = break_property.unwrap_or(&docx.document.section_property);
             self.line(1, &format!("<Section{}>", section_jsx_attrs(property)?));
-            if index == 0 {
-                self.apply_sdt = false;
-                self.headers_and_footers(property, 2)?;
-                self.apply_sdt = true;
-            }
-            for child in children {
-                if section_break_of(child).is_some() && is_section_break_marker(child) {
-                    continue;
-                }
-                self.emit_nested_block(child, 2)?;
-            }
+            self.apply_sdt = false;
+            self.headers_and_footers(property, 2)?;
+            self.apply_sdt = true;
+            self.emit_nested_blocks(children, 2)?;
             self.line(1, "</Section>");
+        }
+        Ok(())
+    }
+
+    fn emit_nested_blocks(&mut self, children: &[NestedBlock<'_>], depth: usize) -> Result<()> {
+        let mut index = 0;
+        while index < children.len() {
+            if section_break_of(&children[index]).is_some()
+                && is_section_break_marker(&children[index])
+            {
+                index += 1;
+                continue;
+            }
+            if let Some(num_id) = nested_block_num_id(&children[index]) {
+                let start = index;
+                index += 1;
+                while index < children.len()
+                    && nested_block_num_id(&children[index]) == Some(num_id)
+                {
+                    index += 1;
+                }
+                let paragraphs = children[start..index]
+                    .iter()
+                    .map(nested_block_paragraph)
+                    .collect::<Result<Vec<_>>>()?;
+                self.emit_list_from_paragraphs(num_id, paragraphs, depth)?;
+            } else {
+                self.emit_nested_block(&children[index], depth)?;
+                index += 1;
+            }
         }
         Ok(())
     }
@@ -268,9 +323,7 @@ impl Writer {
                     return Ok(());
                 }
                 self.line(depth, &format!("<Bookmark{}>", attr("name", name)));
-                for child in children {
-                    self.emit_nested_block(child, depth + 1)?;
-                }
+                self.emit_nested_blocks(children, depth + 1)?;
                 self.line(depth, "</Bookmark>");
                 Ok(())
             }
@@ -356,24 +409,7 @@ impl Writer {
             ));
         }
         self.line(depth, &format!("<ContentControl{}>", sdt_attrs(&props)));
-        for child in &tag.children {
-            match child {
-                StructuredDataTagChild::Paragraph(paragraph) => {
-                    self.paragraph(paragraph, depth + 1)?;
-                }
-                StructuredDataTagChild::Table(table) => self.table(table, depth + 1)?,
-                StructuredDataTagChild::StructuredDataTag(inner) => {
-                    self.block_content_control(inner, depth + 1)?;
-                }
-                StructuredDataTagChild::Run(_) => {
-                    return Err(Error::Reverse(
-                        "block-level structured document tag contains inline runs; wrap them in a paragraph before reversing"
-                            .to_owned(),
-                    ));
-                }
-                value => return Err(unsupported("block content control", value)),
-            }
-        }
+        self.emit_sdt_children(&tag.children, depth + 1)?;
         self.line(depth, "</ContentControl>");
         Ok(())
     }
@@ -388,18 +424,12 @@ impl Writer {
             ("first", property.first_header.as_ref()),
             ("even", property.even_header.as_ref()),
         ] {
-            if let Some((_, header)) = value {
+            if let Some((rid, header)) = value {
                 self.components.insert("Header");
                 self.line(depth, &format!(r#"<Header type="{kind}">"#));
-                for child in &header.children {
-                    match child {
-                        HeaderChild::Paragraph(value) => self.paragraph(value, depth + 1)?,
-                        HeaderChild::Table(value) => self.table(value, depth + 1)?,
-                        value @ HeaderChild::StructuredDataTag(_) => {
-                            return Err(unsupported("header", value));
-                        }
-                    }
-                }
+                self.with_image_scope(rid, |writer| {
+                    writer.emit_header_children(&header.children, depth + 1)
+                })?;
                 self.line(depth, "</Header>");
             }
         }
@@ -408,24 +438,32 @@ impl Writer {
             ("first", property.first_footer.as_ref()),
             ("even", property.even_footer.as_ref()),
         ] {
-            if let Some((_, footer)) = value {
+            if let Some((rid, footer)) = value {
                 self.components.insert("Footer");
                 self.line(depth, &format!(r#"<Footer type="{kind}">"#));
-                for child in &footer.children {
-                    match child {
-                        FooterChild::Paragraph(value) => {
-                            self.footer_paragraph(value, depth + 1)?;
-                        }
-                        FooterChild::Table(value) => self.table(value, depth + 1)?,
-                        value @ FooterChild::StructuredDataTag(_) => {
-                            return Err(unsupported("footer", value));
-                        }
-                    }
-                }
+                self.with_image_scope(rid, |writer| {
+                    writer.emit_footer_children(&footer.children, depth + 1)
+                })?;
                 self.line(depth, "</Footer>");
             }
         }
         Ok(())
+    }
+
+    fn with_image_scope(
+        &mut self,
+        relationship_id: &str,
+        emit: impl FnOnce(&mut Self) -> Result<()>,
+    ) -> Result<()> {
+        let previous = self.image_scope.take();
+        self.image_scope = self
+            .header_footer_parts
+            .get(relationship_id)
+            .cloned()
+            .or_else(|| previous.clone());
+        let result = emit(self);
+        self.image_scope = previous;
+        result
     }
 
     fn footer_paragraph(&mut self, paragraph: &docx_rs::Paragraph, depth: usize) -> Result<()> {
@@ -876,6 +914,7 @@ impl Writer {
                     self.line(depth + 1, &jsx_string(text)?);
                 }
                 RunChild::Tab(_) => self.empty("Tab", depth + 1, ""),
+                RunChild::PTab(tab) => self.positional_tab(tab, depth + 1)?,
                 RunChild::Break(value) => {
                     let data = json(value)?;
                     let kind = data
@@ -900,6 +939,35 @@ impl Writer {
         Ok(())
     }
 
+    fn positional_tab(&mut self, tab: &docx_rs::PositionalTab, depth: usize) -> Result<()> {
+        self.components.insert("PositionalTab");
+        let data = json(tab)?;
+        let mut attrs = String::new();
+        if let Some(value) = data
+            .get("alignment")
+            .and_then(Value::as_str)
+            .filter(|value| *value != "left")
+        {
+            attrs.push_str(&attr("align", value));
+        }
+        if let Some(value) = data
+            .get("relativeTo")
+            .and_then(Value::as_str)
+            .filter(|value| *value != "margin")
+        {
+            attrs.push_str(&attr("relativeTo", value));
+        }
+        if let Some(value) = data
+            .get("leader")
+            .and_then(Value::as_str)
+            .filter(|value| *value != "none")
+        {
+            attrs.push_str(&attr("leader", value));
+        }
+        self.empty("PositionalTab", depth, &attrs);
+        Ok(())
+    }
+
     fn drawing(&mut self, drawing: &docx_rs::Drawing, depth: usize) -> Result<()> {
         let Some(data) = &drawing.data else {
             return Err(Error::Reverse(
@@ -914,9 +982,9 @@ impl Writer {
     }
 
     fn image(&mut self, picture: &Pic, depth: usize) -> Result<()> {
-        let asset = self.images.get(&picture.id).cloned().ok_or_else(|| {
+        let asset = self.lookup_image(&picture.id).ok_or_else(|| {
             Error::Reverse(format!(
-                "image relationship `{}` is missing media bytes; restore the image part in word/media and its document relationship",
+                "image relationship `{}` is missing media bytes; restore the image part in word/media and the relationship in word/_rels/document.xml.rels or the matching header/footer rels",
                 picture.id
             ))
         })?;
@@ -943,6 +1011,10 @@ impl Writer {
         }
         self.empty("Image", depth, &attrs);
         Ok(())
+    }
+
+    fn lookup_image(&self, id: &str) -> Option<ImageAsset> {
+        self.images.get(self.image_scope.as_deref(), id).cloned()
     }
 
     fn next_run_theme_attrs(&mut self, hex: &str) -> Vec<String> {
@@ -978,27 +1050,284 @@ impl Writer {
                 let TableRowChild::TableCell(cell) = cell;
                 self.components.insert("TableCell");
                 self.line(depth + 2, "<TableCell>");
-                for child in &cell.children {
-                    match child {
-                        TableCellContent::Paragraph(value) => self.paragraph(value, depth + 3)?,
-                        TableCellContent::Table(value) => self.table(value, depth + 3)?,
-                        TableCellContent::StructuredDataTag(tag) => {
-                            if let Some(index) = index_from_sdt(tag) {
-                                self.index_component(&index, depth + 3);
-                            } else {
-                                self.cell_content_control(tag, depth + 3)?;
-                            }
-                        }
-                        TableCellContent::TableOfContents(_) => {
-                            self.empty("TableOfContents", depth + 3, "");
-                        }
-                    }
-                }
+                self.emit_cell_children(&cell.children, depth + 3)?;
                 self.line(depth + 2, "</TableCell>");
             }
             self.line(depth + 1, "</TableRow>");
         }
         self.line(depth, "</Table>");
+        Ok(())
+    }
+
+    fn emit_header_children(&mut self, children: &[HeaderChild], depth: usize) -> Result<()> {
+        let mut index = 0;
+        while index < children.len() {
+            match &children[index] {
+                HeaderChild::Paragraph(paragraph) if paragraph_num_id(paragraph).is_some() => {
+                    let num_id = paragraph_num_id(paragraph).expect("checked");
+                    let mut group = vec![paragraph];
+                    index += 1;
+                    while index < children.len() {
+                        if let HeaderChild::Paragraph(next) = &children[index]
+                            && paragraph_num_id(next) == Some(num_id)
+                        {
+                            group.push(next);
+                            index += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.emit_list_from_paragraphs(num_id, group.iter().map(AsRef::as_ref), depth)?;
+                }
+                HeaderChild::Paragraph(paragraph) => {
+                    self.paragraph(paragraph, depth)?;
+                    index += 1;
+                }
+                HeaderChild::Table(table) => {
+                    self.table(table, depth)?;
+                    index += 1;
+                }
+                value @ HeaderChild::StructuredDataTag(_) => {
+                    return Err(unsupported("header", value));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_footer_children(&mut self, children: &[FooterChild], depth: usize) -> Result<()> {
+        let mut index = 0;
+        while index < children.len() {
+            match &children[index] {
+                FooterChild::Paragraph(paragraph) if paragraph_num_id(paragraph).is_some() => {
+                    let num_id = paragraph_num_id(paragraph).expect("checked");
+                    let mut group = vec![paragraph];
+                    index += 1;
+                    while index < children.len() {
+                        if let FooterChild::Paragraph(next) = &children[index]
+                            && paragraph_num_id(next) == Some(num_id)
+                        {
+                            group.push(next);
+                            index += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.emit_list_from_paragraphs(num_id, group.iter().map(AsRef::as_ref), depth)?;
+                }
+                FooterChild::Paragraph(paragraph) => {
+                    self.footer_paragraph(paragraph, depth)?;
+                    index += 1;
+                }
+                FooterChild::Table(table) => {
+                    self.table(table, depth)?;
+                    index += 1;
+                }
+                value @ FooterChild::StructuredDataTag(_) => {
+                    return Err(unsupported("footer", value));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_sdt_children(
+        &mut self,
+        children: &[StructuredDataTagChild],
+        depth: usize,
+    ) -> Result<()> {
+        let mut index = 0;
+        while index < children.len() {
+            match &children[index] {
+                StructuredDataTagChild::Paragraph(paragraph)
+                    if paragraph_num_id(paragraph).is_some() =>
+                {
+                    let num_id = paragraph_num_id(paragraph).expect("checked");
+                    let mut group = vec![paragraph];
+                    index += 1;
+                    while index < children.len() {
+                        if let StructuredDataTagChild::Paragraph(next) = &children[index]
+                            && paragraph_num_id(next) == Some(num_id)
+                        {
+                            group.push(next);
+                            index += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.emit_list_from_paragraphs(num_id, group.iter().map(AsRef::as_ref), depth)?;
+                }
+                StructuredDataTagChild::Paragraph(paragraph) => {
+                    self.paragraph(paragraph, depth)?;
+                    index += 1;
+                }
+                StructuredDataTagChild::Table(table) => {
+                    self.table(table, depth)?;
+                    index += 1;
+                }
+                StructuredDataTagChild::StructuredDataTag(inner) => {
+                    self.block_content_control(inner, depth)?;
+                    index += 1;
+                }
+                StructuredDataTagChild::Run(_) => {
+                    return Err(Error::Reverse(
+                        "block-level structured document tag contains inline runs; wrap them in a paragraph before reversing"
+                            .to_owned(),
+                    ));
+                }
+                value => return Err(unsupported("block content control", value)),
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_cell_children(&mut self, children: &[TableCellContent], depth: usize) -> Result<()> {
+        let mut index = 0;
+        while index < children.len() {
+            match &children[index] {
+                TableCellContent::Paragraph(paragraph) if paragraph_num_id(paragraph).is_some() => {
+                    let num_id = paragraph_num_id(paragraph).expect("checked");
+                    let mut group = vec![paragraph];
+                    index += 1;
+                    while index < children.len() {
+                        if let TableCellContent::Paragraph(next) = &children[index]
+                            && paragraph_num_id(next) == Some(num_id)
+                        {
+                            group.push(next);
+                            index += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.emit_list_from_paragraphs(num_id, group.iter().map(AsRef::as_ref), depth)?;
+                }
+                TableCellContent::Paragraph(paragraph) => {
+                    self.paragraph(paragraph, depth)?;
+                    index += 1;
+                }
+                TableCellContent::Table(table) => {
+                    self.table(table, depth)?;
+                    index += 1;
+                }
+                TableCellContent::StructuredDataTag(tag) => {
+                    if let Some(kind) = index_from_sdt(tag) {
+                        self.index_component(&kind, depth);
+                    } else {
+                        self.cell_content_control(tag, depth)?;
+                    }
+                    index += 1;
+                }
+                TableCellContent::TableOfContents(_) => {
+                    self.empty("TableOfContents", depth, "");
+                    index += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_list_from_paragraphs<'a, I>(
+        &mut self,
+        num_id: usize,
+        paragraphs: I,
+        depth: usize,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = &'a docx_rs::Paragraph>,
+    {
+        self.components.insert("List");
+        self.components.insert("ListItem");
+        let attrs = self.list_jsx_attrs(num_id)?;
+        self.line(depth, &format!("<List{attrs}>"));
+        for paragraph in paragraphs {
+            self.list_item(paragraph, depth + 1)?;
+        }
+        self.line(depth, "</List>");
+        Ok(())
+    }
+
+    fn list_jsx_attrs(&self, num_id: usize) -> Result<String> {
+        let instance = self
+            .numbering_instances
+            .iter()
+            .find(|numbering| numbering.id == num_id)
+            .ok_or_else(|| {
+                Error::Reverse(format!(
+                    "paragraph references numbering `{num_id}` which is missing from word/numbering.xml; restore the numbering definition or remove `w:numPr`"
+                ))
+            })?;
+        if instance
+            .level_overrides
+            .iter()
+            .any(|value| value.override_level.is_some())
+        {
+            return Err(Error::Reverse(
+                "numbering uses a full level override; flatten the override into the abstract definition or simplify the list before reversing"
+                    .to_owned(),
+            ));
+        }
+        let definition = self
+            .abstract_nums
+            .iter()
+            .find(|value| value.id == instance.abstract_num_id)
+            .ok_or_else(|| {
+                Error::Reverse(format!(
+                    "numbering `{num_id}` points at missing abstract numbering {}; restore word/numbering.xml",
+                    instance.abstract_num_id
+                ))
+            })?;
+        if definition.style_link.is_some()
+            || definition.num_style_link.is_some()
+            || definition.levels.is_empty()
+        {
+            return Err(Error::Reverse(
+                "numbering is a style-linked or empty abstract definition; expand `numStyleLink`/`styleLink` to explicit `w:lvl` entries before reversing"
+                    .to_owned(),
+            ));
+        }
+        let starts = instance
+            .level_overrides
+            .iter()
+            .filter_map(|value| value.override_start.map(|start| (value.level, start)))
+            .collect::<HashMap<_, _>>();
+        reverse_list_definition(definition, &starts)
+    }
+
+    fn list_item(&mut self, paragraph: &docx_rs::Paragraph, depth: usize) -> Result<()> {
+        let property = json(&paragraph.property)?;
+        let mut attrs = String::new();
+        if let Some(level) =
+            nested(&property, &["numberingProperty", "level"]).and_then(Value::as_u64)
+            && level > 0
+        {
+            let _ = write!(attrs, " level={{{level}}}");
+        }
+        if let Some(value) = property
+            .get("style")
+            .and_then(scalar_string)
+            .or_else(|| nested_string(&property, &["style", "val"]))
+            .or_else(|| nested_string(&property, &["style", "styleId"]))
+        {
+            attrs.push_str(&attr("style", value));
+        }
+        self.line(depth, &format!("<ListItem{attrs}>"));
+        if self.apply_sdt {
+            self.paragraph_index += 1;
+        }
+        let events = if self.apply_sdt {
+            self.sdt_plan
+                .paragraphs
+                .get(self.paragraph_index - 1)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let nested = nest_inline_children(&paragraph.children, &self.comments, &events)?;
+        for child in nested {
+            self.emit_nested_inline(&child, depth + 1)?;
+        }
+        self.line(depth, "</ListItem>");
         Ok(())
     }
 
@@ -1948,51 +2277,103 @@ fn section_jsx_attrs(property: &docx_rs::SectionProperty) -> Result<String> {
     Ok(attrs)
 }
 
-fn collect_package_images(bytes: &[u8]) -> Result<HashMap<String, ImageAsset>> {
+fn collect_package_images(bytes: &[u8]) -> Result<ImageCatalog> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Reverse(format!("invalid DOCX archive: {error}")))?;
-    let Ok(mut rels_file) = archive.by_name("word/_rels/document.xml.rels") else {
-        return Ok(HashMap::new());
-    };
-    let mut rels = String::new();
-    rels_file
-        .read_to_string(&mut rels)
-        .map_err(|error| Error::Reverse(format!("cannot read document relationships: {error}")))?;
-    drop(rels_file);
-    let mut images = HashMap::new();
-    let mut used_names = BTreeSet::new();
-    for (id, target) in image_relationships(&rels)? {
-        let part = if target.starts_with("word/") {
-            target.clone()
-        } else {
-            format!("word/{target}")
-        };
-        let Ok(mut file) = archive.by_name(&part) else {
+    let rels_parts = (0..archive.len())
+        .filter_map(|index| {
+            let file = archive.by_index(index).ok()?;
+            let name = file.name().replace('\\', "/");
+            is_word_rels_part(&name).then_some(name)
+        })
+        .collect::<Vec<_>>();
+    let mut images = ImageCatalog::default();
+    let mut media_src: HashMap<String, String> = HashMap::new();
+    for rels_part in rels_parts {
+        let Some(owner) = owner_part_from_rels(&rels_part) else {
             continue;
         };
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|error| Error::Reverse(format!("cannot read image part `{part}`: {error}")))?;
-        drop(file);
-        let file_name = Path::new(&target)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .unwrap_or("image.bin");
-        let unique = unique_asset_name(file_name, &used_names);
-        used_names.insert(unique.clone());
-        images.insert(
-            id,
-            ImageAsset {
-                src: format!("media/{unique}"),
-                bytes,
-            },
-        );
+        let Ok(mut rels_file) = archive.by_name(&rels_part) else {
+            continue;
+        };
+        let mut rels = String::new();
+        rels_file.read_to_string(&mut rels).map_err(|error| {
+            Error::Reverse(format!("cannot read relationships `{rels_part}`: {error}"))
+        })?;
+        drop(rels_file);
+        for (id, target) in relationships_ending_with(&rels, "/image")? {
+            let part = resolve_word_target(&target);
+            let Ok(mut file) = archive.by_name(&part) else {
+                continue;
+            };
+            let mut image_bytes = Vec::new();
+            file.read_to_end(&mut image_bytes).map_err(|error| {
+                Error::Reverse(format!("cannot read image part `{part}`: {error}"))
+            })?;
+            drop(file);
+            let src = if let Some(src) = media_src.get(&part) {
+                src.clone()
+            } else {
+                let file_name = Path::new(&target)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("image.bin");
+                let unique = unique_asset_name(file_name, &images.used_names);
+                images.used_names.insert(unique.clone());
+                let src = format!("media/{unique}");
+                media_src.insert(part, src.clone());
+                src
+            };
+            images.insert(
+                &owner,
+                id,
+                ImageAsset {
+                    src,
+                    bytes: image_bytes,
+                },
+            );
+        }
     }
     Ok(images)
 }
 
-fn image_relationships(rels: &str) -> Result<Vec<(String, String)>> {
+fn collect_header_footer_parts(bytes: &[u8]) -> Result<HashMap<String, String>> {
+    let Ok(rels) = read_zip_text(bytes, "word/_rels/document.xml.rels") else {
+        return Ok(HashMap::new());
+    };
+    let mut parts = HashMap::new();
+    for suffix in ["/header", "/footer"] {
+        for (id, target) in relationships_ending_with(&rels, suffix)? {
+            parts.insert(id, resolve_word_target(&target));
+        }
+    }
+    Ok(parts)
+}
+
+fn is_word_rels_part(name: &str) -> bool {
+    name.starts_with("word/_rels/")
+        && Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rels"))
+}
+
+fn owner_part_from_rels(rels_path: &str) -> Option<String> {
+    let file_name = Path::new(rels_path).file_name()?.to_str()?;
+    let owner_name = file_name.strip_suffix(".rels")?;
+    Some(format!("word/{owner_name}"))
+}
+
+fn resolve_word_target(target: &str) -> String {
+    let target = target.trim_start_matches('/').replace('\\', "/");
+    if target.starts_with("word/") {
+        target
+    } else {
+        format!("word/{target}")
+    }
+}
+
+fn relationships_ending_with(rels: &str, type_suffix: &str) -> Result<Vec<(String, String)>> {
     let mut reader = Reader::from_str(rels);
     reader.config_mut().trim_text(true);
     let mut output = Vec::new();
@@ -2005,7 +2386,7 @@ fn image_relationships(rels: &str) -> Result<Vec<(String, String)>> {
                 let rel_type = xml_attribute(&reader, &element, b"Type")?;
                 if rel_type
                     .as_deref()
-                    .is_some_and(|value| value.ends_with("/image"))
+                    .is_some_and(|value| value.ends_with(type_suffix))
                     && let (Some(id), Some(target)) = (
                         xml_attribute(&reader, &element, b"Id")?,
                         xml_attribute(&reader, &element, b"Target")?,
@@ -2017,7 +2398,7 @@ fn image_relationships(rels: &str) -> Result<Vec<(String, String)>> {
             Ok(Event::Eof) => break,
             Err(error) => {
                 return Err(Error::Reverse(format!(
-                    "cannot parse document relationships: {error}"
+                    "cannot parse package relationships: {error}"
                 )));
             }
             _ => {}
@@ -2027,9 +2408,12 @@ fn image_relationships(rels: &str) -> Result<Vec<(String, String)>> {
     Ok(output)
 }
 
-fn collect_images(docx: &docx_rs::Docx) -> HashMap<String, ImageAsset> {
+fn collect_images(
+    docx: &docx_rs::Docx,
+    used_names: &BTreeSet<String>,
+) -> HashMap<String, ImageAsset> {
     let mut images = HashMap::new();
-    let mut used_names = BTreeSet::new();
+    let mut used_names = used_names.clone();
     for (id, path, image, _) in &docx.images {
         let file_name = Path::new(path)
             .file_name()
@@ -2272,6 +2656,216 @@ fn emu_point_attr(name: &str, emu: i64) -> String {
     }
 }
 
+fn paragraph_num_id(paragraph: &docx_rs::Paragraph) -> Option<usize> {
+    let property = json(&paragraph.property).ok()?;
+    property
+        .get("numberingProperty")
+        .and_then(|value| value.get("id"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn nested_block_num_id(child: &NestedBlock<'_>) -> Option<usize> {
+    nested_block_paragraph(child)
+        .ok()
+        .and_then(paragraph_num_id)
+}
+
+fn nested_block_paragraph<'a>(child: &'a NestedBlock<'a>) -> Result<&'a docx_rs::Paragraph> {
+    match child {
+        NestedBlock::Child(DocumentChild::Paragraph(paragraph)) => Ok(paragraph),
+        _ => Err(Error::Reverse(
+            "numbered list items must be paragraphs; split non-paragraph children out of the list"
+                .to_owned(),
+        )),
+    }
+}
+
+fn reverse_list_definition(
+    definition: &AbstractNumbering,
+    start_overrides: &HashMap<usize, usize>,
+) -> Result<String> {
+    if let Some(attrs) = collapse_list_shorthand(definition, start_overrides) {
+        return Ok(attrs);
+    }
+    let mut levels = Vec::new();
+    for level in &definition.levels {
+        levels.push(reverse_level_definition(level, start_overrides)?);
+    }
+    let encoded = serde_json::to_string(&levels)
+        .map_err(|error| Error::Reverse(format!("cannot serialize list levels: {error}")))?;
+    Ok(format!(" levels={{{encoded}}}"))
+}
+
+fn collapse_list_shorthand(
+    definition: &AbstractNumbering,
+    start_overrides: &HashMap<usize, usize>,
+) -> Option<String> {
+    if definition.levels.len() != 9 {
+        return None;
+    }
+    let first = definition.levels.first()?;
+    let start = start_overrides
+        .get(&first.level)
+        .copied()
+        .or_else(|| {
+            json(&first.start)
+                .ok()
+                .and_then(|value| value.as_u64())
+                .and_then(|value| usize::try_from(value).ok())
+        })
+        .unwrap_or(1);
+    let format = json(&first.format).ok()?;
+    let format = format.as_str()?;
+    let kind = match format {
+        "decimal" => "ordered",
+        "bullet" => "bullet",
+        _ => return None,
+    };
+    for (index, level) in definition.levels.iter().enumerate() {
+        if level.level != index {
+            return None;
+        }
+        let level_start = start_overrides
+            .get(&level.level)
+            .copied()
+            .or_else(|| {
+                json(&level.start)
+                    .ok()
+                    .and_then(|value| value.as_u64())
+                    .and_then(|value| usize::try_from(value).ok())
+            })
+            .unwrap_or(1);
+        if level_start != start {
+            return None;
+        }
+        let level_format = json(&level.format).ok()?;
+        if level_format.as_str()? != format {
+            return None;
+        }
+        let text = json(&level.text).ok()?;
+        let expected = if kind == "ordered" {
+            format!("%{}.", index + 1)
+        } else {
+            "•".to_owned()
+        };
+        if text.as_str()? != expected {
+            return None;
+        }
+        let jc = json(&level.jc).ok()?;
+        if jc.as_str()? != "left" {
+            return None;
+        }
+        if json(&level.suffix).ok()?.as_str()? != "tab" {
+            return None;
+        }
+        if level.pstyle.is_some() || level.level_restart.is_some() || level.is_lgl.is_some() {
+            return None;
+        }
+        let property = json(&level.paragraph_property).ok()?;
+        let indent = property.get("indent")?;
+        let left = indent.get("start").and_then(Value::as_i64)?;
+        if left != i64::try_from((index + 1) * 720).ok()? {
+            return None;
+        }
+        let special = indent.get("specialIndent")?;
+        if special.get("type").and_then(Value::as_str)? != "hanging"
+            || special.get("val").and_then(Value::as_i64)? != 360
+        {
+            return None;
+        }
+        let run = json(&level.run_property).ok()?;
+        if run
+            .as_object()
+            .is_none_or(|object| object.values().any(|value| !value.is_null()))
+        {
+            return None;
+        }
+    }
+    let mut attrs = attr("type", kind);
+    if kind == "ordered" && start != 1 {
+        let _ = write!(attrs, " start={{{start}}}");
+    }
+    Some(attrs)
+}
+
+fn reverse_level_definition(
+    level: &Level,
+    start_overrides: &HashMap<usize, usize>,
+) -> Result<Value> {
+    let source = json(level)?;
+    let mut output = Map::new();
+    if let Some(value) = source.get("format").and_then(Value::as_str) {
+        output.insert("format".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = source.get("text").and_then(Value::as_str) {
+        output.insert("text".to_owned(), Value::String(value.to_owned()));
+    }
+    let start = start_overrides.get(&level.level).copied().or_else(|| {
+        source
+            .get("start")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+    });
+    if let Some(start) = start {
+        output.insert("start".to_owned(), Value::Number(start.into()));
+    }
+    if let Some(value) = source.get("jc").and_then(Value::as_str)
+        && value != "left"
+    {
+        output.insert("align".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = source.get("suffix").and_then(Value::as_str)
+        && value != "tab"
+    {
+        output.insert("suffix".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = source
+        .get("pstyle")
+        .and_then(scalar_string)
+        .or_else(|| nested_string(&source, &["pstyle", "val"]))
+    {
+        output.insert("paragraphStyle".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = source
+        .get("levelRestart")
+        .and_then(Value::as_u64)
+        .or_else(|| nested(&source, &["levelRestart"]).and_then(Value::as_u64))
+    {
+        output.insert("restart".to_owned(), Value::Number(value.into()));
+    }
+    if source.get("isLgl").is_some() {
+        output.insert("legal".to_owned(), Value::Bool(true));
+    }
+    if let Some(indent) = nested(&source, &["paragraphProperty", "indent"]) {
+        if let Some(value) = indent.get("start").and_then(Value::as_i64) {
+            output.insert("indentLeft".to_owned(), points_value(value)?);
+        }
+        if let Some(value) = indent.get("end").and_then(Value::as_i64) {
+            output.insert("indentRight".to_owned(), points_value(value)?);
+        }
+        if let Some(special) = indent.get("specialIndent")
+            && let (Some(kind), Some(value)) = (
+                special.get("type").and_then(Value::as_str),
+                special.get("val").and_then(Value::as_i64),
+            )
+        {
+            let key = if kind == "hanging" {
+                "hanging"
+            } else {
+                "firstLine"
+            };
+            output.insert(key.to_owned(), points_value(value)?);
+        }
+    }
+    if let Some(run) = reverse_run_properties(source.get("runProperty").unwrap_or(&Value::Null))? {
+        for (key, value) in run {
+            output.insert(key, value);
+        }
+    }
+    Ok(Value::Object(output))
+}
+
 fn format_points(twips: u64) -> String {
     let whole = twips / 20;
     let remainder = twips % 20;
@@ -2301,47 +2895,214 @@ fn reverse_document_attributes(
     docx: &docx_rs::Docx,
     metadata: &HashMap<String, StyleMetadata>,
     writer: &Writer,
+    bytes: &[u8],
 ) -> Result<String> {
     let mut attributes = String::new();
+    attributes.push_str(&reverse_default_font_attrs(docx)?);
+    attributes.push_str(&reverse_doc_default_metrics(docx)?);
+    attributes.push_str(&reverse_core_and_custom_properties(docx, bytes)?);
+    attributes.push_str(&reverse_settings_attributes(&docx.settings)?);
+    if let Some(items) = collect_custom_xml_items(bytes)? {
+        attributes.push_str(&jsx_prop("customXmlItems", &items)?);
+    }
+    attributes.push_str(&reverse_styles_attribute(docx, metadata, writer)?);
+    Ok(attributes)
+}
+
+fn reverse_default_font_attrs(docx: &docx_rs::Docx) -> Result<String> {
     let defaults = json(&docx.styles.doc_defaults)?;
-    if let Some(fonts) = nested(&defaults, &["runPropertyDefault", "runProperty", "fonts"])
+    let Some(fonts) = nested(&defaults, &["runPropertyDefault", "runProperty", "fonts"])
         .and_then(Value::as_object)
-    {
-        let mut output = Map::new();
-        for key in [
-            "ascii",
-            "hiAnsi",
-            "eastAsia",
-            "cs",
-            "asciiTheme",
-            "hiAnsiTheme",
-            "eastAsiaTheme",
-            "csTheme",
-            "hint",
-        ] {
-            if let Some(value) = fonts.get(key).and_then(Value::as_str) {
-                output.insert(key.to_owned(), Value::String(value.to_owned()));
-            }
-        }
-        if !output.is_empty() {
-            let physical = ["ascii", "hiAnsi", "eastAsia", "cs"]
-                .map(|key| output.get(key).and_then(Value::as_str));
-            let can_collapse = physical[0].is_some()
-                && physical.iter().all(|value| *value == physical[0])
-                && !output
-                    .keys()
-                    .any(|key| key.ends_with("Theme") || key == "hint");
-            if can_collapse {
-                attributes.push_str(&attr("defaultFont", physical[0].unwrap_or_default()));
-            } else {
-                let fonts = serde_json::to_string(&output).map_err(|error| {
-                    Error::Reverse(format!("cannot serialize default font slots: {error}"))
-                })?;
-                write!(attributes, " defaultFonts={{{fonts}}}")
-                    .expect("writing to a String cannot fail");
-            }
+    else {
+        return Ok(String::new());
+    };
+    let mut output = Map::new();
+    for key in [
+        "ascii",
+        "hiAnsi",
+        "eastAsia",
+        "cs",
+        "asciiTheme",
+        "hiAnsiTheme",
+        "eastAsiaTheme",
+        "csTheme",
+        "hint",
+    ] {
+        if let Some(value) = fonts.get(key).and_then(Value::as_str) {
+            output.insert(key.to_owned(), Value::String(value.to_owned()));
         }
     }
+    if output.is_empty() {
+        return Ok(String::new());
+    }
+    let physical =
+        ["ascii", "hiAnsi", "eastAsia", "cs"].map(|key| output.get(key).and_then(Value::as_str));
+    let can_collapse = physical[0].is_some()
+        && physical.iter().all(|value| *value == physical[0])
+        && !output
+            .keys()
+            .any(|key| key.ends_with("Theme") || key == "hint");
+    if can_collapse {
+        return Ok(attr("defaultFont", physical[0].unwrap_or_default()));
+    }
+    jsx_prop("defaultFonts", &Value::Object(output))
+}
+
+fn reverse_doc_default_metrics(docx: &docx_rs::Docx) -> Result<String> {
+    let defaults = json(&docx.styles.doc_defaults)?;
+    let mut attributes = String::new();
+    if let Some(run) = nested(&defaults, &["runPropertyDefault", "runProperty"]) {
+        if let Some(size) = run.get("sz").and_then(scalar_u64) {
+            let size = i64::try_from(size).map_err(|_| {
+                Error::Reverse("default font size exceeds supported range".to_owned())
+            })?;
+            attributes.push_str(&jsx_prop("defaultSize", &scaled_decimal_value(size, 2)?)?);
+        }
+        if let Some(spacing) = run.get("characterSpacing").and_then(scalar_i64) {
+            attributes.push_str(&jsx_prop(
+                "defaultCharacterSpacing",
+                &points_value(spacing)?,
+            )?);
+        }
+    }
+    if let Some(spacing) = nested(
+        &defaults,
+        &[
+            "paragraphPropertyDefault",
+            "paragraphProperty",
+            "lineSpacing",
+        ],
+    ) {
+        let mut output = Map::new();
+        for (source_key, target_key) in [("before", "before"), ("after", "after"), ("line", "line")]
+        {
+            if let Some(value) = spacing.get(source_key).and_then(scalar_i64) {
+                output.insert(target_key.to_owned(), points_value(value)?);
+            }
+        }
+        for (source_key, target_key) in
+            [("beforeLines", "beforeLines"), ("afterLines", "afterLines")]
+        {
+            if let Some(value) = spacing.get(source_key).and_then(Value::as_u64) {
+                output.insert(target_key.to_owned(), Value::Number(value.into()));
+            }
+        }
+        copy_string(spacing, &mut output, "lineRule", "lineRule");
+        if !output.is_empty() {
+            attributes.push_str(&jsx_prop("defaultLineSpacing", &Value::Object(output))?);
+        }
+    }
+    Ok(attributes)
+}
+
+fn reverse_core_and_custom_properties(docx: &docx_rs::Docx, bytes: &[u8]) -> Result<String> {
+    let mut attributes = String::new();
+    let (created, updated) = parse_core_timestamps(bytes)?;
+    if let Some(created) = created {
+        attributes.push_str(&attr("createdAt", &created));
+    }
+    if let Some(updated) = updated {
+        attributes.push_str(&attr("updatedAt", &updated));
+    }
+    if !docx.doc_props.custom.properties.is_empty() {
+        let mut properties = Map::new();
+        let mut names = docx
+            .doc_props
+            .custom
+            .properties
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        for name in names {
+            let Some(value) = docx.doc_props.custom.properties.get(&name) else {
+                continue;
+            };
+            if name.is_empty() {
+                return Err(Error::Reverse(
+                    "custom property name is empty; give every `docProps/custom.xml` property a name"
+                        .to_owned(),
+                ));
+            }
+            properties.insert(name, Value::String(value.clone()));
+        }
+        attributes.push_str(&jsx_prop("customProperties", &Value::Object(properties))?);
+    }
+    Ok(attributes)
+}
+
+fn reverse_settings_attributes(settings: &docx_rs::Settings) -> Result<String> {
+    let source = json(settings)?;
+    let mut attributes = String::new();
+    if let Some(id) = source
+        .get("docId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        attributes.push_str(&attr("documentId", id));
+    }
+    if let Some(tab_stop) = source
+        .get("defaultTabStop")
+        .and_then(Value::as_u64)
+        .filter(|value| *value != 840)
+    {
+        let tab_stop = i64::try_from(tab_stop)
+            .map_err(|_| Error::Reverse("default tab stop exceeds supported range".to_owned()))?;
+        attributes.push_str(&jsx_prop("defaultTabStop", &points_value(tab_stop)?)?);
+    }
+    if let Some(variables) = source.get("docVars").and_then(Value::as_array) {
+        let mut output = Map::new();
+        for variable in variables {
+            let Some(name) = variable
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            else {
+                return Err(Error::Reverse(
+                    "document variable is missing a name; restore `w:docVar/@w:name` or remove the empty variable"
+                        .to_owned(),
+                ));
+            };
+            let value = variable
+                .get("val")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            output.insert(name.to_owned(), Value::String(value.to_owned()));
+        }
+        if !output.is_empty() {
+            attributes.push_str(&jsx_prop("documentVariables", &Value::Object(output))?);
+        }
+    }
+    if source.get("evenAndOddHeaders").and_then(Value::as_bool) == Some(true) {
+        attributes.push_str(" evenAndOddHeaders");
+    }
+    if source
+        .get("adjustLineHeightInTable")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        attributes.push_str(" adjustLineHeightInTable");
+    }
+    if let Some(value) = source
+        .get("characterSpacingControl")
+        .and_then(Value::as_str)
+        .filter(|value| *value != "unsupported")
+    {
+        attributes.push_str(&attr("characterSpacingControl", value));
+    } else if source.get("characterSpacingControl").is_some() {
+        return Err(Error::Reverse(
+            "settings use an unsupported `w:characterSpacingControl`; set it to `doNotCompress`, `compressPunctuation`, or `compressPunctuationAndJapaneseKana`"
+                .to_owned(),
+        ));
+    }
+    Ok(attributes)
+}
+
+fn reverse_styles_attribute(
+    docx: &docx_rs::Docx,
+    metadata: &HashMap<String, StyleMetadata>,
+    writer: &Writer,
+) -> Result<String> {
     let styles = docx
         .styles
         .styles
@@ -2358,12 +3119,248 @@ fn reverse_document_attributes(
         .flatten()
         .collect::<Vec<_>>();
     if styles.is_empty() {
-        return Ok(attributes);
+        return Ok(String::new());
     }
-    let styles = serde_json::to_string(&styles)
-        .map_err(|error| Error::Reverse(format!("cannot serialize style definitions: {error}")))?;
-    write!(attributes, " styles={{{styles}}}").expect("writing to a String cannot fail");
-    Ok(attributes)
+    jsx_prop("styles", &Value::Array(styles))
+}
+
+fn parse_core_timestamps(bytes: &[u8]) -> Result<(Option<String>, Option<String>)> {
+    let Ok(xml) = read_zip_text(bytes, "docProps/core.xml") else {
+        return Ok((None, None));
+    };
+    let mut reader = Reader::from_str(&xml);
+    reader.config_mut().trim_text(true);
+    let mut created = None;
+    let mut modified = None;
+    let mut current = None;
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(element)) => match element.local_name().as_ref() {
+                b"created" => current = Some("created"),
+                b"modified" => current = Some("modified"),
+                _ => {}
+            },
+            Ok(Event::Text(text)) => {
+                let value = text.decode().map_err(|error| {
+                    Error::Reverse(format!("cannot decode docProps/core.xml: {error}"))
+                })?;
+                match current {
+                    Some("created") => created = Some(value.into_owned()),
+                    Some("modified") => modified = Some(value.into_owned()),
+                    _ => {}
+                }
+            }
+            Ok(Event::End(element))
+                if matches!(element.local_name().as_ref(), b"created" | b"modified") =>
+            {
+                current = None;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse docProps/core.xml: {error}"
+                )));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok((
+        created.filter(|value| value != "1970-01-01T00:00:00Z"),
+        modified.filter(|value| value != "1970-01-01T00:00:00Z"),
+    ))
+}
+
+fn collect_custom_xml_items(bytes: &[u8]) -> Result<Option<Value>> {
+    let names = zip_entry_names(bytes)?;
+    let mut item_parts = names
+        .iter()
+        .filter(|name| is_custom_xml_item_part(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let props_parts = names
+        .iter()
+        .filter(|name| is_custom_xml_props_part(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if item_parts.is_empty() && props_parts.is_empty() {
+        return Ok(None);
+    }
+    if item_parts.is_empty() {
+        return Err(Error::Reverse(format!(
+            "custom XML properties `{}` have no item payload; restore the matching `customXml/itemN.xml` or remove the orphan properties part",
+            props_parts[0]
+        )));
+    }
+    item_parts.sort();
+    let mut items = Vec::new();
+    let mut used_props = BTreeSet::new();
+    for item_part in item_parts {
+        let Some(props_part) = custom_xml_props_part_for(&item_part) else {
+            return Err(Error::Reverse(format!(
+                "custom XML part `{item_part}` does not use the `itemN.xml` name; rename it or remove the unrepresentable store item"
+            )));
+        };
+        let props_xml = read_zip_text(bytes, &props_part).map_err(|_| {
+            Error::Reverse(format!(
+                "custom XML item `{item_part}` is missing `{props_part}`; restore the properties part with a `ds:itemID` or remove the orphan item"
+            ))
+        })?;
+        used_props.insert(props_part);
+        let (id, schema_refs) = parse_custom_xml_item_id(&props_xml, &item_part)?;
+        let xml = normalize_custom_xml_payload(&read_zip_text(bytes, &item_part)?);
+        if xml.is_empty() {
+            return Err(Error::Reverse(format!(
+                "custom XML item `{item_part}` is empty; restore well-formed XML or remove the part"
+            )));
+        }
+        if xml.parse::<docx_rs::CustomItem>().is_err() {
+            return Err(Error::Reverse(format!(
+                "custom XML item `{item_part}` is not well-formed XML; fix the payload or remove the part"
+            )));
+        }
+        let mut item = Map::new();
+        item.insert("id".to_owned(), Value::String(id));
+        item.insert("xml".to_owned(), Value::String(xml));
+        if !schema_refs.is_empty() {
+            item.insert(
+                "schemaRefs".to_owned(),
+                Value::Array(
+                    schema_refs
+                        .into_iter()
+                        .map(Value::String)
+                        .collect::<Vec<_>>(),
+                ),
+            );
+        }
+        items.push(Value::Object(item));
+    }
+    if let Some(orphan) = props_parts.iter().find(|part| !used_props.contains(*part)) {
+        return Err(Error::Reverse(format!(
+            "custom XML properties `{orphan}` have no item payload; restore the matching `customXml/itemN.xml` or remove the orphan properties part"
+        )));
+    }
+    Ok(Some(Value::Array(items)))
+}
+
+fn zip_entry_names(bytes: &[u8]) -> Result<Vec<String>> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Reverse(format!("invalid DOCX archive: {error}")))?;
+    Ok((0..archive.len())
+        .filter_map(|index| {
+            archive
+                .by_index(index)
+                .ok()
+                .map(|file| file.name().replace('\\', "/"))
+        })
+        .collect())
+}
+
+fn is_custom_xml_item_part(name: &str) -> bool {
+    Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|file_name| {
+            file_name.starts_with("item")
+                && !file_name.starts_with("itemProps")
+                && Path::new(file_name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        })
+        && name.replace('\\', "/").starts_with("customXml/")
+        && !name.contains("_rels/")
+}
+
+fn is_custom_xml_props_part(name: &str) -> bool {
+    Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|file_name| {
+            file_name.starts_with("itemProps")
+                && Path::new(file_name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        })
+        && name.replace('\\', "/").starts_with("customXml/")
+}
+
+fn custom_xml_props_part_for(item_part: &str) -> Option<String> {
+    let file_name = Path::new(item_part).file_name()?.to_str()?;
+    let number = file_name
+        .strip_prefix("item")?
+        .strip_suffix(".xml")
+        .or_else(|| file_name.strip_prefix("item")?.strip_suffix(".XML"))?;
+    Some(format!("customXml/itemProps{number}.xml"))
+}
+
+fn parse_custom_xml_item_id(props_xml: &str, item_part: &str) -> Result<(String, Vec<String>)> {
+    let mut reader = Reader::from_str(props_xml);
+    reader.config_mut().trim_text(true);
+    let mut item_id = None;
+    let mut schema_refs = Vec::new();
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(element) | Event::Empty(element)) => {
+                match element.local_name().as_ref() {
+                    b"datastoreItem" => {
+                        item_id = xml_attribute(&reader, &element, b"itemID")?;
+                    }
+                    b"schemaRef" => {
+                        if let Some(uri) = xml_attribute(&reader, &element, b"uri")?
+                            .filter(|value| !value.is_empty())
+                        {
+                            schema_refs.push(uri);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse custom XML properties for `{item_part}`: {error}"
+                )));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    let id = item_id
+        .as_deref()
+        .map(|value| value.trim_matches(|ch| ch == '{' || ch == '}'))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            Error::Reverse(format!(
+                "custom XML item `{item_part}` is missing `ds:itemID`; restore the item id on `itemProps` or remove the store item"
+            ))
+        })?;
+    Ok((id.to_owned(), schema_refs))
+}
+
+fn normalize_custom_xml_payload(xml: &str) -> String {
+    let trimmed = xml.trim();
+    let Some(rest) = trimmed.strip_prefix("<?xml") else {
+        return trimmed.to_owned();
+    };
+    rest.find("?>").map_or_else(
+        || trimmed.to_owned(),
+        |index| rest[index + 2..].trim().to_owned(),
+    )
+}
+
+fn scalar_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|inner| i64::try_from(inner).ok()))
+        .or_else(|| {
+            value.get("val").and_then(|inner| {
+                inner
+                    .as_i64()
+                    .or_else(|| inner.as_u64().and_then(|number| i64::try_from(number).ok()))
+            })
+        })
 }
 
 fn reverse_style_definition(
@@ -2849,10 +3846,12 @@ fn unsupported(context: &str, value: &impl std::fmt::Debug) -> Error {
 mod tests {
     use super::*;
     use docx_rs::{
-        Comment, Delete, DocGrid, Docx, Footer, Header, Hyperlink, HyperlinkType, Insert,
-        LineSpacing, LineSpacingType, PageMargin, PageOrientationType, PageSize, Paragraph, Pic,
-        Run, RunFonts, Section, SpecialIndentType, StructuredDataTag, Style, StyleType, Table,
-        TableCell, TableOfContents, TableRow, ThemeColor,
+        AbstractNumbering, CharacterSpacingValues, Comment, Delete, DocGrid, Docx, Footer, Header,
+        Hyperlink, HyperlinkType, IndentLevel, Insert, Level, LevelJc, LevelSuffixType, LevelText,
+        LineSpacing, LineSpacingType, NumberFormat, Numbering, NumberingId, PageMargin,
+        PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, Section, Settings,
+        SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Table, TableCell,
+        TableOfContents, TableRow, ThemeColor,
     };
     use std::io::Write;
 
@@ -3119,6 +4118,125 @@ mod tests {
             .pack(&mut bytes)
             .expect("external DOCX fixture should pack");
         bytes.into_inner()
+    }
+
+    fn test_png(width: u32, height: u32, pixel: [u8; 4]) -> Vec<u8> {
+        let mut image = image::DynamicImage::new_rgba8(width, height);
+        if let Some(buffer) = image.as_mut_rgba8() {
+            for px in buffer.pixels_mut() {
+                *px = image::Rgba(pixel);
+            }
+        }
+        let mut encoded = Cursor::new(Vec::new());
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("png should encode");
+        encoded.into_inner()
+    }
+
+    fn header_jsx<'a>(jsx: &'a str, kind: &str) -> &'a str {
+        let marker = format!("<Header type=\"{kind}\">");
+        jsx.split_once(&marker)
+            .and_then(|(_, rest)| rest.split_once("</Header>"))
+            .map_or("", |(inner, _)| inner)
+    }
+
+    fn footer_jsx<'a>(jsx: &'a str, kind: &str) -> &'a str {
+        let marker = format!("<Footer type=\"{kind}\">");
+        jsx.split_once(&marker)
+            .and_then(|(_, rest)| rest.split_once("</Footer>"))
+            .map_or("", |(inner, _)| inner)
+    }
+
+    fn jsx_after_header(jsx: &str) -> &str {
+        jsx.split_once("</Header>").map_or(jsx, |(_, rest)| rest)
+    }
+
+    fn image_src(jsx: &str) -> Option<String> {
+        let start = jsx.find(r#"src=""#)? + 5;
+        let end = jsx[start..].find('"')? + start;
+        Some(jsx[start..end].to_owned())
+    }
+
+    fn collide_header_and_body_image_rids(bytes: &[u8]) -> Vec<u8> {
+        let mut source =
+            zip::ZipArchive::new(Cursor::new(bytes.to_vec())).expect("DOCX should be a ZIP");
+        let names = (0..source.len())
+            .map(|index| source.by_index(index).expect("entry").name().to_owned())
+            .collect::<Vec<_>>();
+        let header_rels_name = names
+            .iter()
+            .find(|name| name.starts_with("word/_rels/header") && is_word_rels_part(name))
+            .cloned()
+            .expect("header relationships should exist");
+        let header_xml_name = header_rels_name
+            .replacen("_rels/", "", 1)
+            .trim_end_matches(".rels")
+            .to_owned();
+        let mut read = |name: &str| {
+            let mut file = source.by_name(name).expect("part");
+            let mut data = String::new();
+            file.read_to_string(&mut data).expect("part should read");
+            data
+        };
+        let document_rels = read("word/_rels/document.xml.rels");
+        let header_rels = read(&header_rels_name);
+        let header_xml = read(&header_xml_name);
+        let document_id = relationships_ending_with(&document_rels, "/image")
+            .expect("document rels")
+            .into_iter()
+            .next()
+            .expect("document image relationship")
+            .0;
+        let header_id = relationships_ending_with(&header_rels, "/image")
+            .expect("header rels")
+            .into_iter()
+            .next()
+            .expect("header image relationship")
+            .0;
+        if document_id == header_id {
+            return bytes.to_vec();
+        }
+        let header_rels = header_rels.replace(
+            &format!(r#"Id="{header_id}""#),
+            &format!(r#"Id="{document_id}""#),
+        );
+        let header_xml = header_xml.replace(
+            &format!(r#"r:embed="{header_id}""#),
+            &format!(r#"r:embed="{document_id}""#),
+        );
+        drop(source);
+        rewrite_package_parts(
+            bytes,
+            &[
+                (header_rels_name.as_str(), header_rels.as_bytes()),
+                (header_xml_name.as_str(), header_xml.as_bytes()),
+            ],
+        )
+    }
+
+    fn rewrite_package_parts(bytes: &[u8], replacements: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut source =
+            zip::ZipArchive::new(Cursor::new(bytes.to_vec())).expect("DOCX should be a ZIP");
+        let output = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(output);
+        for index in 0..source.len() {
+            let mut file = source.by_index(index).expect("entry");
+            let name = file.name().to_owned();
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer
+                .start_file(name.clone(), options)
+                .expect("replacement entry");
+            if let Some((_, data)) = replacements.iter().find(|(part, _)| *part == name) {
+                writer.write_all(data).expect("replacement bytes");
+            } else {
+                let mut data = Vec::new();
+                file.read_to_end(&mut data).expect("entry bytes");
+                writer.write_all(&data).expect("copied bytes");
+            }
+        }
+        writer.finish().expect("rewritten ZIP").into_inner()
     }
 
     fn strip_ir_manifest(bytes: &[u8]) -> Vec<u8> {
@@ -3646,13 +4764,7 @@ mod tests {
 
     #[test]
     fn reverse_external_docx_should_preserve_raster_image() {
-        let png = {
-            let mut encoded = Cursor::new(Vec::new());
-            image::DynamicImage::new_rgba8(2, 1)
-                .write_to(&mut encoded, image::ImageFormat::Png)
-                .expect("png should encode");
-            encoded.into_inner()
-        };
+        let png = test_png(2, 1, [0, 0, 0, 255]);
         let bytes = pack_docx(Docx::new().add_paragraph(
             Paragraph::new().add_run(Run::new().add_image(Pic::new_with_dimensions(png, 2, 1))),
         ));
@@ -3676,6 +4788,141 @@ mod tests {
     }
 
     #[test]
+    fn reverse_external_docx_should_preserve_header_raster_image() {
+        let png = test_png(3, 1, [255, 0, 0, 255]);
+        let bytes = pack_docx(
+            Docx::new()
+                .header(
+                    Header::new().add_paragraph(
+                        Paragraph::new()
+                            .add_run(Run::new().add_image(Pic::new_with_dimensions(png, 3, 1))),
+                    ),
+                )
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let reversed = reverse_package(&bytes).expect("header image DOCX should reverse");
+        let header = header_jsx(&reversed.jsx, "default");
+        assert!(
+            header.contains("<Image")
+                && header.contains(r#"src="media/"#)
+                && header.contains(" width={")
+                && header.contains(" height={"),
+            "header JSX should keep the raster image: {header}"
+        );
+        assert!(
+            reversed
+                .assets
+                .iter()
+                .any(|(path, bytes)| path.starts_with("media/") && !bytes.is_empty()),
+            "expected extracted header raster bytes, got {:?}",
+            reversed.assets.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_footer_raster_image() {
+        let png = test_png(1, 3, [0, 255, 0, 255]);
+        let bytes = pack_docx(
+            Docx::new()
+                .footer(
+                    Footer::new().add_paragraph(
+                        Paragraph::new()
+                            .add_run(Run::new().add_image(Pic::new_with_dimensions(png, 1, 3))),
+                    ),
+                )
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let reversed = reverse_package(&bytes).expect("footer image DOCX should reverse");
+        let footer = footer_jsx(&reversed.jsx, "default");
+        assert!(
+            footer.contains("<Image") && footer.contains(r#"src="media/"#),
+            "footer JSX should keep the raster image: {footer}"
+        );
+        assert!(
+            reversed
+                .assets
+                .iter()
+                .any(|(path, bytes)| path.starts_with("media/") && !bytes.is_empty()),
+            "expected extracted footer raster bytes, got {:?}",
+            reversed.assets.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_keep_header_and_body_images_distinct() {
+        let header_png = test_png(2, 2, [255, 0, 0, 255]);
+        let body_png = test_png(2, 2, [0, 0, 255, 255]);
+        let bytes = pack_docx(
+            Docx::new()
+                .header(Header::new().add_paragraph(Paragraph::new().add_run(
+                    Run::new().add_image(Pic::new_with_dimensions(header_png.clone(), 2, 2)),
+                )))
+                .add_paragraph(Paragraph::new().add_run(
+                    Run::new().add_image(Pic::new_with_dimensions(body_png.clone(), 2, 2)),
+                )),
+        );
+        let reversed =
+            reverse_package(&bytes).expect("header and body images should reverse independently");
+        let header = header_jsx(&reversed.jsx, "default");
+        let body = jsx_after_header(&reversed.jsx);
+        assert!(
+            header.contains("<Image") && body.contains("<Image"),
+            "both header and body should keep Image nodes:\n{}",
+            reversed.jsx
+        );
+        let header_src = image_src(header).expect("header Image src");
+        let body_src = image_src(body).expect("body Image src");
+        assert_ne!(
+            header_src, body_src,
+            "header and body images must not share one src when their bytes differ"
+        );
+        assert_eq!(
+            reversed.assets.get(&header_src).map(Vec::as_slice),
+            Some(header_png.as_slice()),
+            "header asset bytes should match the header PNG"
+        );
+        assert_eq!(
+            reversed.assets.get(&body_src).map(Vec::as_slice),
+            Some(body_png.as_slice()),
+            "body asset bytes should match the body PNG"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_resolve_header_image_when_rids_collide() {
+        let header_png = test_png(2, 2, [255, 128, 0, 255]);
+        let body_png = test_png(2, 2, [0, 128, 255, 255]);
+        let packed = pack_docx(
+            Docx::new()
+                .header(Header::new().add_paragraph(Paragraph::new().add_run(
+                    Run::new().add_image(Pic::new_with_dimensions(header_png.clone(), 2, 2)),
+                )))
+                .add_paragraph(Paragraph::new().add_run(
+                    Run::new().add_image(Pic::new_with_dimensions(body_png.clone(), 2, 2)),
+                )),
+        );
+        let bytes = collide_header_and_body_image_rids(&packed);
+        let reversed = reverse_package(&bytes).expect(
+            "colliding header/body image relationship ids should reverse from their own rels",
+        );
+        let header = header_jsx(&reversed.jsx, "default");
+        let body = jsx_after_header(&reversed.jsx);
+        let header_src = image_src(header).expect("header Image src");
+        let body_src = image_src(body).expect("body Image src");
+        assert_ne!(header_src, body_src);
+        assert_eq!(
+            reversed.assets.get(&header_src).map(Vec::as_slice),
+            Some(header_png.as_slice()),
+            "header must resolve from headerN.xml.rels, not the body rId"
+        );
+        assert_eq!(
+            reversed.assets.get(&body_src).map(Vec::as_slice),
+            Some(body_png.as_slice()),
+            "body must keep its own media bytes"
+        );
+    }
+
+    #[test]
     fn reverse_external_docx_without_annotation_parts_should_not_invent_them() {
         let packed = pack_docx(
             Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("plain"))),
@@ -3693,6 +4940,266 @@ mod tests {
         assert!(
             !jsx.contains("<Comment") && !jsx.contains("<Footnote") && !jsx.contains("<List"),
             "missing annotation parts must not invent components: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_custom_xml_items() {
+        let bytes = pack_docx(
+            Docx::new()
+                .add_custom_item(
+                    "06AC5857-5C65-A94A-BCEC-37356A209BC3",
+                    "<customer><name>Ada</name></customer>",
+                )
+                .add_custom_item(
+                    "11111111-AAAA-BBBB-CCCC-222222222222",
+                    r#"<order id="42"/>"#,
+                )
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let jsx = reverse_document(&bytes).expect("custom XML items should reverse");
+        assert!(
+            jsx.contains("customXmlItems={")
+                && jsx.contains(r#""id":"06AC5857-5C65-A94A-BCEC-37356A209BC3""#)
+                && jsx.contains(r#""xml":"<customer><name>Ada</name></customer>""#)
+                && jsx.contains(r#""id":"11111111-AAAA-BBBB-CCCC-222222222222""#)
+                && jsx.contains(r#""xml":"<order id=\"42\""#),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_custom_xml_without_item_properties() {
+        let packed = pack_docx(
+            Docx::new()
+                .add_custom_item("06AC5857-5C65-A94A-BCEC-37356A209BC3", "<customer/>")
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let stripped = strip_package_parts(&packed, &["customXml/itemProps1.xml"]);
+        let error =
+            reverse_document(&stripped).expect_err("custom XML without item properties must fail");
+        assert!(
+            error.to_string().contains("itemProps") && error.to_string().contains("itemID"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_custom_xml_schema_refs() {
+        let packed = pack_docx(
+            Docx::new()
+                .add_custom_item("06AC5857-5C65-A94A-BCEC-37356A209BC3", "<customer/>")
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let rewritten = rewrite_package_parts(
+            &packed,
+            &[(
+                "customXml/itemProps1.xml",
+                br#"<?xml version="1.0"?><ds:datastoreItem ds:itemID="{06AC5857-5C65-A94A-BCEC-37356A209BC3}" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml"><ds:schemaRefs><ds:schemaRef ds:uri="https://example.com"/></ds:schemaRefs></ds:datastoreItem>"#,
+            )],
+        );
+        let jsx = reverse_document(&rewritten).expect("schema refs should reverse");
+        assert!(
+            jsx.contains("schemaRefs") && jsx.contains("https://example.com"),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_positional_tab() {
+        let bytes = pack_docx(Docx::new().add_paragraph(Paragraph::new().add_run(
+            Run::new().add_ptab(docx_rs::PositionalTab::new(
+                docx_rs::PositionalTabAlignmentType::Center,
+                docx_rs::PositionalTabRelativeTo::Margin,
+                docx_rs::TabLeaderType::None,
+            )),
+        )));
+        let jsx = reverse_document(&bytes).expect("positional tab should reverse");
+        assert!(
+            jsx.contains("<PositionalTab") && jsx.contains(r#"align="center""#),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_document_settings_and_metadata() {
+        let bytes = pack_docx(
+            Docx::new()
+                .created_at("2026-08-14T00:00:00Z")
+                .updated_at("2026-08-15T00:00:00Z")
+                .custom_property("Project", "Apollo")
+                .default_size(22)
+                .default_spacing(10)
+                .default_line_spacing(
+                    LineSpacing::new()
+                        .before(40)
+                        .after(120)
+                        .line(280)
+                        .line_rule(LineSpacingType::AtLeast),
+                )
+                .settings(
+                    Settings::new()
+                        .doc_id("01234567-89AB-CDEF-0123-456789ABCDEF")
+                        .default_tab_stop(720)
+                        .add_doc_var("Customer", "Ada")
+                        .even_and_odd_headers()
+                        .adjust_line_height_in_table()
+                        .character_spacing_control(CharacterSpacingValues::CompressPunctuation),
+                )
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let jsx = reverse_document(&bytes).expect("document settings should reverse");
+        assert!(
+            jsx.contains(r#"createdAt="2026-08-14T00:00:00Z""#)
+                && jsx.contains(r#"updatedAt="2026-08-15T00:00:00Z""#)
+                && jsx.contains(r#""Project":"Apollo""#)
+                && jsx.contains(" defaultSize={11}")
+                && jsx.contains(" defaultCharacterSpacing={0.5}")
+                && jsx.contains("defaultLineSpacing={")
+                && jsx.contains(r#""before":2"#)
+                && jsx.contains(r#""after":6"#)
+                && jsx.contains(r#""line":14"#)
+                && jsx.contains(r#""lineRule":"atLeast""#)
+                && jsx.contains(r#"documentId="01234567-89AB-CDEF-0123-456789ABCDEF""#)
+                && jsx.contains(" defaultTabStop={36}")
+                && jsx.contains(r#""Customer":"Ada""#)
+                && jsx.contains(" evenAndOddHeaders")
+                && jsx.contains(" adjustLineHeightInTable")
+                && jsx.contains(r#"characterSpacingControl="compressPunctuation""#),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_omit_stock_default_tab_stop_and_epoch_timestamps() {
+        let jsx = reverse_document(&pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("plain"))),
+        ))
+        .expect("plain document should reverse");
+        assert!(
+            !jsx.contains("defaultTabStop")
+                && !jsx.contains("createdAt")
+                && !jsx.contains("updatedAt")
+                && !jsx.contains("customXmlItems")
+                && !jsx.contains("documentVariables")
+                && !jsx.contains("evenAndOddHeaders"),
+            "backend defaults must not be invented: {jsx}"
+        );
+    }
+
+    fn default_list_abstract(id: usize, ordered: bool) -> AbstractNumbering {
+        let mut definition = AbstractNumbering::new(id);
+        for level in 0..=8 {
+            let text = if ordered {
+                format!("%{}.", level + 1)
+            } else {
+                "•".to_owned()
+            };
+            definition = definition.add_level(
+                Level::new(
+                    level,
+                    Start::new(1),
+                    NumberFormat::new(if ordered { "decimal" } else { "bullet" }),
+                    LevelText::new(text),
+                    LevelJc::new("left"),
+                )
+                .indent(
+                    Some(i32::try_from((level + 1) * 720).expect("indent")),
+                    Some(SpecialIndentType::Hanging(360)),
+                    None,
+                    None,
+                ),
+            );
+        }
+        definition
+    }
+
+    fn numbered(id: usize, level: usize, text: &str) -> Paragraph {
+        Paragraph::new()
+            .numbering(NumberingId::new(id), IndentLevel::new(level))
+            .add_run(Run::new().add_text(text))
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_simple_ordered_list() {
+        let bytes = pack_docx(
+            Docx::new()
+                .add_abstract_numbering(default_list_abstract(2, true))
+                .add_numbering(Numbering::new(2, 2))
+                .add_paragraph(numbered(2, 0, "one"))
+                .add_paragraph(numbered(2, 1, "two")),
+        );
+        let jsx = reverse_document(&bytes).expect("external list should reverse");
+        assert!(
+            jsx.contains(r#"<List type="ordered">"#)
+                && jsx.contains("<ListItem>")
+                && jsx.contains("level={1}")
+                && jsx.contains(r#"{"one"}"#)
+                && jsx.contains(r#"{"two"}"#)
+                && !jsx.contains("levels="),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_custom_list_levels() {
+        let definition = AbstractNumbering::new(4)
+            .add_level(
+                Level::new(
+                    0,
+                    Start::new(3),
+                    NumberFormat::new("decimal"),
+                    LevelText::new("%1."),
+                    LevelJc::new("left"),
+                )
+                .suffix(LevelSuffixType::Space)
+                .is_lgl()
+                .level_restart(0)
+                .bold(),
+            )
+            .add_level(
+                Level::new(
+                    1,
+                    Start::new(1),
+                    NumberFormat::new("lowerLetter"),
+                    LevelText::new("%2)"),
+                    LevelJc::new("right"),
+                )
+                .paragraph_style("ListParagraph"),
+            );
+        let bytes = pack_docx(
+            Docx::new()
+                .add_abstract_numbering(definition)
+                .add_numbering(Numbering::new(4, 4))
+                .add_paragraph(numbered(4, 0, "one").style("ListParagraph"))
+                .add_paragraph(numbered(4, 1, "two")),
+        );
+        let jsx = reverse_document(&bytes).expect("custom levels should reverse");
+        assert!(
+            jsx.contains("levels={")
+                && jsx.contains(r#""format":"decimal""#)
+                && jsx.contains(r#""suffix":"space""#)
+                && jsx.contains(r#""legal":true"#)
+                && jsx.contains(r#""format":"lowerLetter""#)
+                && jsx.contains(r#""paragraphStyle":"ListParagraph""#)
+                && jsx.contains(r#"style="ListParagraph""#),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_style_linked_numbering() {
+        let bytes = pack_docx(
+            Docx::new()
+                .add_abstract_numbering(AbstractNumbering::new(5).num_style_link("ListNumber"))
+                .add_numbering(Numbering::new(5, 5))
+                .add_paragraph(numbered(5, 0, "item")),
+        );
+        let error = reverse_document(&bytes).expect_err("style-linked numbering must fail");
+        assert!(
+            error.to_string().contains("style-linked")
+                && error.to_string().contains("explicit `w:lvl`"),
+            "{error}"
         );
     }
 

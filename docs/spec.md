@@ -131,13 +131,23 @@ one `Document`. External reverse also restores section `margins` and
 `themeTint` from `w:color` in `document.xml` and `styles.xml` because
 docx-rs 0.4.22 serializes `Color` as a bare hex string. Raster
 `w:drawing` pictures reverse as `Image`; media bytes are written beside
-the JSX as `media/<filename>` and referenced by `src`. Vector drawings
+the JSX as `media/<filename>` and referenced by `src`. Header and footer
+drawings resolve media through `word/_rels/headerN.xml.rels` and
+`word/_rels/footerN.xml.rels` independently of `word/_rels/document.xml.rels`,
+so a header `rId` is not merged with a body relationship that happens to
+share the same id. Vector drawings
 such as EMF, WMF, and PICT have no schema-valid writer path and error
 instead of being dropped. A stock unused `Normal` style is omitted so
 recompilation does not emit a duplicate `w:style` that the backend always
 prepends. Reverse of a package that lacks comments, footnotes, or numbering
 does not invent those components; recompilation then omits the empty parts
-the 0.4.22 writer would otherwise inject.
+the 0.4.22 writer would otherwise inject. External reverse restores already
+writable `Document` settings from `word/settings.xml`, `docProps/core.xml`,
+and `docProps/custom.xml` when they differ from backend defaults, and
+restores `customXmlItems` from `customXml/itemN.xml` plus the matching
+`itemPropsN.xml`, including `ds:schemaRef` URIs as `schemaRefs`. A custom
+XML part without an item id or whose payload is not well-formed XML is an
+error instead of a silent drop.
 
 - `Document`: `defaultFont?: string` is a shorthand that assigns the same font
   to all four physical font slots. `defaultFonts?: {ascii?,hiAnsi?,eastAsia?,cs?,asciiTheme?,hiAnsiTheme?,eastAsiaTheme?,csTheme?,hint?}`
@@ -170,6 +180,12 @@ the 0.4.22 writer would otherwise inject.
   items. IDs must be non-empty and unique, XML must be well-formed, and both
   arrays must be non-empty when present. The compiler emits item, properties,
   relationship, document relationship, and content-type parts for every item.
+  Optional `schemaRefs?: string[]` records `ds:schemaRef/@ds:uri` values.
+  External reverse reads those parts without the IR manifest. The `id` comes
+  from `ds:itemID` with surrounding braces stripped. Missing `itemProps` for
+  an item part errors with a repair suggestion. Settings reverse omits the
+  backend default tab stop (`840` twips) and the epoch core timestamps the
+  writer injects when `createdAt` / `updatedAt` are absent.
 - `Document.styles?: StyleDefinition[]` defines reusable Word styles. Every
   definition requires unique non-empty `id`, non-empty `name`, and `type` of
   `paragraph`, `character`, `numbering`, or `table`. Optional metadata is
@@ -214,9 +230,9 @@ the 0.4.22 writer would otherwise inject.
   `pageNumbering.start` is a non-negative integer and `chapterStyle` is a
   non-empty Word chapter-style value. Both configuration objects must be
   non-empty.
-- `Paragraph`: `align?: "left" | "center" | "right" | "both"`,
-  `spacingBefore?`, `spacingAfter?`, `lineSpacing?`, `indentLeft?`,
-  `indentRight?`, `firstLine?`, `hanging?`, `keepNext?`, `keepLines?`,
+- `Paragraph`: `align?: "left" | "center" | "right" | "both" | "distribute" | "start" | "end" | "justified"`,
+  `spacingBefore?`, `spacingAfter?`, `lineSpacing?`, signed
+  `indentLeft?` / `indentRight?`, `firstLine?`, `hanging?`, `keepNext?`, `keepLines?`,
   `pageBreakBefore?`. `firstLine` and `hanging` are mutually exclusive.
   Optional `spacingBeforeLines?`, `spacingAfterLines?`, and
   `lineRule?: "auto" | "atLeast" | "exact"` expose the remaining docx-rs
@@ -298,7 +314,8 @@ the 0.4.22 writer would otherwise inject.
   Anchor-only properties require `floating={true}`. Image
   sources resolve from the entry module directory. External reverse
   extracts raster media from the package and points `src` at
-  `media/<filename>` next to the emitted JSX. `docx-jsx reverse` writes
+  `media/<filename>` next to the emitted JSX, including pictures whose
+  relationships live on a header or footer part. `docx-jsx reverse` writes
   those sidecar files beside the JSX output.
 - `Table`: `width?`, `widthPercent?`, `align?`, `layout?: "auto" | "fixed"`,
   `columnWidths?: number[]`, `border?: {style?,size?,color?}`. Point and percent
@@ -429,9 +446,32 @@ the 0.4.22 writer would otherwise inject.
   characters, `placeholder?`, and `dirty?`. They emit native `MERGEFIELD`,
   `DOCPROPERTY`, and formula (`=`) complex fields.
 - `List`: `type?: "bullet" | "ordered"` (default `bullet`) and optional
-  positive integer `start`.
-- `ListItem`: `level?: 0..8` (default `0`). Each list compiles to native Word
-  numbering definitions and numbered paragraphs.
+  positive integer `start`. Optional `levels` is a non-empty array of level
+  objects, one per `w:lvl` in document order (`ilvl` is the array index,
+  `0..8`). When `levels` is omitted the compiler emits nine default levels
+  (`decimal` + `%N.` for `ordered`, `bullet` + `•` otherwise) with
+  `(level+1)*36` pt left indent and `18` pt hanging indent. `levels` and the
+  `type`/`start` shorthand may be combined: omitted level fields inherit the
+  shorthand defaults for that list. Each level accepts `format?` (non-empty
+  Word `ST_NumberFormat` token such as `decimal`, `bullet`, `lowerLetter`,
+  `upperRoman`), `text?` (non-empty `w:lvlText`), positive `start?`,
+  `align?: "left" | "center" | "right"` (default `left`),
+  `suffix?: "tab" | "space" | "nothing"` (default `tab`, omitted from OOXML),
+  non-empty `paragraphStyle?`, `restart?` (`w:lvlRestart`, non-negative
+  integer), `legal?` (`w:isLgl`), point `indentLeft?` / `indentRight?` /
+  `hanging?` / `firstLine?` (`firstLine` and `hanging` are mutually
+  exclusive), and the same run formatting as `Run` (`font`/`fonts`, `size`,
+  `color`, `highlight`, `bold`, `italic`, `strike`, `doubleStrike`,
+  `underline` as a Word underline style string, `hidden`,
+  `characterSpacing`). Boolean run flags emit explicit on/off OOXML.
+  Reverse of an external numbering definition that uses only `numStyleLink`
+  / `styleLink`, or a `lvlOverride` that replaces an entire level, errors
+  with a repair suggestion. Contiguous paragraphs that share a `w:numId`
+  reverse as one `List`; a missing numbering definition is an error rather
+  than a plain `Paragraph`.
+- `ListItem`: `level?: 0..8` (default `0`) and optional `style` for the
+  numbered paragraph. Each list compiles to native Word numbering
+  definitions and numbered paragraphs.
 - `Bookmark`: required non-empty `name`. Its structural children are enclosed
   by a unique Word bookmark pair and may be targeted by `Hyperlink anchor`.
   Reverse reconstructs the element by matching start/end IDs around the

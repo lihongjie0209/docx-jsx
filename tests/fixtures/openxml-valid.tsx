@@ -5,6 +5,8 @@ import {
   Heading,
   Hyperlink,
   InlineBookmark,
+  List,
+  ListItem,
   Paragraph,
   Run,
   Section,
@@ -58,6 +60,21 @@ export default (
       <ContentControl alias="BlockData">
         <Paragraph style="Body">block bound</Paragraph>
       </ContentControl>
+      <List
+        type="ordered"
+        levels={[
+          {
+            format: "decimal",
+            text: "%1.",
+            suffix: "space",
+            legal: true,
+            indentLeft: 36,
+            hanging: 18,
+          },
+        ]}
+      >
+        <ListItem>First numbered</ListItem>
+      </List>
       <Table style="ValidationTable" widthPercent={100} border={{ style: "single", size: 0.5, color: "808080" }}>
         <TableRow>
           <TableCell shading="D9EAF7"><Paragraph>Component</Paragraph></TableCell>

@@ -6,9 +6,9 @@ use docx_rs::{
     AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, CharacterSpacingValues,
     Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, DrawingPosition, FieldCharType,
     Footer, Footnote, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
-    InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelText, LineSpacing,
-    LineSpacingType, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin,
-    PageNum, PageNumType, PageOrientationType, PageSize, Paragraph, ParagraphBorder,
+    InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelSuffixType, LevelText,
+    LineSpacing, LineSpacingType, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId,
+    PageMargin, PageNum, PageNumType, PageOrientationType, PageSize, Paragraph, ParagraphBorder,
     ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic, PicAlign,
     PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo, RelativeFromHType,
     RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
@@ -30,12 +30,23 @@ const TWIPS_PER_POINT: f64 = 20.0;
 const HALF_POINTS_PER_POINT: f64 = 2.0;
 const EMU_PER_POINT: f64 = 12_700.0;
 
-#[derive(Default)]
 struct CompileContext {
     next_numbering_id: usize,
     next_bookmark_id: usize,
     next_comment_id: usize,
     numberings: Vec<(AbstractNumbering, Numbering)>,
+}
+
+impl Default for CompileContext {
+    fn default() -> Self {
+        Self {
+            // docx-rs always injects abstract numbering 1; user lists start at 2.
+            next_numbering_id: 1,
+            next_bookmark_id: 0,
+            next_comment_id: 0,
+            numberings: Vec::new(),
+        }
+    }
 }
 
 /// Compiles validated IR into a DOCX archive held in memory.
@@ -195,6 +206,7 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     let bytes = patch_custom_xml_content_types(bytes, custom_xml_count)?;
+    let bytes = patch_custom_xml_schema_refs(bytes, &ir.document.props)?;
     let bytes = patch_duplicate_normal_style(bytes, &ir.document.props)?;
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
@@ -974,6 +986,84 @@ fn patch_custom_xml_content_types(bytes: Vec<u8>, item_count: usize) -> Result<V
         .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
 }
 
+fn patch_custom_xml_schema_refs(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
+    let Some(items) = props.get("customXmlItems").and_then(Value::as_array) else {
+        return Ok(bytes);
+    };
+    let patches = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            let refs = value.get("schemaRefs")?.as_array()?;
+            let uris = refs
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|uri| !uri.is_empty())
+                .collect::<Vec<_>>();
+            (!uris.is_empty()).then_some((index + 1, uris))
+        })
+        .collect::<Vec<_>>();
+    if patches.is_empty() {
+        return Ok(bytes);
+    }
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let replacements = patches
+        .into_iter()
+        .map(|(number, uris)| -> Result<(String, String)> {
+            let name = format!("customXml/itemProps{number}.xml");
+            let mut xml = String::new();
+            source
+                .by_name(&name)
+                .map_err(|error| Error::Compile(format!("missing {name}: {error}")))?
+                .read_to_string(&mut xml)
+                .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
+            let mut refs = String::new();
+            for uri in uris {
+                write!(refs, r#"<ds:schemaRef ds:uri="{uri}"/>"#)
+                    .expect("writing to String cannot fail");
+            }
+            let block = format!("<ds:schemaRefs>{refs}</ds:schemaRefs>");
+            let xml = if xml.contains("<ds:schemaRefs></ds:schemaRefs>") {
+                xml.replacen("<ds:schemaRefs></ds:schemaRefs>", &block, 1)
+            } else {
+                xml.replacen("<ds:schemaRefs/>", &block, 1)
+            };
+            if !xml.contains("<ds:schemaRef") {
+                return Err(Error::Compile(format!(
+                    "cannot insert schema refs into {name}"
+                )));
+            }
+            Ok((name, xml))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..source.len() {
+        let file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        let name = file.name().to_owned();
+        if let Some((_, xml)) = replacements.iter().find(|(part, _)| *part == name) {
+            let options = file.options();
+            writer.start_file(name, options).map_err(|error| {
+                Error::Compile(format!("cannot write custom XML props: {error}"))
+            })?;
+            writer.write_all(xml.as_bytes()).map_err(|error| {
+                Error::Compile(format!("cannot write custom XML props: {error}"))
+            })?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
 fn normalize_ooxml_element_order(bytes: Vec<u8>) -> Result<Vec<u8>> {
     let mut source = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
@@ -995,7 +1085,7 @@ fn normalize_ooxml_element_order(bytes: Vec<u8>) -> Result<Vec<u8>> {
             let mut xml = String::new();
             file.read_to_string(&mut xml)
                 .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
-            normalize_word_xml(&mut xml, name == "word/styles.xml")
+            normalize_word_xml(&mut xml, &name)
                 .map_err(|error| Error::Compile(format!("{name}: {error}")))?;
             writer
                 .start_file(&name, options)
@@ -1015,8 +1105,8 @@ fn normalize_ooxml_element_order(bytes: Vec<u8>) -> Result<Vec<u8>> {
         .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
 }
 
-fn normalize_word_xml(xml: &mut String, is_styles: bool) -> Result<()> {
-    if is_styles {
+fn normalize_word_xml(xml: &mut String, name: &str) -> Result<()> {
+    if name == "word/styles.xml" {
         remove_element_children(xml, "w:pPr", "w:rPr")?;
         remove_element_children(xml, "w:tblPr", "w:tblW")?;
         remove_element_children(xml, "w:tblPr", "w:tblLayout")?;
@@ -1026,12 +1116,41 @@ fn normalize_word_xml(xml: &mut String, is_styles: bool) -> Result<()> {
             r#"<w:tblStyleRowBandSize w:val="1" /><w:tblStyleColBandSize w:val="1" />"#,
         )?;
     }
+    if name == "word/numbering.xml" {
+        remove_element_children(xml, "w:pPr", "w:rPr")?;
+        reorder_element_children(xml, "w:lvl", numbering_level_rank)?;
+    }
+    reorder_element_children(xml, "w:numPr", numbering_property_rank)?;
     reorder_element_children(xml, "w:pPr", paragraph_property_rank)?;
     reorder_element_children(xml, "w:rPr", run_property_rank)?;
     reorder_element_children(xml, "w:tblPr", table_property_rank)?;
     reorder_element_children(xml, "w:sectPr", section_property_rank)?;
     reorder_element_children(xml, "w:style", style_child_rank)?;
     reorder_element_children(xml, "w:settings", settings_child_rank)
+}
+
+fn numbering_level_rank(fragment: &str) -> usize {
+    rank_in(
+        child_name(fragment),
+        &[
+            "w:start",
+            "w:numFmt",
+            "w:lvlRestart",
+            "w:pStyle",
+            "w:isLgl",
+            "w:suff",
+            "w:lvlText",
+            "w:lvlPicBulletId",
+            "w:legacy",
+            "w:lvlJc",
+            "w:pPr",
+            "w:rPr",
+        ],
+    )
+}
+
+fn numbering_property_rank(fragment: &str) -> usize {
+    rank_in(child_name(fragment), &["w:ilvl", "w:numId"])
 }
 
 fn section_property_rank(fragment: &str) -> usize {
@@ -1968,6 +2087,19 @@ fn parse_page_numbering(value: &Value, path: &str) -> Result<PageNumType> {
     Ok(result)
 }
 
+fn paragraph_alignment(value: &str) -> AlignmentType {
+    match value {
+        "center" => AlignmentType::Center,
+        "right" => AlignmentType::Right,
+        "both" => AlignmentType::Both,
+        "distribute" => AlignmentType::Distribute,
+        "start" => AlignmentType::Start,
+        "end" => AlignmentType::End,
+        "justified" => AlignmentType::Justified,
+        _ => AlignmentType::Left,
+    }
+}
+
 fn compile_paragraph(
     node: &Node,
     entry_dir: &Path,
@@ -1981,15 +2113,19 @@ fn compile_paragraph(
     if let Some(value) = optional_enum(
         &node.props,
         "align",
-        &["left", "center", "right", "both"],
+        &[
+            "left",
+            "center",
+            "right",
+            "both",
+            "distribute",
+            "start",
+            "end",
+            "justified",
+        ],
         path,
     )? {
-        paragraph = paragraph.align(match value {
-            "center" => AlignmentType::Center,
-            "right" => AlignmentType::Right,
-            "both" => AlignmentType::Both,
-            _ => AlignmentType::Left,
-        });
+        paragraph = paragraph.align(paragraph_alignment(value));
     }
     let mut spacing = LineSpacing::new();
     let mut has_spacing = false;
@@ -3880,34 +4016,17 @@ fn compile_list(
     context.next_numbering_id += 1;
     let id = context.next_numbering_id;
     let mut abstract_numbering = AbstractNumbering::new(id);
-    for level in 0..=8 {
-        let text = if list_type == "ordered" {
-            format!("%{}.", level + 1)
-        } else {
-            "•".to_owned()
-        };
-        abstract_numbering = abstract_numbering.add_level(
-            Level::new(
-                level,
-                Start::new(start),
-                NumberFormat::new(if list_type == "ordered" {
-                    "decimal"
-                } else {
-                    "bullet"
-                }),
-                LevelText::new(text),
-                LevelJc::new("left"),
-            )
-            .indent(
-                Some(
-                    i32::try_from((level + 1) * 720)
-                        .map_err(|_| validation(path, "list indent is out of range"))?,
-                ),
-                Some(SpecialIndentType::Hanging(360)),
-                None,
-                None,
-            ),
-        );
+    let explicit = node.props.get("levels").and_then(Value::as_array);
+    let level_count = explicit.map_or(9, Vec::len);
+    for index in 0..level_count {
+        let spec = explicit.and_then(|levels| levels.get(index));
+        abstract_numbering = abstract_numbering.add_level(compile_list_level(
+            spec,
+            index,
+            list_type,
+            start,
+            &format!("{path}/levels[{index}]"),
+        )?);
     }
     context
         .numberings
@@ -3920,8 +4039,17 @@ fn compile_list(
         let item_path = format!("{path}/ListItem[{index}]");
         let level = usize::try_from(item.props.get("level").and_then(Value::as_u64).unwrap_or(0))
             .map_err(|_| validation(&item_path, "`level` is out of range"))?;
+        if level >= level_count {
+            return Err(validation(
+                &item_path,
+                "`level` is outside the list `levels` range",
+            ));
+        }
         let mut paragraph =
             Paragraph::new().numbering(NumberingId::new(id), IndentLevel::new(level));
+        if let Some(style) = string_prop(&item.props, "style", &item_path)? {
+            paragraph = paragraph.style(style);
+        }
         for (child_index, child) in item.children.iter().enumerate() {
             let child_path = format!("{item_path}/child[{child_index}]");
             let run = match child {
@@ -3935,6 +4063,191 @@ fn compile_list(
         paragraphs.push(paragraph);
     }
     Ok(paragraphs)
+}
+
+fn compile_list_level(
+    spec: Option<&Value>,
+    index: usize,
+    list_type: &str,
+    default_start: usize,
+    path: &str,
+) -> Result<Level> {
+    let props = spec.and_then(Value::as_object);
+    let format = props
+        .and_then(|value| value.get("format"))
+        .and_then(Value::as_str)
+        .unwrap_or(if list_type == "ordered" {
+            "decimal"
+        } else {
+            "bullet"
+        });
+    let text = props
+        .and_then(|value| value.get("text"))
+        .and_then(Value::as_str)
+        .map_or_else(
+            || {
+                if list_type == "ordered" {
+                    format!("%{}.", index + 1)
+                } else {
+                    "•".to_owned()
+                }
+            },
+            ToOwned::to_owned,
+        );
+    let start = props
+        .and_then(|value| value.get("start"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(default_start);
+    let align = props
+        .and_then(|value| value.get("align"))
+        .and_then(Value::as_str)
+        .unwrap_or("left");
+    let mut level = Level::new(
+        index,
+        Start::new(start),
+        NumberFormat::new(format),
+        LevelText::new(text),
+        LevelJc::new(align),
+    );
+    if let Some(suffix) = props
+        .and_then(|value| value.get("suffix"))
+        .and_then(Value::as_str)
+    {
+        level = level.suffix(match suffix {
+            "space" => LevelSuffixType::Space,
+            "nothing" => LevelSuffixType::Nothing,
+            _ => LevelSuffixType::Tab,
+        });
+    }
+    if let Some(style) = props
+        .and_then(|value| value.get("paragraphStyle"))
+        .and_then(Value::as_str)
+    {
+        level = level.paragraph_style(style);
+    }
+    if let Some(restart) = props
+        .and_then(|value| value.get("restart"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+    {
+        level = level.level_restart(restart);
+    }
+    if props
+        .and_then(|value| value.get("legal"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        level = level.is_lgl();
+    }
+    level = compile_list_level_indent(level, props, path)?;
+    compile_list_level_run(level, props, path)
+}
+
+fn compile_list_level_indent(
+    level: Level,
+    props: Option<&Map<String, Value>>,
+    path: &str,
+) -> Result<Level> {
+    let Some(props) = props else {
+        return default_list_level_indent(level);
+    };
+    let has_indent = ["indentLeft", "indentRight", "hanging", "firstLine"]
+        .iter()
+        .any(|key| props.contains_key(*key));
+    if !has_indent {
+        return default_list_level_indent(level);
+    }
+    let left = optional_twips_i32(props, "indentLeft", path)?;
+    let right = optional_twips_i32(props, "indentRight", path)?;
+    let special = if let Some(value) = number_prop(props, "firstLine", path)? {
+        Some(SpecialIndentType::FirstLine(to_twips_i32(value, path)?))
+    } else if let Some(value) = number_prop(props, "hanging", path)? {
+        Some(SpecialIndentType::Hanging(to_twips_i32(value, path)?))
+    } else {
+        None
+    };
+    Ok(level.indent(left, special, right, None))
+}
+
+fn default_list_level_indent(level: Level) -> Result<Level> {
+    let index = i32::try_from(level.level + 1)
+        .map_err(|_| validation("List", "list indent is out of range"))?;
+    Ok(level.indent(
+        Some(index * 720),
+        Some(SpecialIndentType::Hanging(360)),
+        None,
+        None,
+    ))
+}
+
+fn compile_list_level_run(
+    mut level: Level,
+    props: Option<&Map<String, Value>>,
+    path: &str,
+) -> Result<Level> {
+    let Some(props) = props else {
+        return Ok(level);
+    };
+    if let Some(font) = string_prop(props, "font", path)? {
+        level = level.fonts(
+            RunFonts::new()
+                .ascii(font)
+                .hi_ansi(font)
+                .east_asia(font)
+                .cs(font),
+        );
+    }
+    if let Some(fonts) = object_prop(props, "fonts", path)? {
+        level = level.fonts(compile_run_fonts(fonts, &format!("{path}/fonts"))?);
+    }
+    if let Some(size) = number_prop(props, "size", path)? {
+        level = level.size(to_half_points(size, path)?);
+    }
+    if let Some(color) = string_prop(props, "color", path)? {
+        level = level.color(color.to_ascii_uppercase());
+    }
+    if let Some(value) = string_prop(props, "highlight", path)? {
+        level = level.highlight(value);
+    }
+    if let Some(value) = bool_prop(props, "bold", path)? {
+        level = if value {
+            level.bold()
+        } else {
+            level.disable_bold()
+        };
+    }
+    if let Some(value) = bool_prop(props, "italic", path)? {
+        level = if value {
+            level.italic()
+        } else {
+            level.disable_italic()
+        };
+    }
+    if let Some(value) = bool_prop(props, "strike", path)? {
+        level = if value {
+            level.strike()
+        } else {
+            level.disable_strike()
+        };
+    }
+    if let Some(value) = bool_prop(props, "doubleStrike", path)? {
+        level = if value {
+            level.dstrike()
+        } else {
+            level.disable_dstrike()
+        };
+    }
+    if let Some(value) = string_prop(props, "underline", path)? {
+        level = level.underline(value);
+    }
+    if bool_prop(props, "hidden", path)? == Some(true) {
+        level = level.vanish();
+    }
+    if let Some(spacing) = number_prop(props, "characterSpacing", path)? {
+        level = level.spacing(to_twips_i32(spacing, path)?);
+    }
+    Ok(level)
 }
 
 #[derive(Clone)]
@@ -4837,6 +5150,44 @@ mod tests {
                 && styles.contains("<w:keepLines")
                 && styles.contains(r#"<w:outlineLvl w:val="1""#),
             "{styles}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_list_level_writer_properties() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"type":"ordered","levels":[{"format":"decimal","text":"%1.","suffix":"space","legal":true,"restart":0,"indentLeft":36,"hanging":18,"bold":true,"size":12},{"format":"lowerLetter","text":"%2)","align":"right","paragraphStyle":"ListParagraph"}]},"children":[{"type":"ListItem","props":{"style":"ListParagraph"},"children":["one"]},{"type":"ListItem","props":{"level":1},"children":["two"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut numbering = String::new();
+        archive
+            .by_name("word/numbering.xml")
+            .expect("numbering part")
+            .read_to_string(&mut numbering)
+            .expect("numbering UTF-8");
+        assert!(
+            numbering.contains(r#"w:val="decimal""#)
+                && numbering.contains(r#"w:val="lowerLetter""#)
+                && numbering.contains(r#"<w:suff w:val="space" />"#)
+                && numbering.contains("<w:isLgl")
+                && numbering.contains(r#"<w:lvlRestart w:val="0""#)
+                && numbering.contains(r#"w:val="ListParagraph""#)
+                && numbering.contains("<w:b")
+                && numbering.contains(r#"w:val="right""#),
+            "{numbering}"
+        );
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("document UTF-8");
+        assert!(
+            document.contains("<w:numPr>") && document.contains(r#"w:val="ListParagraph""#),
+            "{document}"
         );
     }
 

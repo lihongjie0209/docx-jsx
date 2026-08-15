@@ -913,8 +913,8 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         | NodeKind::BorderedText
         | NodeKind::ShadedText) => semantic_text_props(kind),
         NodeKind::TabStop => &["position", "align", "leader"],
-        NodeKind::List => &["type", "start"],
-        NodeKind::ListItem => &["level"],
+        NodeKind::List => &["type", "start", "levels"],
+        NodeKind::ListItem => &["level", "style"],
         NodeKind::Bookmark | NodeKind::InlineBookmark => &["name"],
         NodeKind::TableOfContents => &["startLevel", "endLevel", "hyperlinks", "dirty", "alias"],
         NodeKind::TableOfFigures => &[
@@ -1163,12 +1163,18 @@ fn validate_semantics(node: &Node, path: &str) -> Result<()> {
             require_number(value, path, key, true)?;
         }
     }
+    for key in ["indentLeft", "indentRight"] {
+        if let Some(value) = node.props.get(key) {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| validation(path, format!("`{key}` must be a finite number")))?;
+        }
+    }
     for key in [
         "spacingBefore",
         "spacingAfter",
         "lineSpacing",
-        "indentLeft",
-        "indentRight",
         "firstLine",
         "hanging",
     ] {
@@ -1235,6 +1241,9 @@ fn validate_semantics(node: &Node, path: &str) -> Result<()> {
     }
     if node.kind == NodeKind::List && node.children.is_empty() {
         return Err(validation(path, "List requires at least one ListItem"));
+    }
+    if node.kind == NodeKind::List {
+        validate_list_levels(node, path)?;
     }
     validate_advanced_semantics(node, path)?;
     if let Some(value) = node.props.get("widthPercent") {
@@ -1396,6 +1405,21 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
             "spacingBeforeLines",
             "spacingAfterLines",
             "lineRule",
+        )?;
+        validate_optional_enum_prop(
+            node,
+            path,
+            "align",
+            &[
+                "left",
+                "right",
+                "center",
+                "both",
+                "distribute",
+                "start",
+                "end",
+                "justified",
+            ],
         )?;
         validate_optional_enum_prop(
             node,
@@ -1773,7 +1797,7 @@ fn validate_custom_xml_items(value: &Value, path: &str) -> Result<()> {
         let item = value
             .as_object()
             .ok_or_else(|| validation(&item_path, "custom XML item must be an object"))?;
-        validate_object_keys(item, &item_path, &["id", "xml"])?;
+        validate_object_keys(item, &item_path, &["id", "xml", "schemaRefs"])?;
         let id = item
             .get("id")
             .and_then(Value::as_str)
@@ -1795,6 +1819,25 @@ fn validate_custom_xml_items(value: &Value, path: &str) -> Result<()> {
                 &item_path,
                 "custom XML item `xml` must be well-formed XML",
             ));
+        }
+        if let Some(value) = item.get("schemaRefs") {
+            let refs = value.as_array().ok_or_else(|| {
+                validation(&item_path, "custom XML `schemaRefs` must be an array")
+            })?;
+            if refs.is_empty() {
+                return Err(validation(
+                    &item_path,
+                    "custom XML `schemaRefs` must not be empty",
+                ));
+            }
+            for uri in refs {
+                if uri.as_str().is_none_or(str::is_empty) {
+                    return Err(validation(
+                        &item_path,
+                        "custom XML `schemaRefs` entries must be non-empty strings",
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -2287,12 +2330,18 @@ fn validate_style_paragraph_layout(paragraph: &Map<String, Value>, path: &str) -
             ));
         }
     }
+    for key in ["indentLeft", "indentRight"] {
+        if let Some(value) = paragraph.get(key) {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| validation(path, format!("`{key}` must be a finite number")))?;
+        }
+    }
     for key in [
         "spacingBefore",
         "spacingAfter",
         "lineSpacing",
-        "indentLeft",
-        "indentRight",
         "firstLine",
         "hanging",
     ] {
@@ -3628,16 +3677,170 @@ fn validate_structure_semantics(node: &Node, path: &str) -> Result<()> {
             ));
         }
     }
-    if node.kind == NodeKind::ListItem
-        && let Some(value) = node.props.get("level")
-        && value.as_u64().is_none_or(|level| level > 8)
-    {
-        return Err(validation(path, "`level` must be an integer from 0 to 8"));
-    }
+    validate_list_item_props(node, path)?;
     if let Some(value) = node.props.get("start")
         && value.as_u64().is_none_or(|start| start == 0)
     {
         return Err(validation(path, "`start` must be a positive integer"));
+    }
+    Ok(())
+}
+
+fn validate_list_item_props(node: &Node, path: &str) -> Result<()> {
+    if node.kind != NodeKind::ListItem {
+        return Ok(());
+    }
+    if let Some(value) = node.props.get("level")
+        && value.as_u64().is_none_or(|level| level > 8)
+    {
+        return Err(validation(path, "`level` must be an integer from 0 to 8"));
+    }
+    if node
+        .props
+        .get("style")
+        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(validation(
+            path,
+            "ListItem `style` must be a non-empty string",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_list_levels(node: &Node, path: &str) -> Result<()> {
+    let Some(value) = node.props.get("levels") else {
+        return Ok(());
+    };
+    let levels = value
+        .as_array()
+        .ok_or_else(|| validation(path, "`levels` must be an array"))?;
+    if levels.is_empty() {
+        return Err(validation(path, "`levels` must not be empty"));
+    }
+    if levels.len() > 9 {
+        return Err(validation(path, "`levels` must contain at most 9 entries"));
+    }
+    for (index, level) in levels.iter().enumerate() {
+        validate_list_level(level, &format!("{path}/levels[{index}]"))?;
+    }
+    Ok(())
+}
+
+fn validate_list_level(value: &Value, path: &str) -> Result<()> {
+    let level = value
+        .as_object()
+        .ok_or_else(|| validation(path, "list level must be an object"))?;
+    validate_object_keys(level, path, LIST_LEVEL_KEYS)?;
+    validate_list_level_scalars(level, path)?;
+    validate_font_choice(level, path, "font", "fonts")?;
+    Ok(())
+}
+
+const LIST_LEVEL_KEYS: &[&str] = &[
+    "format",
+    "text",
+    "start",
+    "align",
+    "suffix",
+    "paragraphStyle",
+    "restart",
+    "legal",
+    "indentLeft",
+    "indentRight",
+    "hanging",
+    "firstLine",
+    "font",
+    "fonts",
+    "size",
+    "color",
+    "highlight",
+    "bold",
+    "italic",
+    "strike",
+    "doubleStrike",
+    "underline",
+    "hidden",
+    "characterSpacing",
+];
+
+fn validate_list_level_scalars(level: &Map<String, Value>, path: &str) -> Result<()> {
+    for key in ["format", "text", "paragraphStyle", "highlight"] {
+        if level
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("list level `{key}` must be a non-empty string"),
+            ));
+        }
+    }
+    if let Some(value) = level.get("start")
+        && value.as_u64().is_none_or(|start| start == 0)
+    {
+        return Err(validation(
+            path,
+            "list level `start` must be a positive integer",
+        ));
+    }
+    if let Some(value) = level.get("restart")
+        && value.as_u64().is_none()
+    {
+        return Err(validation(
+            path,
+            "list level `restart` must be a non-negative integer",
+        ));
+    }
+    validate_map_enum(level, path, "align", &["left", "center", "right"])?;
+    validate_map_enum(level, path, "suffix", &["tab", "space", "nothing"])?;
+    for key in [
+        "bold",
+        "italic",
+        "strike",
+        "doubleStrike",
+        "hidden",
+        "legal",
+    ] {
+        if level.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(
+                path,
+                format!("list level `{key}` must be a boolean"),
+            ));
+        }
+    }
+    if level.contains_key("firstLine") && level.contains_key("hanging") {
+        return Err(validation(
+            path,
+            "list level `firstLine` and `hanging` are mutually exclusive",
+        ));
+    }
+    for key in ["indentLeft", "indentRight", "hanging", "firstLine", "size"] {
+        if let Some(value) = level.get(key) {
+            require_number(
+                value,
+                path,
+                key,
+                key != "indentLeft" && key != "indentRight",
+            )?;
+        }
+    }
+    if let Some(value) = level.get("characterSpacing") {
+        value
+            .as_f64()
+            .filter(|number| number.is_finite())
+            .ok_or_else(|| validation(path, "`characterSpacing` must be a finite number"))?;
+    }
+    if let Some(value) = level.get("color") {
+        validate_rgb(value, path, "list level `color`")?;
+    }
+    if let Some(value) = level.get("underline")
+        && value.as_str().is_none_or(str::is_empty)
+    {
+        return Err(validation(
+            path,
+            "list level `underline` must be a non-empty string",
+        ));
     }
     Ok(())
 }
@@ -3744,6 +3947,36 @@ mod tests {
                 .to_string()
                 .contains("0 to 8")
         );
+    }
+
+    #[test]
+    fn validate_should_accept_list_level_definitions() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"type":"ordered","start":3,"levels":[{"format":"decimal","text":"%1.","start":3,"suffix":"space","legal":true,"restart":0,"indentLeft":36,"hanging":18,"bold":true,"size":12},{"format":"lowerLetter","text":"%2)","align":"right","paragraphStyle":"ListParagraph","italic":false}]},"children":[{"type":"ListItem","props":{"style":"ListParagraph"},"children":["one"]},{"type":"ListItem","props":{"level":1},"children":["two"]}]}]}]}}"#,
+        );
+        ir.validate().expect("custom list levels should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_list_level_definitions() {
+        for (levels, expected) in [
+            ("[]", "must not be empty"),
+            (r#"[{"format":""}]"#, "format"),
+            (r#"[{"firstLine":1,"hanging":1}]"#, "mutually exclusive"),
+            (r#"[{"suffix":"gap"}]"#, "suffix"),
+            (r#"[{"unknown":true}]"#, "unknown"),
+        ] {
+            let source = format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{}},"children":[{{"type":"Section","props":{{}},"children":[{{"type":"List","props":{{"levels":{levels}}},"children":[{{"type":"ListItem","props":{{}},"children":["x"]}}]}}]}}]}}}}"#
+            );
+            let error = parse(&source)
+                .validate()
+                .expect_err("invalid list levels must fail");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected} in {error}"
+            );
+        }
     }
 
     #[test]

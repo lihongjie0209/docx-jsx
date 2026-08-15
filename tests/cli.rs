@@ -312,7 +312,7 @@ fn cli_should_compile_advanced_document_components() {
         &input,
         r##"import { Document, Section, Header, Footer, Heading, Caption, Index, IndexEntry, Paragraph, Hyperlink, PageNumber, TotalPages, List, ListItem, Run, Image, Bookmark, Table, TableRow, TableCell, TableOfContents, TableOfFigures, TableOfEntries, TocEntry, Comment, Footnote, Tab, TabStop, CarriageReturn, NonBreakingSpace, SoftHyphen, NonBreakingHyphen, Symbol, Bold, Italic, Underline, StrikeThrough, Superscript, Subscript, AllCaps, HiddenText, SpecialHiddenText, DoubleStrike, SpacedText, ScaledText, FitText, BorderedText, ShadedText, Inserted, Deleted, MovedFrom, MovedTo, PageReference, PositionalTab, ContentControl, Field, DateField, TimeField, FileNameField, AuthorField, TitleField, SubjectField, SequenceField, ReferenceField, MergeField, DocumentPropertyField, FormulaField } from "docx-jsx";
 export default <Document defaultCharacterSpacing={0.5} defaultLineSpacing={{before: 2, after: 6, line: 14, beforeLines: 100, afterLines: 200, lineRule: "atLeast"}} createdAt="2026-08-14T00:00:00Z" updatedAt="2026-08-15T00:00:00Z" customProperties={{Project: "Apollo"}} documentId="01234567-89AB-CDEF-0123-456789ABCDEF" defaultTabStop={36} documentVariables={{Customer: "Ada"}} evenAndOddHeaders adjustLineHeightInTable characterSpacingControl="compressPunctuation" webExtensions={[{id: "7f33b723-fb58-4524-8733-dbedc4b7c095", referenceId: "office-addin", version: "1.0.0.0", store: "developer", storeType: "Registry", properties: {mode: "review"}}, {id: "11111111-2222-3333-4444-555555555555", referenceId: "second", version: "2.0", store: "OMEX", storeType: "Marketplace"}]} customXmlItems={[{id: "06AC5857-5C65-A94A-BCEC-37356A209BC3", xml: "<customer><name>Ada</name></customer>"}, {id: "11111111-AAAA-BBBB-CCCC-222222222222", xml: "<order id=\"42\"/>"}]} styles={[{id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: {spacingAfter: 6}}, {id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: {font: "Noto Sans CJK SC", size: 12}}, {id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: {italic: true}}, {id: "ReportTitle", name: "Report Title", type: "paragraph", basedOn: "Normal", quickFormat: true, run: {font: "Noto Sans CJK SC", size: 18, color: "336699", bold: true, textBorder: {style: "double", size: 1, color: "336699", space: 2}}, paragraph: {align: "center", spacingAfter: 12, spacingBeforeLines: 50, spacingAfterLines: 75, lineRule: "exact", outlineLevel: 1}}, {id: "ReportTable", name: "Report Table", type: "table", table: {align: "center", margins: {top: 1, right: 2, bottom: 3, left: 4}, border: {style: "double", size: 1, color: "336699"}}, cell: {verticalAlign: "center", shading: "FFF2CC", border: {style: "dotted", size: 0.5, color: "993366"}}}]}><Section titlePage textDirection="tbRl" documentGrid={{type: "linesAndChars", linePitch: 18, charSpace: -10}} pageNumbering={{start: 3, chapterStyle: "1"}}>
-  <Header type="first"><Paragraph>Report header</Paragraph></Header>
+  <Header type="first"><Paragraph>Report header <Image src="pixel.png" width={12} height={12} /></Paragraph></Header>
   <Footer type="even"><Paragraph>Page <PageNumber /> of <TotalPages /></Paragraph></Footer>
   <TableOfContents startLevel={1} endLevel={2} alias="Contents" />
   <TableOfFigures label="Figure" alias="Figures" />
@@ -383,7 +383,10 @@ export default <Document defaultCharacterSpacing={0.5} defaultLineSpacing={{befo
             .expect("XML should read");
         xml
     };
-    assert!(read_part(&header_name).contains("Report header"));
+    assert!(
+        read_part(&header_name).contains("Report header")
+            && read_part(&header_name).contains("a:blip")
+    );
     let footer = read_part(&footer_name);
     assert!(footer.contains("PAGE") && footer.contains("NUMPAGES"));
     let document = read_part("word/document.xml");
