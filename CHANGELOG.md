@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 - 2026-08-15
+
+- Add optional PDF export through a local Microsoft Word, WPS Writer, or
+  LibreOffice install. `docx-jsx report.tsx -o report.pdf` infers PDF from
+  the output suffix; `docx-jsx pdf` converts an existing DOCX.
+- Auto-detect Word, then WPS, then LibreOffice on Windows; Word then
+  LibreOffice on macOS; LibreOffice on Linux. Pin with `--engine`,
+  `--soffice`, `DOCX_JSX_WORD`, `DOCX_JSX_WPS`, or `DOCX_JSX_SOFFICE`.
+- Expose `List.levels` for schema-valid numbering writer APIs and rebuild
+  contiguous `w:numPr` paragraphs as `List`/`ListItem` on external reverse.
+- Recover header/footer raster images from their own relationship parts,
+  restore document settings and `customXmlItems` including `schemaRefs`,
+  and keep positional tabs, signed indentation, and start/end paragraph
+  alignment from real Word packages.
+
 ## 0.4.0 - 2026-08-15
 
 - Reconstruct hyperlink composite children (`ContentControl`, `Inserted`,
