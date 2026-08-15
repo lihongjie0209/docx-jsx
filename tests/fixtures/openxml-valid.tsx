@@ -1,7 +1,10 @@
 import {
   Bold,
+  ContentControl,
   Document,
   Heading,
+  Hyperlink,
+  InlineBookmark,
   Paragraph,
   Run,
   Section,
@@ -33,7 +36,7 @@ export default (
     ]}
     styles={[
       { id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: { spacingAfter: 6 } },
-      { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: { fonts: { ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC", hint: "eastAsia" }, size: 11 } },
+      { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: { fonts: { ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC", hint: "eastAsia" }, size: 11 }, paragraph: { keepNext: false, keepLines: false } },
       { id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: { italic: true } },
       { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center" } },
     ]}
@@ -46,6 +49,15 @@ export default (
       <Paragraph fonts={{ ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC" }}>
         <Run style="BodyChar" fonts={{ asciiTheme: "minorHAnsi", eastAsiaTheme: "minorEastAsia", hint: "eastAsia" }}>Linked character style</Run>
       </Paragraph>
+      <Paragraph style="Body">
+        <Hyperlink href="https://example.com" history>
+          <ContentControl alias="LinkData">bound</ContentControl>
+          <InlineBookmark name="insideLink">marked</InlineBookmark>
+        </Hyperlink>
+      </Paragraph>
+      <ContentControl alias="BlockData">
+        <Paragraph style="Body">block bound</Paragraph>
+      </ContentControl>
       <Table style="ValidationTable" widthPercent={100} border={{ style: "single", size: 0.5, color: "808080" }}>
         <TableRow>
           <TableCell shading="D9EAF7"><Paragraph>Component</Paragraph></TableCell>

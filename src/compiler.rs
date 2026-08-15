@@ -89,51 +89,19 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
     }
     docx = compile_package_parts(docx, &ir.document.props)?;
     let mut context = CompileContext::default();
+    let section_count = ir.document.children.len();
     for (index, child) in ir.document.children.iter().enumerate() {
         let Child::Node(section_node) = child else {
             return Err(validation("Document", "expected Section"));
         };
-        for (child_index, child) in section_node.children.iter().enumerate() {
-            if let Child::Node(child) = child
-                && matches!(
-                    child.kind,
-                    NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
-                )
-            {
-                let child_path = format!(
-                    "Document/Section[{index}]/{}[{child_index}]",
-                    child.kind.name()
-                );
-                let compiled_index = match child.kind {
-                    NodeKind::TableOfFigures => compile_table_of_figures(child, &child_path)?,
-                    NodeKind::TableOfEntries => compile_table_of_entries(child, &child_path)?,
-                    _ => compile_table_of_contents(child, &child_path)?,
-                };
-                docx = docx.add_table_of_contents(compiled_index);
-            }
-        }
-        docx = docx.add_section(compile_section(
+        docx = compile_section_into_docx(
+            docx,
             section_node,
             entry_dir,
-            &format!("Document/Section[{index}]"),
+            index,
+            index + 1 == section_count,
             &mut context,
-        )?);
-        for (child_index, child) in section_node.children.iter().enumerate() {
-            let Child::Node(child) = child else { continue };
-            let child_path = format!(
-                "Document/Section[{index}]/{}[{child_index}]",
-                child.kind.name()
-            );
-            docx = match child.kind {
-                NodeKind::Header => {
-                    attach_header(docx, child, entry_dir, &child_path, &mut context)?
-                }
-                NodeKind::Footer => {
-                    attach_footer(docx, child, entry_dir, &child_path, &mut context)?
-                }
-                _ => docx,
-            };
-        }
+        )?;
     }
     for (abstract_numbering, numbering) in context.numberings {
         docx = docx
@@ -141,6 +109,78 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
             .add_numbering(numbering);
     }
     package_document(docx, ir)
+}
+
+fn compile_section_into_docx(
+    mut docx: Docx,
+    section_node: &Node,
+    entry_dir: &Path,
+    index: usize,
+    is_last: bool,
+    context: &mut CompileContext,
+) -> Result<Docx> {
+    for (child_index, child) in section_node.children.iter().enumerate() {
+        if let Child::Node(child) = child
+            && matches!(
+                child.kind,
+                NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
+            )
+        {
+            let child_path = format!(
+                "Document/Section[{index}]/{}[{child_index}]",
+                child.kind.name()
+            );
+            let compiled_index = match child.kind {
+                NodeKind::TableOfFigures => compile_table_of_figures(child, &child_path)?,
+                NodeKind::TableOfEntries => compile_table_of_entries(child, &child_path)?,
+                _ => compile_table_of_contents(child, &child_path)?,
+            };
+            docx = docx.add_table_of_contents(compiled_index);
+        }
+    }
+    for (child_index, child) in section_node.children.iter().enumerate() {
+        let Child::Node(child) = child else {
+            return Err(validation(
+                format!("Document/Section[{index}]"),
+                "Section only accepts structural children",
+            ));
+        };
+        let child_path = format!(
+            "Document/Section[{index}]/{}[{child_index}]",
+            child.kind.name()
+        );
+        docx = add_section_body_to_docx(docx, child, entry_dir, &child_path, context)?;
+    }
+    let path = format!("Document/Section[{index}]");
+    if is_last {
+        docx = apply_section_properties(docx, section_node, &path)?;
+        for (child_index, child) in section_node.children.iter().enumerate() {
+            let Child::Node(child) = child else { continue };
+            let child_path = format!("{path}/{}[{child_index}]", child.kind.name());
+            docx = match child.kind {
+                NodeKind::Header => attach_header(docx, child, entry_dir, &child_path, context)?,
+                NodeKind::Footer => attach_footer(docx, child, entry_dir, &child_path, context)?,
+                _ => docx,
+            };
+        }
+        Ok(docx)
+    } else {
+        let mut section = compile_section_element(section_node, &path)?;
+        for (child_index, child) in section_node.children.iter().enumerate() {
+            let Child::Node(child) = child else { continue };
+            let child_path = format!("{path}/{}[{child_index}]", child.kind.name());
+            section = match child.kind {
+                NodeKind::Header => {
+                    attach_header_to_section(section, child, entry_dir, &child_path, context)?
+                }
+                NodeKind::Footer => {
+                    attach_footer_to_section(section, child, entry_dir, &child_path, context)?
+                }
+                _ => section,
+            };
+        }
+        Ok(docx.add_section(section))
+    }
 }
 
 fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
@@ -155,6 +195,8 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     let bytes = patch_custom_xml_content_types(bytes, custom_xml_count)?;
+    let bytes = patch_duplicate_normal_style(bytes, &ir.document.props)?;
+    let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     embed_ir_manifest(bytes, ir)
 }
@@ -491,6 +533,12 @@ fn compile_style_paragraph(mut style: Style, value: &Value, path: &str) -> Resul
             };
         }
     }
+    if bool_prop(paragraph, "keepNext", path)? == Some(true) {
+        style.paragraph_property = std::mem::take(&mut style.paragraph_property).keep_next(true);
+    }
+    if bool_prop(paragraph, "keepLines", path)? == Some(true) {
+        style.paragraph_property = std::mem::take(&mut style.paragraph_property).keep_lines(true);
+    }
     if let Some(value) = paragraph.get("outlineLevel") {
         style = style.outline_lvl(value_to_usize(value, path, "outlineLevel")?);
     }
@@ -707,6 +755,169 @@ fn embed_ir_manifest(bytes: Vec<u8>, ir: &IrEnvelope) -> Result<Vec<u8>> {
         .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
 }
 
+fn patch_duplicate_normal_style(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
+    let has_user_normal = props
+        .get("styles")
+        .and_then(Value::as_array)
+        .is_some_and(|styles| {
+            styles.iter().any(|style| {
+                style
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id == "Normal")
+            })
+        });
+    if !has_user_normal {
+        return Ok(bytes);
+    }
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut styles = String::new();
+    source
+        .by_name("word/styles.xml")
+        .map_err(|error| Error::Compile(format!("missing styles: {error}")))?
+        .read_to_string(&mut styles)
+        .map_err(|error| Error::Compile(format!("cannot read styles: {error}")))?;
+    let Some(range) = first_normal_style_range(&styles) else {
+        return replace_zip_text_entry(source, "word/styles.xml", styles.as_bytes());
+    };
+    if styles[range.end..].contains(r#"w:styleId="Normal""#) {
+        styles.replace_range(range, "");
+    }
+    replace_zip_text_entry(source, "word/styles.xml", styles.as_bytes())
+}
+
+fn first_normal_style_range(xml: &str) -> Option<std::ops::Range<usize>> {
+    let marker = xml.find(r#"w:styleId="Normal""#)?;
+    let start = xml[..marker].rfind("<w:style")?;
+    let close = xml[marker..].find("</w:style>")?;
+    Some(start..marker + close + "</w:style>".len())
+}
+
+fn replace_zip_text_entry(
+    mut source: zip::ZipArchive<Cursor<Vec<u8>>>,
+    name: &str,
+    contents: &[u8],
+) -> Result<Vec<u8>> {
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..source.len() {
+        let file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        if file.name() == name {
+            let options = file.options();
+            writer
+                .start_file(file.name(), options)
+                .map_err(|error| Error::Compile(format!("cannot write {name}: {error}")))?;
+            writer
+                .write_all(contents)
+                .map_err(|error| Error::Compile(format!("cannot write {name}: {error}")))?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
+fn omit_unused_default_parts(bytes: Vec<u8>, root: &Node) -> Result<Vec<u8>> {
+    let keep_comments = node_contains_kind(root, NodeKind::Comment);
+    let keep_footnotes = node_contains_kind(root, NodeKind::Footnote);
+    let keep_numbering = node_contains_kind(root, NodeKind::List);
+    if keep_comments && keep_footnotes && keep_numbering {
+        return Ok(bytes);
+    }
+    let mut omit = Vec::new();
+    let mut rel_needles = Vec::new();
+    let mut type_needles = Vec::new();
+    if !keep_comments {
+        omit.extend(["word/comments.xml", "word/commentsExtended.xml"]);
+        rel_needles.extend(["Target=\"comments.xml\"", "Target=\"commentsExtended.xml\""]);
+        type_needles.extend([
+            "PartName=\"/word/comments.xml\"",
+            "PartName=\"/word/commentsExtended.xml\"",
+        ]);
+    }
+    if !keep_footnotes {
+        omit.push("word/footnotes.xml");
+        rel_needles.push("Target=\"footnotes.xml\"");
+        type_needles.push("PartName=\"/word/footnotes.xml\"");
+    }
+    if !keep_numbering {
+        omit.push("word/numbering.xml");
+        rel_needles.push("Target=\"numbering.xml\"");
+        type_needles.push("PartName=\"/word/numbering.xml\"");
+    }
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..source.len() {
+        let mut file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        let name = file.name().to_owned();
+        if omit.iter().any(|part| *part == name) {
+            continue;
+        }
+        let options = file.options();
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
+        if name == "word/_rels/document.xml.rels" {
+            let mut rels = String::from_utf8(data).map_err(|error| {
+                Error::Compile(format!("document relationships are not UTF-8: {error}"))
+            })?;
+            rels = remove_markup_containing(&rels, &rel_needles);
+            data = rels.into_bytes();
+        } else if name == "[Content_Types].xml" {
+            let mut types = String::from_utf8(data)
+                .map_err(|error| Error::Compile(format!("content types are not UTF-8: {error}")))?;
+            types = remove_markup_containing(&types, &type_needles);
+            data = types.into_bytes();
+        }
+        writer
+            .start_file(&name, options)
+            .map_err(|error| Error::Compile(format!("cannot write {name}: {error}")))?;
+        writer
+            .write_all(&data)
+            .map_err(|error| Error::Compile(format!("cannot write {name}: {error}")))?;
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
+fn node_contains_kind(node: &Node, kind: NodeKind) -> bool {
+    node.kind == kind
+        || node.children.iter().any(|child| match child {
+            Child::Node(inner) => node_contains_kind(inner, kind),
+            Child::String(_) | Child::Number(_) => false,
+        })
+}
+
+fn remove_markup_containing(xml: &str, needles: &[&str]) -> String {
+    let mut output = xml.to_owned();
+    for needle in needles {
+        while let Some(hit) = output.find(needle) {
+            let Some(start) = output[..hit].rfind('<') else {
+                break;
+            };
+            let Some(rel) = output[hit..].find('>') else {
+                break;
+            };
+            output.replace_range(start..=hit + rel, "");
+        }
+    }
+    output
+}
+
 fn patch_custom_xml_content_types(bytes: Vec<u8>, item_count: usize) -> Result<Vec<u8>> {
     if item_count == 0 {
         return Ok(bytes);
@@ -773,6 +984,8 @@ fn normalize_ooxml_element_order(bytes: Vec<u8>) -> Result<Vec<u8>> {
             .by_index(index)
             .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
         if file.name().starts_with("word/")
+            && file.name() != "word/comments.xml"
+            && file.name() != "word/commentsExtended.xml"
             && Path::new(file.name())
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
@@ -782,7 +995,8 @@ fn normalize_ooxml_element_order(bytes: Vec<u8>) -> Result<Vec<u8>> {
             let mut xml = String::new();
             file.read_to_string(&mut xml)
                 .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
-            normalize_word_xml(&mut xml, name == "word/styles.xml")?;
+            normalize_word_xml(&mut xml, name == "word/styles.xml")
+                .map_err(|error| Error::Compile(format!("{name}: {error}")))?;
             writer
                 .start_file(&name, options)
                 .map_err(|error| Error::Compile(format!("cannot write {name}: {error}")))?;
@@ -1321,16 +1535,10 @@ fn patch_comment_parts(
     if comments.is_empty() {
         return Ok(());
     }
-    let mut comments_xml = String::new();
-    source
-        .by_name("word/comments.xml")
-        .map_err(|error| Error::Compile(format!("missing comments.xml: {error}")))?
-        .read_to_string(&mut comments_xml)
-        .map_err(|error| Error::Compile(format!("cannot read comments.xml: {error}")))?;
-    let end = comments_xml
-        .rfind("/>")
-        .ok_or_else(|| Error::Compile("invalid empty comments.xml".to_owned()))?;
-    comments_xml.replace_range(end.., ">\n");
+    let mut comments_xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+    );
+    comments_xml.push('\n');
     for (index, node) in comments.iter().enumerate() {
         append_comment_xml(&mut comments_xml, index + 1, node)?;
     }
@@ -1348,12 +1556,14 @@ fn patch_comment_parts(
             .read_to_string(&mut relationships)
             .map_err(|error| Error::Compile(format!("cannot read relationships: {error}")))?;
     }
-    let relationship = r#"<Relationship Id="rIdComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml" />"#;
-    relationships = relationships.replacen(
-        "</Relationships>",
-        &format!("{relationship}</Relationships>"),
-        1,
-    );
+    if !relationships.contains(r#"Target="comments.xml""#) {
+        let relationship = r#"<Relationship Id="rIdComments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="comments.xml" />"#;
+        relationships = relationships.replacen(
+            "</Relationships>",
+            &format!("{relationship}</Relationships>"),
+            1,
+        );
+    }
     replacements.insert("word/_rels/document.xml.rels".to_owned(), relationships);
     Ok(())
 }
@@ -1418,6 +1628,9 @@ fn patched_relationship_part(
         .iter()
         .zip(targets)
         .fold(String::new(), |mut output, (id, target)| {
+            if relationships.contains(&format!(r#"Id="{id}""#)) {
+                return output;
+            }
             write!(output, r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="{}" TargetMode="External" />"#, xml_escape(id), xml_escape(target))
                 .expect("writing to String cannot fail");
             output
@@ -1506,12 +1719,7 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn compile_section(
-    node: &Node,
-    entry_dir: &Path,
-    path: &str,
-    context: &mut CompileContext,
-) -> Result<Section> {
+fn compile_section_element(node: &Node, path: &str) -> Result<Section> {
     let mut section = Section::new();
     let orientation = optional_enum(&node.props, "orientation", &["portrait", "landscape"], path)?;
     if let Some(page_size) = node.props.get("pageSize") {
@@ -1547,38 +1755,168 @@ fn compile_section(
     if let Some(value) = node.props.get("pageNumbering") {
         section = section.page_num_type(parse_page_numbering(value, path)?);
     }
+    Ok(section)
+}
+
+fn apply_section_properties(mut docx: Docx, node: &Node, path: &str) -> Result<Docx> {
+    let orientation = optional_enum(&node.props, "orientation", &["portrait", "landscape"], path)?;
+    if let Some(page_size) = node.props.get("pageSize") {
+        let (mut width, mut height) = parse_page_size(page_size, path)?;
+        if orientation == Some("landscape") && width < height {
+            std::mem::swap(&mut width, &mut height);
+        }
+        docx = docx.page_size(width, height);
+    }
+    if let Some(value) = orientation {
+        docx = docx.page_orient(match value {
+            "landscape" => PageOrientationType::Landscape,
+            _ => PageOrientationType::Portrait,
+        });
+    }
+    if let Some(margins) = node.props.get("margins") {
+        docx = docx.page_margin(parse_margins(margins, path)?);
+    }
+    if bool_prop(&node.props, "titlePage", path)? == Some(true) {
+        docx = docx.title_pg();
+    }
+    if let Some(direction) = optional_enum(
+        &node.props,
+        "textDirection",
+        &["lrTb", "tbRl", "btLr", "lrTbV", "tbRlV"],
+        path,
+    )? {
+        docx.document = docx.document.text_direction(direction.to_owned());
+    }
+    if let Some(value) = node.props.get("documentGrid") {
+        docx.document = docx.document.doc_grid(parse_document_grid(value, path)?);
+    }
+    if let Some(value) = node.props.get("pageNumbering") {
+        docx = docx.page_num_type(parse_page_numbering(value, path)?);
+    }
+    Ok(docx)
+}
+
+fn add_section_body_to_docx(
+    docx: Docx,
+    child: &Node,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<Docx> {
+    Ok(match child.kind {
+        NodeKind::Paragraph => {
+            docx.add_paragraph(compile_paragraph(child, entry_dir, path, context)?)
+        }
+        NodeKind::Heading => docx.add_paragraph(compile_heading(child, entry_dir, path, context)?),
+        NodeKind::Caption => docx.add_paragraph(compile_caption(child, entry_dir, path, context)?),
+        NodeKind::Index => docx.add_paragraph(compile_index(child, path)?),
+        NodeKind::Table => docx.add_table(compile_table(child, entry_dir, path, context)?),
+        NodeKind::List => add_list_to_docx(docx, child, entry_dir, path, context)?,
+        NodeKind::Bookmark => add_bookmark_to_docx(docx, child, entry_dir, path, context)?,
+        NodeKind::ContentControl => docx.add_structured_data_tag(compile_block_content_control(
+            child, entry_dir, path, context,
+        )?),
+        NodeKind::TableOfContents
+        | NodeKind::TableOfFigures
+        | NodeKind::TableOfEntries
+        | NodeKind::Header
+        | NodeKind::Footer => docx,
+        _ => return Err(validation(path, "unsupported Section child")),
+    })
+}
+
+fn add_list_to_docx(
+    mut docx: Docx,
+    node: &Node,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<Docx> {
+    for paragraph in compile_list(node, entry_dir, path, context)? {
+        docx = docx.add_paragraph(paragraph);
+    }
+    Ok(docx)
+}
+
+fn add_bookmark_to_docx(
+    mut docx: Docx,
+    node: &Node,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<Docx> {
+    context.next_bookmark_id += 1;
+    let id = context.next_bookmark_id;
+    docx = docx.add_bookmark_start(id, required_string(&node.props, "name", path)?);
     for (index, child) in node.children.iter().enumerate() {
         let Child::Node(child) = child else {
-            return Err(validation(path, "Section only accepts structural children"));
+            return Err(validation(
+                path,
+                "Bookmark only accepts structural children",
+            ));
         };
         let child_path = format!("{path}/{}[{index}]", child.kind.name());
-        section = match child.kind {
+        docx = add_section_body_to_docx(docx, child, entry_dir, &child_path, context)?;
+    }
+    Ok(docx.add_bookmark_end(id))
+}
+
+fn compile_block_content_control(
+    node: &Node,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<StructuredDataTag> {
+    let mut control = content_control_properties(node, path)?;
+    for (index, child) in node.children.iter().enumerate() {
+        let Child::Node(child) = child else {
+            return Err(validation(
+                path,
+                "document-level ContentControl requires block children",
+            ));
+        };
+        let child_path = format!("{path}/{}[{index}]", child.kind.name());
+        control = match child.kind {
             NodeKind::Paragraph => {
-                section.add_paragraph(compile_paragraph(child, entry_dir, &child_path, context)?)
+                control.add_paragraph(compile_paragraph(child, entry_dir, &child_path, context)?)
             }
             NodeKind::Heading => {
-                section.add_paragraph(compile_heading(child, entry_dir, &child_path, context)?)
+                control.add_paragraph(compile_heading(child, entry_dir, &child_path, context)?)
             }
             NodeKind::Caption => {
-                section.add_paragraph(compile_caption(child, entry_dir, &child_path, context)?)
+                control.add_paragraph(compile_caption(child, entry_dir, &child_path, context)?)
             }
-            NodeKind::Index => section.add_paragraph(compile_index(child, &child_path)?),
             NodeKind::Table => {
-                section.add_table(compile_table(child, entry_dir, &child_path, context)?)
+                control.add_table(compile_table(child, entry_dir, &child_path, context)?)
             }
-            NodeKind::List => add_list_to_section(section, child, entry_dir, &child_path, context)?,
-            NodeKind::Bookmark => {
-                add_bookmark_to_section(section, child, entry_dir, &child_path, context)?
+            NodeKind::List => {
+                for paragraph in compile_list(child, entry_dir, &child_path, context)? {
+                    control = control.add_paragraph(paragraph);
+                }
+                control
             }
-            NodeKind::TableOfContents
-            | NodeKind::TableOfFigures
-            | NodeKind::TableOfEntries
-            | NodeKind::Header
-            | NodeKind::Footer => section,
-            _ => return Err(validation(&child_path, "unsupported Section child")),
+            _ => return Err(validation(&child_path, "unsupported ContentControl child")),
         };
     }
-    Ok(section)
+    Ok(control)
+}
+
+fn content_control_properties(node: &Node, path: &str) -> Result<StructuredDataTag> {
+    let mut control = StructuredDataTag::new();
+    if let Some(alias) = string_prop(&node.props, "alias", path)? {
+        control = control.alias(alias);
+    }
+    if let Some(xpath) = string_prop(&node.props, "xpath", path)? {
+        let mut binding = DataBinding::new().xpath(xpath);
+        if let Some(value) = string_prop(&node.props, "prefixMappings", path)? {
+            binding = binding.prefix_mappings(value);
+        }
+        if let Some(value) = string_prop(&node.props, "storeItemId", path)? {
+            binding = binding.store_item_id(value);
+        }
+        control = control.data_binding(binding);
+    }
+    Ok(control)
 }
 
 fn parse_document_grid(value: &Value, path: &str) -> Result<DocGrid> {
@@ -1907,8 +2245,12 @@ fn compile_paragraph_children(
                 paragraph = paragraph.add_run(compile_run(run, entry_dir, &child_path)?);
             }
             Child::Node(link) if link.kind == NodeKind::Hyperlink => {
-                paragraph =
-                    paragraph.add_hyperlink(compile_hyperlink(link, entry_dir, &child_path)?);
+                paragraph = paragraph.add_hyperlink(compile_hyperlink(
+                    link,
+                    entry_dir,
+                    &child_path,
+                    context,
+                )?);
             }
             Child::Node(field) if field.kind == NodeKind::PageNumber => {
                 paragraph = paragraph.add_page_num(PageNum::new());
@@ -2070,8 +2412,12 @@ fn compile_comment_range(
                 paragraph = paragraph.add_run(compile_run(run, entry_dir, &child_path)?);
             }
             Child::Node(link) if link.kind == NodeKind::Hyperlink => {
-                paragraph =
-                    paragraph.add_hyperlink(compile_hyperlink(link, entry_dir, &child_path)?);
+                paragraph = paragraph.add_hyperlink(compile_hyperlink(
+                    link,
+                    entry_dir,
+                    &child_path,
+                    context,
+                )?);
             }
             child => {
                 paragraph = paragraph.add_run(compile_run_child(
@@ -2149,7 +2495,12 @@ fn add_deleted_text(mut run: Run, child: &Child, path: &str) -> Result<Run> {
     }
 }
 
-fn compile_hyperlink(node: &Node, entry_dir: &Path, path: &str) -> Result<Hyperlink> {
+fn compile_hyperlink(
+    node: &Node,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<Hyperlink> {
     let (target, kind) = if let Some(href) = string_prop(&node.props, "href", path)? {
         (href, HyperlinkType::External)
     } else {
@@ -2164,32 +2515,81 @@ fn compile_hyperlink(node: &Node, entry_dir: &Path, path: &str) -> Result<Hyperl
     }
     for (index, child) in node.children.iter().enumerate() {
         let child_path = format!("{path}/child[{index}]");
-        let run = match child {
-            Child::Node(run) if run.kind == NodeKind::Run => {
-                compile_run(run, entry_dir, &child_path)?
-            }
-            child => compile_run_child(Run::new(), child, entry_dir, &child_path)?,
-        };
-        hyperlink = hyperlink.add_run(run);
+        hyperlink = compile_hyperlink_child(hyperlink, child, entry_dir, &child_path, context)?;
     }
     Ok(hyperlink)
 }
 
+fn compile_hyperlink_child(
+    mut hyperlink: Hyperlink,
+    child: &Child,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<Hyperlink> {
+    let Child::Node(node) = child else {
+        return Ok(hyperlink.add_run(compile_run_child(Run::new(), child, entry_dir, path)?));
+    };
+    match node.kind {
+        NodeKind::Run => Ok(hyperlink.add_run(compile_run(node, entry_dir, path)?)),
+        NodeKind::ContentControl => {
+            Ok(hyperlink.add_structured_data_tag(compile_content_control(node, entry_dir, path)?))
+        }
+        NodeKind::Inserted => Ok(hyperlink.add_insert(compile_inserted(node, entry_dir, path)?)),
+        NodeKind::Deleted => Ok(hyperlink.add_delete(compile_deleted(node, path)?)),
+        NodeKind::InlineBookmark => {
+            context.next_bookmark_id += 1;
+            let id = context.next_bookmark_id;
+            hyperlink =
+                hyperlink.add_bookmark_start(id, required_string(&node.props, "name", path)?);
+            for (index, child) in node.children.iter().enumerate() {
+                hyperlink = compile_hyperlink_child(
+                    hyperlink,
+                    child,
+                    entry_dir,
+                    &format!("{path}/child[{index}]"),
+                    context,
+                )?;
+            }
+            Ok(hyperlink.add_bookmark_end(id))
+        }
+        NodeKind::Comment => {
+            context.next_comment_id += 1;
+            let id = context.next_comment_id;
+            let body = Paragraph::new().add_run(Run::new().add_text(required_string(
+                &node.props,
+                "text",
+                path,
+            )?));
+            let mut comment = Comment::new(id).add_paragraph(body);
+            if let Some(author) = string_prop(&node.props, "author", path)? {
+                comment = comment.author(author);
+            }
+            if let Some(date) = string_prop(&node.props, "date", path)? {
+                comment = comment.date(date);
+            }
+            hyperlink = hyperlink.add_comment_start(comment);
+            for (index, child) in node.children.iter().enumerate() {
+                hyperlink = compile_hyperlink_child(
+                    hyperlink,
+                    child,
+                    entry_dir,
+                    &format!("{path}/child[{index}]"),
+                    context,
+                )?;
+            }
+            Ok(hyperlink.add_comment_end(id))
+        }
+        NodeKind::Hyperlink => Err(validation(
+            path,
+            "nested Hyperlink is not supported by docx-rs",
+        )),
+        _ => Ok(hyperlink.add_run(compile_run_child(Run::new(), child, entry_dir, path)?)),
+    }
+}
+
 fn compile_content_control(node: &Node, entry_dir: &Path, path: &str) -> Result<StructuredDataTag> {
-    let mut control = StructuredDataTag::new();
-    if let Some(alias) = string_prop(&node.props, "alias", path)? {
-        control = control.alias(alias);
-    }
-    if let Some(xpath) = string_prop(&node.props, "xpath", path)? {
-        let mut binding = DataBinding::new().xpath(xpath);
-        if let Some(value) = string_prop(&node.props, "prefixMappings", path)? {
-            binding = binding.prefix_mappings(value);
-        }
-        if let Some(value) = string_prop(&node.props, "storeItemId", path)? {
-            binding = binding.store_item_id(value);
-        }
-        control = control.data_binding(binding);
-    }
+    let mut control = content_control_properties(node, path)?;
     for (index, child) in node.children.iter().enumerate() {
         let child_path = format!("{path}/child[{index}]");
         let run = match child {
@@ -3232,6 +3632,44 @@ fn compile_cell(
     Ok(cell)
 }
 
+fn attach_header_to_section(
+    section: Section,
+    node: &Node,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<Section> {
+    let header = compile_header(node, entry_dir, path, context)?;
+    Ok(
+        match optional_enum(&node.props, "type", &["default", "first", "even"], path)?
+            .unwrap_or("default")
+        {
+            "first" => section.first_header(header).title_pg(),
+            "even" => section.even_header(header),
+            _ => section.header(header),
+        },
+    )
+}
+
+fn attach_footer_to_section(
+    section: Section,
+    node: &Node,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<Section> {
+    let footer = compile_footer(node, entry_dir, path, context)?;
+    Ok(
+        match optional_enum(&node.props, "type", &["default", "first", "even"], path)?
+            .unwrap_or("default")
+        {
+            "first" => section.first_footer(footer).title_pg(),
+            "even" => section.even_footer(footer),
+            _ => section.footer(footer),
+        },
+    )
+}
+
 fn attach_header(
     docx: Docx,
     node: &Node,
@@ -3346,57 +3784,6 @@ fn compile_footer(
         }
     }
     Ok(footer)
-}
-
-fn add_list_to_section(
-    mut section: Section,
-    node: &Node,
-    entry_dir: &Path,
-    path: &str,
-    context: &mut CompileContext,
-) -> Result<Section> {
-    for paragraph in compile_list(node, entry_dir, path, context)? {
-        section = section.add_paragraph(paragraph);
-    }
-    Ok(section)
-}
-
-fn add_bookmark_to_section(
-    mut section: Section,
-    node: &Node,
-    entry_dir: &Path,
-    path: &str,
-    context: &mut CompileContext,
-) -> Result<Section> {
-    context.next_bookmark_id += 1;
-    let id = context.next_bookmark_id;
-    section = section.add_bookmark_start(id, required_string(&node.props, "name", path)?);
-    for (index, child) in node.children.iter().enumerate() {
-        let Child::Node(child) = child else {
-            return Err(validation(
-                path,
-                "Bookmark only accepts structural children",
-            ));
-        };
-        let child_path = format!("{path}/{}[{index}]", child.kind.name());
-        section = match child.kind {
-            NodeKind::Paragraph => {
-                section.add_paragraph(compile_paragraph(child, entry_dir, &child_path, context)?)
-            }
-            NodeKind::Heading => {
-                section.add_paragraph(compile_heading(child, entry_dir, &child_path, context)?)
-            }
-            NodeKind::Caption => {
-                section.add_paragraph(compile_caption(child, entry_dir, &child_path, context)?)
-            }
-            NodeKind::Table => {
-                section.add_table(compile_table(child, entry_dir, &child_path, context)?)
-            }
-            NodeKind::List => add_list_to_section(section, child, entry_dir, &child_path, context)?,
-            _ => return Err(validation(&child_path, "unsupported Bookmark child")),
-        };
-    }
-    Ok(section.add_bookmark_end(id))
 }
 
 fn compile_table_of_contents(node: &Node, path: &str) -> Result<TableOfContents> {
@@ -4213,6 +4600,36 @@ mod tests {
     }
 
     #[test]
+    fn compile_should_render_two_sections_with_distinct_page_sizes() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"pageSize":"A4","orientation":"portrait"},"children":[{"type":"Paragraph","props":{},"children":["first"]}]},{"type":"Section","props":{"pageSize":"Letter","orientation":"landscape"},"children":[{"type":"Paragraph","props":{},"children":["second"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+
+        let first = document.find(r#"<w:pgSz w:w="11906" w:h="16838""#);
+        let second = document.find(r#"<w:pgSz w:w="15840" w:h="12240""#);
+        assert!(
+            first.is_some() && second.is_some() && first < second,
+            "expected distinct A4 then Letter-landscape page sizes in {document}"
+        );
+        assert!(
+            document.matches("<w:sectPr>").count() >= 2
+                || document.matches("<w:sectPr ").count() + document.matches("<w:sectPr>").count()
+                    >= 2,
+            "expected two section properties in {document}"
+        );
+    }
+
+    #[test]
     fn compile_should_render_section_page_configuration() {
         let ir: IrEnvelope = serde_json::from_str(
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1"}},"children":[]}]}}"#,
@@ -4396,6 +4813,122 @@ mod tests {
     }
 
     #[test]
+    fn compile_should_emit_style_keep_flags_and_a_single_normal() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Normal","name":"Normal","type":"paragraph","quickFormat":true},{"id":"Kept","name":"Kept","type":"paragraph","paragraph":{"keepNext":true,"keepLines":true,"outlineLevel":1}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles should exist")
+            .read_to_string(&mut styles)
+            .expect("styles should be UTF-8");
+        assert_eq!(
+            styles.matches(r#"w:styleId="Normal""#).count(),
+            1,
+            "{styles}"
+        );
+        assert!(
+            styles.contains("<w:keepNext")
+                && styles.contains("<w:keepLines")
+                && styles.contains(r#"<w:outlineLvl w:val="1""#),
+            "{styles}"
+        );
+    }
+
+    #[test]
+    fn compile_should_omit_unused_comments_footnotes_and_numbering_parts() {
+        let ir = minimal_ir();
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let names: Vec<String> = archive.file_names().map(ToOwned::to_owned).collect();
+        for part in [
+            "word/comments.xml",
+            "word/commentsExtended.xml",
+            "word/footnotes.xml",
+            "word/numbering.xml",
+        ] {
+            assert!(
+                !names.iter().any(|name| name == part),
+                "unused part {part} must be omitted, got {names:?}"
+            );
+        }
+        let mut rels = String::new();
+        let mut archive = archive;
+        archive
+            .by_name("word/_rels/document.xml.rels")
+            .expect("document rels")
+            .read_to_string(&mut rels)
+            .expect("rels UTF-8");
+        assert!(
+            !rels.contains("comments.xml")
+                && !rels.contains("commentsExtended.xml")
+                && !rels.contains("footnotes.xml")
+                && !rels.contains("numbering.xml"),
+            "{rels}"
+        );
+        let mut types = String::new();
+        archive
+            .by_name("[Content_Types].xml")
+            .expect("content types")
+            .read_to_string(&mut types)
+            .expect("types UTF-8");
+        assert!(
+            !types.contains("/word/comments.xml")
+                && !types.contains("/word/commentsExtended.xml")
+                && !types.contains("/word/footnotes.xml")
+                && !types.contains("/word/numbering.xml"),
+            "{types}"
+        );
+    }
+
+    #[test]
+    fn compile_should_keep_comments_footnotes_and_numbering_when_used() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Comment","props":{"text":"review","author":"Ada"},"children":["marked"]},{"type":"Footnote","props":{},"children":["note"]}]},{"type":"List","props":{"type":"ordered"},"children":[{"type":"ListItem","props":{},"children":["one"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        for part in [
+            "word/comments.xml",
+            "word/footnotes.xml",
+            "word/numbering.xml",
+        ] {
+            archive
+                .by_name(part)
+                .unwrap_or_else(|_| panic!("{part} should exist"));
+        }
+        let mut comments = String::new();
+        archive
+            .by_name("word/comments.xml")
+            .expect("comments")
+            .read_to_string(&mut comments)
+            .expect("comments UTF-8");
+        assert!(comments.contains("review"), "{comments}");
+        let mut footnotes = String::new();
+        archive
+            .by_name("word/footnotes.xml")
+            .expect("footnotes")
+            .read_to_string(&mut footnotes)
+            .expect("footnotes UTF-8");
+        assert!(footnotes.contains("note"), "{footnotes}");
+        let mut numbering = String::new();
+        archive
+            .by_name("word/numbering.xml")
+            .expect("numbering")
+            .read_to_string(&mut numbering)
+            .expect("numbering UTF-8");
+        assert!(numbering.contains("w:abstractNum"), "{numbering}");
+    }
+
+    #[test]
     fn compile_should_render_style_inheritance_links_and_typed_references() {
         let ir: IrEnvelope = serde_json::from_str(
             r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"BodyBase","name":"Body Base","type":"paragraph"},{"id":"Body","name":"Body","type":"paragraph","basedOn":"BodyBase","next":"Body","link":"BodyChar"},{"id":"BodyChar","name":"Body Char","type":"character","link":"Body"},{"id":"TableBase","name":"Table Base","type":"table"},{"id":"ReportTable","name":"Report Table","type":"table","basedOn":"TableBase"}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"Body"},"children":[{"type":"Run","props":{"style":"BodyChar"},"children":["styled"]}]},{"type":"Table","props":{"style":"ReportTable"},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{},"children":[{"type":"Paragraph","props":{},"children":["cell"]}]}]}]}]}]}}"#,
@@ -4492,6 +5025,91 @@ mod tests {
         assert!(document.contains(r#"w:hint="eastAsia""#));
         assert!(styles.contains(r#"w:ascii="Style Latin""#));
         assert!(styles.contains(r#"w:eastAsia="样式中文""#));
+    }
+
+    #[test]
+    fn compile_should_render_hyperlink_composite_children() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Hyperlink","props":{"href":"https://example.com"},"children":[{"type":"ContentControl","props":{"alias":"LinkData"},"children":["bound"]},{"type":"Inserted","props":{"author":"Ada"},"children":["new"]},{"type":"Deleted","props":{"author":"Lin"},"children":["old"]},{"type":"InlineBookmark","props":{"name":"insideLink"},"children":["marked"]},{"type":"Comment","props":{"text":"review","author":"Grace"},"children":["commented"]}]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        let hyperlink = document
+            .split_once("<w:hyperlink")
+            .and_then(|(_, rest)| rest.split_once("</w:hyperlink>"))
+            .map(|(content, _)| content)
+            .expect("hyperlink XML should exist");
+
+        for marker in [
+            "<w:sdt>",
+            r#"<w:alias w:val="LinkData""#,
+            "<w:ins ",
+            "<w:del ",
+            r#"w:name="insideLink""#,
+            "<w:bookmarkEnd ",
+            "<w:commentRangeStart ",
+            "<w:commentRangeEnd ",
+        ] {
+            assert!(
+                hyperlink.contains(marker),
+                "missing {marker} in {hyperlink}"
+            );
+        }
+        assert!(
+            hyperlink.find("<w:bookmarkStart").expect("start")
+                < hyperlink.find("insideLink").expect("name")
+                && hyperlink.find("marked").expect("marked")
+                    < hyperlink.find("<w:bookmarkEnd").expect("end"),
+            "bookmark markers should wrap marked text: {hyperlink}"
+        );
+        let mut comments = String::new();
+        archive
+            .by_name("word/comments.xml")
+            .expect("comments part should exist")
+            .read_to_string(&mut comments)
+            .expect("comments XML should be UTF-8");
+        assert!(
+            comments.contains("review") && comments.contains("Grace"),
+            "{comments}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_document_level_content_control() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["before"]},{"type":"ContentControl","props":{"alias":"BlockData"},"children":[{"type":"Paragraph","props":{},"children":["inside"]}]},{"type":"Paragraph","props":{},"children":["after"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        let sdt = document
+            .split_once("<w:sdt>")
+            .and_then(|(_, rest)| rest.split_once("</w:sdt>"))
+            .map(|(content, _)| content)
+            .expect("document-level sdt should exist");
+        assert!(
+            sdt.contains(r#"<w:alias w:val="BlockData""#) && sdt.contains("inside"),
+            "missing block control markup in {sdt}"
+        );
+        assert!(
+            document.find("before").expect("before") < document.find("<w:sdt>").expect("sdt")
+                && document.find("</w:sdt>").expect("sdt end")
+                    < document.find("after").expect("after"),
+            "block sdt should sit between surrounding paragraphs: {document}"
+        );
     }
 
     #[test]

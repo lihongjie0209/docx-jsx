@@ -16,7 +16,13 @@ docx-jsx spec [--format markdown|json-schema]
 When `-o` is omitted, the input extension is replaced with `.docx`. Existing
 outputs are rejected unless `--force` is present. Compilation completes in
 memory and output is written atomically, so a failed compilation never leaves
-a partial DOCX.
+a partial DOCX. The compiler then drops backend-injected annotation and
+numbering parts that the document does not use: `word/comments.xml`,
+`word/commentsExtended.xml`, `word/footnotes.xml`, and `word/numbering.xml`,
+together with their document relationships and content-type overrides. A
+document with no `Comment`, `Footnote`, or `List` therefore does not grow
+those parts on reverse→recompile. The parts are written only when the
+corresponding components are present.
 
 `validate` runs module resolution, JSX/TSX transpilation, optional JSON data
 injection, module evaluation, IR decoding, and the complete component semantic
@@ -46,19 +52,20 @@ children are text. Pure whitespace between structural elements is ignored.
 | Parent | Allowed children |
 | --- | --- |
 | `Document` | one or more `Section` |
-| `Section` | `Header`, `Footer`, `Heading`, `Paragraph`, `Caption`, `Index`, `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `Bookmark`, `Table`, `List` |
+| `Section` | `Header`, `Footer`, `Heading`, `Paragraph`, `Caption`, `Index`, `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `Bookmark`, `Table`, `List`, `ContentControl` |
 | `Header`, `Footer` | `Paragraph`, `Caption`, `Table`, `List` |
-| `Paragraph` | `Run`, `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Hyperlink`, `ContentControl`, `Field`, `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField`, `IndexEntry`, `Comment`, `Inserted`, `Deleted`, `MovedFrom`, `MovedTo`, `Footnote`, `Tab`, `TabStop`, `PositionalTab`, `Symbol`, `Bold`, `Italic`, `Underline`, `StrikeThrough`, `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText`, `PageNumber`, `TotalPages`, `PageReference`, `TocEntry`, string, number |
+| `Paragraph` | `Run`, `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Hyperlink`, `ContentControl`, `Field`, `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField`, `IndexEntry`, `Comment`, `InlineBookmark`, `Inserted`, `Deleted`, `MovedFrom`, `MovedTo`, `Footnote`, `Tab`, `TabStop`, `PositionalTab`, `Symbol`, `Bold`, `Italic`, `Underline`, `StrikeThrough`, `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText`, `PageNumber`, `TotalPages`, `PageReference`, `TocEntry`, string, number |
 | `Heading` | same inline children as `Paragraph` |
 | `Caption` | same inline children as `Paragraph` |
 | `Run` | `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Footnote`, `Tab`, `Symbol`, string, number |
 | `Comment` | inline children selected by the comment |
+| `InlineBookmark` | same inline children as `Paragraph` |
 | `Footnote` | `Run`, `Text`, `Break`, `Image`, `Tab`, `Symbol`, string, number |
 | `Inserted` | run-level inline content |
 | `Deleted` | `Run`, `Text`, string, number |
 | `MovedFrom`, `MovedTo` | run-level inline content |
-| `Hyperlink` | `Run`, `Text`, `Break`, `Image`, string, number |
-| `ContentControl` | `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Footnote`, `Tab`, `PositionalTab`, `Symbol`, `PageReference`, string, number |
+| `Hyperlink` | `Run`, `Text`, `Break`, `Image`, `ContentControl`, `Inserted`, `Deleted`, `InlineBookmark`, `Comment`, string, number |
+| `ContentControl` | inline: `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Footnote`, `Tab`, `PositionalTab`, `Symbol`, `PageReference`, string, number. block (Section child): `Paragraph`, `Heading`, `Caption`, `Table`, `List` |
 | `Field` | `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Tab`, `PositionalTab`, `Symbol`, string, number |
 | `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField` | same result children as `Field` |
 | `Text` | string, number |
@@ -109,8 +116,28 @@ For DOCX files produced by this compiler, reverse conversion is component-level
 1:1: every v1 component, property, child, and scalar is restored from a
 normalized IR manifest embedded in the package. External DOCX files fall back
 to structural OOXML conversion; unsupported structures are reported as errors
-instead of being silently discarded. The generated module imports only the
-components it uses and default-exports one `Document`.
+instead of being silently discarded. Bookmark, comment, and hyperlink range
+markers are reconstructed into nested `Bookmark` / `InlineBookmark` /
+`Comment` JSX by matching IDs. Overlapping or unmatched range markers return
+a reason and a repair suggestion instead of empty adjacent markers.
+Body-level `w:sdt` that is a table of contents, figures, or entries field
+reverses as `TableOfContents` / `TableOfFigures` / `TableOfEntries`. Other
+body-level and table-cell structured tags reverse as `ContentControl`.
+Header/footer structured tags have no public writer API and error. The
+generated module imports only the components it uses and default-exports
+one `Document`. External reverse also restores section `margins` and
+`documentGrid` from `w:sectPr`, paragraph `keepNext` / `keepLines` /
+`outlineLevel` from `w:pPr`, and run `themeColor` / `themeShade` /
+`themeTint` from `w:color` in `document.xml` and `styles.xml` because
+docx-rs 0.4.22 serializes `Color` as a bare hex string. Raster
+`w:drawing` pictures reverse as `Image`; media bytes are written beside
+the JSX as `media/<filename>` and referenced by `src`. Vector drawings
+such as EMF, WMF, and PICT have no schema-valid writer path and error
+instead of being dropped. A stock unused `Normal` style is omitted so
+recompilation does not emit a duplicate `w:style` that the backend always
+prepends. Reverse of a package that lacks comments, footnotes, or numbering
+does not invent those components; recompilation then omits the empty parts
+the 0.4.22 writer would otherwise inject.
 
 - `Document`: `defaultFont?: string` is a shorthand that assigns the same font
   to all four physical font slots. `defaultFonts?: {ascii?,hiAnsi?,eastAsia?,cs?,asciiTheme?,hiAnsiTheme?,eastAsiaTheme?,csTheme?,hint?}`
@@ -149,8 +176,10 @@ components it uses and default-exports one `Document`.
   `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
   `unhideWhenUsed`. `run?: {font,fonts,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden,textBorder}`
   uses the same units and color rules as `Run`.
-  `paragraph?: {align,textAlign,snapToGrid,spacingBefore,spacingAfter,lineSpacing,spacingBeforeLines,spacingAfterLines,lineRule,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
+  `paragraph?: {align,textAlign,snapToGrid,keepNext,keepLines,spacingBefore,spacingAfter,lineSpacing,spacingBeforeLines,spacingAfterLines,lineRule,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
   uses point dimensions; `firstLine` and `hanging` are mutually exclusive.
+  `keepNext` and `keepLines` are booleans and map to the style's
+  `ParagraphProperty` keep flags.
   `textAlign` is `auto`, `baseline`, `bottom`, `center`, or `top`; line-spacing
   fields use the same units and `lineRule` values as `Paragraph`.
   `frame` accepts `wrap`, `verticalAnchor`, `horizontalAnchor`, `heightRule`,
@@ -267,7 +296,10 @@ components it uses and default-exports one `Document`.
   `paragraph`, or `topMargin`), point-valued `distanceTop`, `distanceBottom`,
   `distanceLeft`, and `distanceRight`, and integer `relativeHeight`.
   Anchor-only properties require `floating={true}`. Image
-  sources resolve from the entry module directory.
+  sources resolve from the entry module directory. External reverse
+  extracts raster media from the package and points `src` at
+  `media/<filename>` next to the emitted JSX. `docx-jsx reverse` writes
+  those sidecar files beside the JSX output.
 - `Table`: `width?`, `widthPercent?`, `align?`, `layout?: "auto" | "fixed"`,
   `columnWidths?: number[]`, `border?: {style?,size?,color?}`. Point and percent
   widths are mutually exclusive.
@@ -286,7 +318,17 @@ components it uses and default-exports one `Document`.
 - `Header`, `Footer`: `type?: "default" | "first" | "even"`. A `first`
   header or footer enables the section's different-first-page setting.
 - `Hyperlink`: exactly one of `href?: string` (external relationship) or
-  `anchor?: string` (document bookmark), plus `history?: boolean`.
+  `anchor?: string` (document bookmark), plus `history?: boolean`. In addition
+  to ordinary run-level children it accepts `ContentControl`, `Inserted`,
+  `Deleted`, `InlineBookmark`, and `Comment`, mapping to the corresponding
+  public `docx_rs::Hyperlink::add_*` APIs. Hyperlinks cannot be nested.
+  External reverse restores those children from OOXML (including `w:sdt` that
+  the 0.4.22 hyperlink reader would otherwise flatten) and resolves `href`
+  from the document relationship, not from the writer-only `path` field.
+- `InlineBookmark`: required non-empty `name`. Its inline children are
+  enclosed by a matching `w:bookmarkStart`/`w:bookmarkEnd` pair inside a
+  paragraph or hyperlink. Reverse reconstructs the element by matching IDs
+  rather than emitting an empty marker beside the marked runs.
 - `PageNumber`, `TotalPages`: no properties. They emit dynamic Word fields.
 - `Comment`: required non-empty `text` plus selected inline children;
   `author?: string`, `date?: string`. It emits a comment range, reference, and
@@ -344,9 +386,14 @@ components it uses and default-exports one `Document`.
   `relativeTo?: "margin" | "indent"`, and
   `leader?: "none" | "dot" | "heavy" | "hyphen" | "middleDot" | "underscore"`.
 - `ContentControl`: optional `alias`, `xpath`, `prefixMappings`, and
-  `storeItemId` strings. It requires inline content and emits a native Word
-  structured document tag (`w:sdt`). When any data-binding property is used,
-  `xpath` is required and the values are emitted as `w:dataBinding` attributes.
+  `storeItemId` strings. It emits a native Word structured document tag
+  (`w:sdt`). When any data-binding property is used, `xpath` is required and
+  the values are emitted as `w:dataBinding` attributes. As a paragraph,
+  hyperlink, or table-cell child it requires inline content. As a `Section`
+  child it maps to `Docx::add_structured_data_tag` and requires block
+  children (`Paragraph`, `Heading`, `Caption`, `Table`, `List`); inline and
+  block children cannot be mixed. External reverse restores a body-level
+  `w:sdt` as a section-level `ContentControl` wrapping those block children.
 - `Field`: required non-empty `instruction`, optional `dirty?: boolean`
   (default `true`), and optional inline result content. It emits a complex Word
   field (`begin`, `instrText`, `separate`, result, `end`). This supports native
@@ -387,6 +434,8 @@ components it uses and default-exports one `Document`.
   numbering definitions and numbered paragraphs.
 - `Bookmark`: required non-empty `name`. Its structural children are enclosed
   by a unique Word bookmark pair and may be targeted by `Hyperlink anchor`.
+  Reverse reconstructs the element by matching start/end IDs around the
+  enclosed paragraphs and tables; orphan or overlapping markers are errors.
 - `TableOfContents`: `startLevel?: 1..9`, `endLevel?: 1..9`,
   `hyperlinks?: boolean`, `dirty?: boolean`, `alias?: string`. Defaults to
   levels 1–3, hyperlinks enabled, and automatic refresh requested. A section

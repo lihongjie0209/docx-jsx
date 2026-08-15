@@ -9,5 +9,5 @@ pub mod runtime;
 pub use compiler::compile_document;
 pub use error::{Error, Result};
 pub use ir::IrEnvelope;
-pub use reverse::reverse_document;
+pub use reverse::{reverse_document, reverse_package};
 pub use runtime::evaluate_entry;

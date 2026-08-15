@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use docx_jsx::{Error, compile_document, evaluate_entry, reverse_document};
+use docx_jsx::{Error, compile_document, evaluate_entry, reverse_package};
 use serde_json::Value;
 
 #[derive(Debug, Parser)]
@@ -178,8 +178,16 @@ fn run_reverse(args: ReverseArgs) -> docx_jsx::Result<PathBuf> {
         path: args.input,
         source,
     })?;
-    let jsx = reverse_document(&bytes)?;
-    write_atomic(&output, jsx.as_bytes(), args.force)?;
+    let reversed = reverse_package(&bytes)?;
+    write_atomic(&output, reversed.jsx.as_bytes(), args.force)?;
+    let parent = output.parent().unwrap_or(Path::new("."));
+    for (relative, contents) in reversed.assets {
+        let asset = parent.join(relative);
+        if asset.exists() && !args.force {
+            return Err(output_exists(asset));
+        }
+        write_atomic(&asset, &contents, args.force)?;
+    }
     Ok(output)
 }
 

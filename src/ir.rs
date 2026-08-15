@@ -560,18 +560,7 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
     for (index, child) in node.children.iter().enumerate() {
         match child {
             Child::Node(child_node) => {
-                if !allows(node.kind, child_node.kind) {
-                    return Err(validation(
-                        path,
-                        format!(
-                            "{} cannot contain {}",
-                            node.kind.name(),
-                            child_node.kind.name()
-                        ),
-                    ));
-                }
-                let child_path = format!("{path}/{}[{index}]", child_node.kind.name());
-                validate_node(child_node, &child_path)?;
+                validate_child_node(node.kind, child_node, path, index)?;
             }
             Child::String(_) | Child::Number(_) => {
                 if !matches!(
@@ -613,6 +602,20 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_child_node(parent: NodeKind, child: &Node, path: &str, index: usize) -> Result<()> {
+    if !allows(parent, child.kind) {
+        return Err(validation(
+            path,
+            format!("{} cannot contain {}", parent.name(), child.kind.name()),
+        ));
+    }
+    let child_path = format!("{path}/{}[{index}]", child.kind.name());
+    if child.kind == NodeKind::ContentControl {
+        validate_content_control_placement(parent, child, &child_path)?;
+    }
+    validate_node(child, &child_path)
+}
+
 fn allows(parent: NodeKind, child: NodeKind) -> bool {
     match parent {
         NodeKind::Document => child == NodeKind::Section,
@@ -630,6 +633,7 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
                 | NodeKind::TableOfContents
                 | NodeKind::TableOfFigures
                 | NodeKind::TableOfEntries
+                | NodeKind::ContentControl
         ),
         NodeKind::Paragraph | NodeKind::Heading | NodeKind::Caption => {
             allows_paragraph_child(child)
@@ -677,12 +681,11 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
             child,
             NodeKind::Paragraph | NodeKind::Caption | NodeKind::Table | NodeKind::List
         ),
-        NodeKind::Hyperlink
-        | NodeKind::ListItem
+        NodeKind::Hyperlink => allows_hyperlink_child(child),
+        NodeKind::ListItem
         | NodeKind::Inserted
         | NodeKind::MovedFrom
         | NodeKind::MovedTo
-        | NodeKind::ContentControl
         | NodeKind::Field
         | NodeKind::DateField
         | NodeKind::TimeField
@@ -698,6 +701,7 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         NodeKind::Comment => {
             child == NodeKind::Run || allows_run_child(child) || child == NodeKind::Hyperlink
         }
+        NodeKind::ContentControl => allows_content_control_child(child),
         NodeKind::List => child == NodeKind::ListItem,
         NodeKind::Bookmark => matches!(
             child,
@@ -713,6 +717,65 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         }
         NodeKind::Deleted => matches!(child, NodeKind::Run | NodeKind::Text),
     }
+}
+
+fn allows_hyperlink_child(child: NodeKind) -> bool {
+    child == NodeKind::Run
+        || allows_run_child(child)
+        || matches!(
+            child,
+            NodeKind::ContentControl
+                | NodeKind::Inserted
+                | NodeKind::Deleted
+                | NodeKind::InlineBookmark
+                | NodeKind::Comment
+        )
+}
+
+fn allows_content_control_child(child: NodeKind) -> bool {
+    child == NodeKind::Run || allows_run_child(child) || is_block_content_control_child(child)
+}
+
+fn is_block_content_control_child(child: NodeKind) -> bool {
+    matches!(
+        child,
+        NodeKind::Paragraph
+            | NodeKind::Heading
+            | NodeKind::Caption
+            | NodeKind::Table
+            | NodeKind::List
+    )
+}
+
+fn validate_content_control_placement(parent: NodeKind, control: &Node, path: &str) -> Result<()> {
+    let has_block = control.children.iter().any(|child| match child {
+        Child::Node(node) => is_block_content_control_child(node.kind),
+        Child::String(_) | Child::Number(_) => false,
+    });
+    let has_inline = control.children.iter().any(|child| match child {
+        Child::Node(node) => !is_block_content_control_child(node.kind),
+        Child::String(_) | Child::Number(_) => true,
+    });
+    if has_block && has_inline {
+        return Err(validation(
+            path,
+            "ContentControl cannot mix block and inline children; use only paragraphs/tables or only inline runs",
+        ));
+    }
+    if parent == NodeKind::Section {
+        if !has_block {
+            return Err(validation(
+                path,
+                "document-level ContentControl requires block children (`Paragraph`, `Heading`, `Caption`, `Table`, or `List`)",
+            ));
+        }
+    } else if has_block {
+        return Err(validation(
+            path,
+            "inline ContentControl cannot contain Paragraph; move the control to the Section or unwrap the paragraph",
+        ));
+    }
+    Ok(())
 }
 
 fn allows_table_cell_child(child: NodeKind) -> bool {
@@ -2140,6 +2203,8 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             "align",
             "textAlign",
             "snapToGrid",
+            "keepNext",
+            "keepLines",
             "spacingBefore",
             "spacingAfter",
             "lineSpacing",
@@ -2213,6 +2278,14 @@ fn validate_style_paragraph_layout(paragraph: &Map<String, Value>, path: &str) -
             path,
             "style paragraph `snapToGrid` must be a boolean",
         ));
+    }
+    for key in ["keepNext", "keepLines"] {
+        if paragraph.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(
+                path,
+                format!("style paragraph `{key}` must be a boolean"),
+            ));
+        }
     }
     for key in [
         "spacingBefore",
@@ -3674,6 +3747,70 @@ mod tests {
     }
 
     #[test]
+    fn validate_should_accept_hyperlink_composite_children() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Hyperlink","props":{"href":"https://example.com"},"children":[{"type":"ContentControl","props":{"alias":"LinkData"},"children":["bound"]},{"type":"Inserted","props":{"author":"Ada"},"children":["new"]},{"type":"Deleted","props":{"author":"Lin"},"children":["old"]},{"type":"InlineBookmark","props":{"name":"insideLink"},"children":["marked"]},{"type":"Comment","props":{"text":"review","author":"Grace"},"children":["commented"]}]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("hyperlink composite children should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_section_block_content_control() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"ContentControl","props":{"alias":"BlockData"},"children":[{"type":"Paragraph","props":{},"children":["inside"]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("section-level ContentControl with a paragraph should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_section_content_control_with_inline_children() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"ContentControl","props":{"alias":"BlockData"},"children":["loose"]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("section ContentControl must reject inline text");
+        assert!(
+            error
+                .to_string()
+                .contains("document-level ContentControl requires block children"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_mixed_block_and_inline_content_control() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"ContentControl","props":{"alias":"Mixed"},"children":[{"type":"Paragraph","props":{},"children":["block"]},{"type":"Run","props":{},"children":["inline"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("mixed ContentControl children must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot mix block and inline children"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_nested_hyperlink() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Hyperlink","props":{"href":"https://example.com"},"children":[{"type":"Hyperlink","props":{"anchor":"intro"},"children":["inner"]}]}]}]}]}}"#,
+        );
+        let error = ir.validate().expect_err("nested Hyperlink must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Hyperlink cannot contain Hyperlink"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn validate_should_accept_heading_bookmark_and_toc() {
         let ir = parse(
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"startLevel":1,"endLevel":3},"children":[]},{"type":"Bookmark","props":{"name":"intro"},"children":[{"type":"Heading","props":{"level":1},"children":["Intro"]}]}]}]}}"#,
@@ -4683,7 +4820,7 @@ mod tests {
     #[test]
     fn validate_should_accept_custom_style_definitions() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"keepNext":true,"keepLines":true,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         );
         ir.validate().expect("custom style should validate");
     }
@@ -4708,6 +4845,10 @@ mod tests {
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"firstLine":1,"hanging":1}}]"#,
                 "mutually exclusive",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"keepNext":"yes"}}]"#,
+                "keepNext",
             ),
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"frame":{"x":1,"xAlign":"left"}}}]"#,
