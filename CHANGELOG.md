@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 - 2026-08-15
+
+- Harden domestic-mirror downloads in CI and cargo-dist release builds with retries,
+  longer timeouts, and tolerance for transient low-speed connections.
+- Republish the 0.3 feature set after the v0.3.0 Apple ARM64 artifact build was
+  interrupted by a transient rsproxy.cn timeout.
+
 ## 0.3.0 - 2026-08-14
 
 - Add typed paragraph, character, numbering, and table style references with

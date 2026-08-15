@@ -10,6 +10,10 @@ permissions:
 
 env:
   CARGO_INCREMENTAL: "1"
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_TIMEOUT: "600"
+  CARGO_HTTP_LOW_SPEED_LIMIT: "1"
+  RUSTUP_MAX_RETRIES: "10"
   RUSTUP_DIST_SERVER: https://rsproxy.cn
   RUSTUP_UPDATE_ROOT: https://rsproxy.cn/rustup
   RUSTY_V8_MIRROR: https://gh-proxy.com/https://github.com/denoland/rusty_v8/releases/download
