@@ -218,6 +218,11 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
         })
         .collect::<Result<Vec<_>>>()?;
     let bytes = patch_section_columns(cursor.into_inner(), &columns)?;
+    let row_grid = collect_row_grid_properties(&ir.document);
+    let mut bytes = bytes;
+    for (part, rows) in row_grid {
+        bytes = patch_table_row_grid_properties(bytes, &part, &rows)?;
+    }
     let extension_count = ir
         .document
         .props
@@ -238,6 +243,148 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn collect_row_grid_properties(root: &Node) -> Vec<(String, Vec<[Option<u64>; 4]>)> {
+    fn visit(node: &Node, rows: &mut Vec<[Option<u64>; 4]>) {
+        if node.kind == NodeKind::TableRow {
+            rows.push([
+                node.props.get("gridBefore").and_then(Value::as_u64),
+                node.props.get("gridAfter").and_then(Value::as_u64),
+                node.props
+                    .get("widthBefore")
+                    .and_then(Value::as_f64)
+                    .and_then(|v| (v * 20.0).round().to_u64()),
+                node.props
+                    .get("widthAfter")
+                    .and_then(Value::as_f64)
+                    .and_then(|v| (v * 20.0).round().to_u64()),
+            ]);
+        }
+        for child in &node.children {
+            if let Child::Node(child) = child {
+                visit(child, rows);
+            }
+        }
+    }
+    let mut output = Vec::new();
+    let mut document_rows = Vec::new();
+    let (mut header_count, mut footer_count) = (0, 0);
+    for child in &root.children {
+        let Child::Node(section) = child else {
+            continue;
+        };
+        if section.kind != NodeKind::Section {
+            continue;
+        }
+        for child in &section.children {
+            let Child::Node(node) = child else { continue };
+            match node.kind {
+                NodeKind::Header => {
+                    header_count += 1;
+                    let mut rows = Vec::new();
+                    visit(node, &mut rows);
+                    output.push((format!("word/header{header_count}.xml"), rows));
+                }
+                NodeKind::Footer => {
+                    footer_count += 1;
+                    let mut rows = Vec::new();
+                    visit(node, &mut rows);
+                    output.push((format!("word/footer{footer_count}.xml"), rows));
+                }
+                _ => visit(node, &mut document_rows),
+            }
+        }
+    }
+    output.insert(0, ("word/document.xml".to_owned(), document_rows));
+    output
+}
+
+fn patch_table_row_grid_properties(
+    bytes: Vec<u8>,
+    part: &str,
+    rows: &[[Option<u64>; 4]],
+) -> Result<Vec<u8>> {
+    if !rows.iter().any(|row| row.iter().any(Option::is_some)) {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name(part)
+        .map_err(|error| Error::Compile(format!("missing {part}: {error}")))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot read {part}: {error}")))?;
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    while let Some(relative) = xml[offset..].find("<w:tr") {
+        let start = offset + relative;
+        if xml
+            .as_bytes()
+            .get(start + 5)
+            .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>')
+        {
+            starts.push(start);
+        }
+        offset = start + 5;
+    }
+    if starts.len() != rows.len() {
+        return Err(Error::Compile(format!(
+            "table row count mismatch while applying row grid properties: JSX has {}, DOCX has {}",
+            rows.len(),
+            starts.len()
+        )));
+    }
+    for (index, properties) in rows.iter().enumerate().rev() {
+        if properties.iter().all(Option::is_none) {
+            continue;
+        }
+        let end = xml[starts[index]..]
+            .find("</w:tr>")
+            .map(|at| starts[index] + at)
+            .ok_or_else(|| {
+                Error::Compile(
+                    "invalid table row XML while applying row grid properties".to_owned(),
+                )
+            })?;
+        let open_end = xml[starts[index]..end]
+            .find('>')
+            .map(|at| starts[index] + at + 1)
+            .ok_or_else(|| Error::Compile("invalid table row start tag".to_owned()))?;
+        let close = xml[open_end..end]
+            .rfind("</w:trPr>")
+            .map(|at| open_end + at);
+        let insert_at = if let Some(close) = close {
+            close
+        } else {
+            let marker = "<w:trPr />";
+            let at = xml[open_end..end]
+                .find(marker)
+                .map(|at| open_end + at)
+                .ok_or_else(|| {
+                    Error::Compile("docx-rs omitted the expected w:trPr element".to_owned())
+                })?;
+            xml.replace_range(at..at + marker.len(), "<w:trPr></w:trPr>");
+            at + "<w:trPr>".len()
+        };
+        let mut fragment = String::new();
+        for (slot, name) in ["gridBefore", "gridAfter", "wBefore", "wAfter"]
+            .iter()
+            .enumerate()
+        {
+            if let Some(value) = properties[slot] {
+                if slot < 2 {
+                    write!(fragment, "<w:{name} w:val=\"{value}\" />").expect("String write");
+                } else {
+                    write!(fragment, "<w:{name} w:w=\"{value}\" w:type=\"dxa\" />")
+                        .expect("String write");
+                }
+            }
+        }
+        xml.insert_str(insert_at, &fragment);
+    }
+    replace_zip_text_entry(archive, part, xml.as_bytes())
 }
 
 fn patch_section_columns(bytes: Vec<u8>, columns: &[usize]) -> Result<Vec<u8>> {
@@ -5839,7 +5986,7 @@ mod tests {
                             "border": {"top": {"style": "double", "size": 1, "color": "112233"}, "insideHorizontal": false}
                         },
                         "children": [{
-                            "type": "TableRow", "props": {"cantSplit": true, "inserted": {"author": "Ada", "date": "2026-08-14T00:00:00Z"}}, "children": [{
+                            "type": "TableRow", "props": {"cantSplit": true, "gridBefore": 1, "gridAfter": 2, "widthBefore": 60, "widthAfter": 75, "inserted": {"author": "Ada", "date": "2026-08-14T00:00:00Z"}}, "children": [{
                                 "type": "TableCell",
                                 "props": {"width": 120, "colSpan": 2, "verticalAlign": "center", "verticalMerge": "restart", "textDirection": "tbRl", "margins": {"top": 1, "right": 2, "bottom": 3, "left": 4}, "shading": "EEEEEE", "border": {"left": false, "topLeftToBottomRight": {"style": "dotted", "size": 0.5, "color": "993366"}}},
                                 "children": [
@@ -5871,6 +6018,10 @@ mod tests {
                 && document.contains("w:gridSpan")
                 && document.contains("w:fill=\"EEEEEE\"")
                 && document.contains(r#"<w:tblStyle w:val="GridTable4" />"#)
+                && document.contains(r#"<w:gridBefore w:val="1" />"#)
+                && document.contains(r#"<w:gridAfter w:val="2" />"#)
+                && document.contains(r#"<w:wBefore w:w="1200" w:type="dxa" />"#)
+                && document.contains(r#"<w:wAfter w:w="1500" w:type="dxa" />"#)
                 && document.contains(r#"<w:tblInd w:w="240" w:type="dxa" />"#)
                 && document.contains("<w:tblCellMar>")
                 && document.contains("<w:tcMar>")

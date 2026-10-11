@@ -235,9 +235,11 @@ struct Writer {
     table_indices: HashMap<String, usize>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct TableRowXmlMetadata {
     cant_split: Option<bool>,
+    width_before_type: Option<String>,
+    width_after_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1083,7 +1085,7 @@ impl Writer {
             let row_xml = self.next_table_row_xml_metadata()?;
             self.line(
                 depth + 1,
-                &format!("<TableRow{}>", table_row_jsx_attrs(row, row_xml)?),
+                &format!("<TableRow{}>", table_row_jsx_attrs(row, &row_xml)?),
             );
             for cell in &row.cells {
                 let TableRowChild::TableCell(cell) = cell;
@@ -1112,7 +1114,7 @@ impl Writer {
             .table_row_xml
             .get(&part)
             .and_then(|rows| rows.get(*index))
-            .copied()
+            .cloned()
         else {
             return Err(Error::Reverse(format!(
                 "docx-rs exposed a table row that is missing from `{part}`; repair the table structure or retain the original DOCX"
@@ -2732,17 +2734,34 @@ fn table_cell_border_jsx(source: &Value) -> Result<Value> {
     Ok(Value::Object(result))
 }
 
-fn table_row_jsx_attrs(row: &docx_rs::TableRow, row_xml: TableRowXmlMetadata) -> Result<String> {
+fn table_row_jsx_attrs(row: &docx_rs::TableRow, row_xml: &TableRowXmlMetadata) -> Result<String> {
     let source = json(&row.property)?;
-    for key in ["gridBefore", "gridAfter", "widthBefore", "widthAfter"] {
-        if source.get(key).is_some_and(|value| !value.is_null()) {
-            return Err(Error::Reverse(format!(
-                "TableRow `{key}` is not representable in the current JSX spec; keep the original DOCX or remove that row-grid value"
-            )));
+    let mut attributes = String::new();
+    for key in ["gridBefore", "gridAfter"] {
+        if let Some(value) = source.get(key).filter(|value| !value.is_null()) {
+            let count = value.as_u64().ok_or_else(|| {
+                Error::Reverse(format!(
+                    "TableRow `{key}` is not a non-negative integer; repair this row grid value"
+                ))
+            })?;
+            attributes.push_str(&jsx_prop(key, &Value::from(count))?);
         }
     }
-
-    let mut attributes = String::new();
+    for (key, xml_type) in [
+        ("widthBefore", row_xml.width_before_type.as_deref()),
+        ("widthAfter", row_xml.width_after_type.as_deref()),
+    ] {
+        if let Some(value) = source.get(key).filter(|value| !value.is_null()) {
+            if xml_type.is_some_and(|kind| kind != "dxa") {
+                return Err(Error::Reverse(format!(
+                    "TableRow `{key}` uses width type `{}` which cannot be represented in JSX; convert it to dxa (twips) in the DOCX",
+                    xml_type.unwrap_or_default()
+                )));
+            }
+            let twips = value.as_f64().filter(|value| value.is_finite() && *value >= 0.0 && value.fract() == 0.0).and_then(|value| value.to_i64()).ok_or_else(|| Error::Reverse(format!("TableRow `{key}` is not a non-negative whole number of twips; repair this width")))?;
+            attributes.push_str(&jsx_prop(key, &points_value(twips)?)?);
+        }
+    }
     if let Some(value) = source.get("rowHeight").filter(|value| !value.is_null()) {
         let height = value.as_f64().ok_or_else(|| {
             Error::Reverse(
@@ -2839,6 +2858,19 @@ fn collect_table_row_xml_metadata(
                 {
                     if let Some(index) = active_rows.last().copied() {
                         rows[index].cant_split = Some(xml_on_off(&reader, &element)?);
+                    }
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"wBefore"
+                        || element.local_name().as_ref() == b"wAfter" =>
+                {
+                    if let Some(index) = active_rows.last().copied() {
+                        let kind = xml_attribute(&reader, &element, b"type")?;
+                        if element.local_name().as_ref() == b"wBefore" {
+                            rows[index].width_before_type = kind;
+                        } else {
+                            rows[index].width_after_type = kind;
+                        }
                     }
                 }
                 Ok(Event::End(element)) if element.local_name().as_ref() == b"tr" => {
@@ -6009,7 +6041,7 @@ mod tests {
     }
 
     #[test]
-    fn reverse_external_docx_should_reject_unrepresented_table_row_grid_data() {
+    fn reverse_external_docx_should_preserve_table_row_grid_data() {
         let row = TableRow::new(vec![
             TableCell::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("row"))),
         ]);
@@ -6023,17 +6055,18 @@ mod tests {
             .expect("document XML");
         let document = document.replace(
             "<w:trPr />",
-            r#"<w:trPr><w:gridBefore w:val="2" /></w:trPr>"#,
+            r#"<w:trPr><w:gridBefore w:val="2" /><w:gridAfter w:val="1" /><w:wBefore w:w="1200" w:type="dxa" /><w:wAfter w:w="1500" w:type="dxa" /></w:trPr>"#,
         );
         assert!(document.contains("w:gridBefore"));
         let modified =
             rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
-        let error = reverse_document(&modified)
-            .expect_err("unrepresented row grid data must not be discarded");
+        let jsx = reverse_document(&modified).expect("external row grid data should reverse");
         assert!(
-            error.to_string().contains("gridBefore")
-                && error.to_string().contains("not representable"),
-            "diagnostic should identify unrepresented row data: {error}"
+            jsx.contains("gridBefore={2}")
+                && jsx.contains("gridAfter={1}")
+                && jsx.contains("widthBefore={60}")
+                && jsx.contains("widthAfter={75}"),
+            "row grid properties must survive reverse: {jsx}"
         );
     }
 

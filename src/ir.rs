@@ -850,6 +850,7 @@ fn validate_props(node: &Node, path: &str) -> Result<()> {
     validate_semantics(node, path)
 }
 
+#[allow(clippy::too_many_lines)]
 fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
     match kind {
         NodeKind::Document => document_props(),
@@ -877,7 +878,17 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::Break | NodeKind::Header | NodeKind::Footer => &["type"],
         NodeKind::Image => image_props(),
         NodeKind::Table => table_props(),
-        NodeKind::TableRow => &["height", "heightRule", "cantSplit", "inserted", "deleted"],
+        NodeKind::TableRow => &[
+            "height",
+            "heightRule",
+            "cantSplit",
+            "gridBefore",
+            "gridAfter",
+            "widthBefore",
+            "widthAfter",
+            "inserted",
+            "deleted",
+        ],
         NodeKind::TableCell => &[
             "width",
             "widthPercent",
@@ -2690,6 +2701,21 @@ fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
         }
     }
     if node.kind == NodeKind::TableRow {
+        for key in ["gridBefore", "gridAfter"] {
+            if let Some(value) = node.props.get(key)
+                && value.as_u64().is_none()
+            {
+                return Err(validation(
+                    path,
+                    format!("TableRow `{key}` must be a non-negative integer"),
+                ));
+            }
+        }
+        for key in ["widthBefore", "widthAfter"] {
+            if let Some(value) = node.props.get(key) {
+                require_number(value, path, key, false)?;
+            }
+        }
         if node.props.contains_key("inserted") && node.props.contains_key("deleted") {
             return Err(validation(
                 path,
@@ -4257,9 +4283,23 @@ mod tests {
     #[test]
     fn validate_should_accept_floating_table_and_row_revisions() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"position":{"leftFromText":7.1,"rightFromText":7.1,"verticalAnchor":"text","horizontalAnchor":"margin","xAlign":"right","y":25.5}},"children":[{"type":"TableRow","props":{"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"}},"children":[{"type":"TableCell","props":{},"children":[]}]},{"type":"TableRow","props":{"deleted":{"author":"Linus"}},"children":[{"type":"TableCell","props":{},"children":[]}]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"position":{"leftFromText":7.1,"rightFromText":7.1,"verticalAnchor":"text","horizontalAnchor":"margin","xAlign":"right","y":25.5}},"children":[{"type":"TableRow","props":{"gridBefore":1,"gridAfter":2,"widthBefore":60,"widthAfter":75,"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"}},"children":[{"type":"TableCell","props":{},"children":[]}]},{"type":"TableRow","props":{"deleted":{"author":"Linus"}},"children":[{"type":"TableCell","props":{},"children":[]}]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_table_row_grid_properties() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{},"children":[{"type":"TableRow","props":{"gridBefore":-1},"children":[]}]}]}]}}"#,
+        );
+
+        assert!(
+            ir.validate()
+                .expect_err("gridBefore must be a non-negative integer")
+                .to_string()
+                .contains("gridBefore"),
+        );
     }
 
     #[test]

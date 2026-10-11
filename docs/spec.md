@@ -127,9 +127,11 @@ Colors are uppercase or lowercase six-digit RGB strings without `#`.
 - `TableRow`: optional `inserted` or `deleted` revision metadata object with
   string `author?` and `date?`; the two revision states are mutually exclusive.
   External reverse restores `height`, `heightRule`, `cantSplit`, and row
-  revision metadata without the IR manifest. `gridBefore`, `gridAfter`,
-  `widthBefore`, and `widthAfter` have no v1 JSX representation; external
-  reverse reports them as unsupported instead of dropping them.
+  revision metadata without the IR manifest. `gridBefore` and `gridAfter` are
+  non-negative integer grid-unit counts. `widthBefore` and `widthAfter` are
+  non-negative point values, serialized as `dxa` twips. External reverse
+  restores these properties from `w:trPr`; non-`dxa` widths are rejected with
+  a conversion suggestion.
 - Paragraph indentation uses points in JSX. External DOCX values expressed
   with `w:leftChars`, `w:startChars`, `w:rightChars`, `w:endChars`,
   `w:firstLineChars`, or `w:hangingChars` cannot be converted losslessly to
