@@ -4,6 +4,7 @@ import {
   Document,
   Heading,
   Hyperlink,
+  Image,
   InlineBookmark,
   List,
   ListItem,
@@ -102,6 +103,9 @@ export default (
           <TableCell><Paragraph>Required</Paragraph></TableCell>
         </TableRow>
       </Table>
+      <Paragraph>
+        <Image src="pixel.ppm" width={24} height={24} floating layoutInCell />
+      </Paragraph>
     </Section>
   </Document>
 );

@@ -355,13 +355,19 @@ error instead of a silent drop.
   `margin`, `outsideMargin`, `page`, or `rightMargin`), `relativeFromV`
   (`bottomMargin`, `insideMargin`, `line`, `margin`, `outsideMargin`, `page`,
   `paragraph`, or `topMargin`), point-valued `distanceTop`, `distanceBottom`,
-  `distanceLeft`, and `distanceRight`, and integer `relativeHeight`.
+  `distanceLeft`, and `distanceRight`, integer `relativeHeight`, and
+  `layoutInCell?: boolean` to control whether a floating drawing moves with its
+  containing table cell. Omitting `layoutInCell` keeps the backend default;
+  external reverse emits the reader's effective boolean so recompilation keeps
+  the same layout behavior.
   Anchor-only properties require `floating={true}`. Image
   sources resolve from the entry module directory. External reverse
   extracts raster media from the package and points `src` at
   `media/<filename>` next to the emitted JSX, including pictures whose
   relationships live on a header or footer part. `docx-jsx reverse` writes
-  those sidecar files beside the JSX output.
+  those sidecar files beside the JSX output. `simplePosition` is not exposed:
+  docx-rs 0.4.22 writes its `simple_pos` value into `allowOverlap` and hardcodes
+  `simplePos="0"`, so it cannot produce the requested semantics faithfully.
 - `Table`: `width?`, `widthPercent?`, `align?`, `layout?: "auto" | "fixed"`,
   `columnWidths?: number[]`, `border?: {style?,size?,color?}`. Point and percent
   widths are mutually exclusive.

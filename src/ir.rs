@@ -957,6 +957,7 @@ fn image_props() -> &'static [&'static str] {
         "rotate",
         "floating",
         "allowOverlap",
+        "layoutInCell",
         "positionH",
         "positionV",
         "relativeFromH",
@@ -1278,7 +1279,7 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
             .filter(|angle| u16::try_from(*angle).is_ok())
             .ok_or_else(|| validation(path, "`rotate` must be an integer from 0 through 65535"))?;
     }
-    for key in ["floating", "allowOverlap"] {
+    for key in ["floating", "allowOverlap", "layoutInCell"] {
         if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(validation(path, format!("`{key}` must be a boolean")));
         }
@@ -1337,6 +1338,7 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
     }
     let anchor_props = [
         "allowOverlap",
+        "layoutInCell",
         "positionH",
         "positionV",
         "relativeFromH",
@@ -4178,7 +4180,7 @@ mod tests {
     #[test]
     fn validate_should_accept_advanced_image_properties() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Image","props":{"src":"figure.png","width":120,"height":80,"relationshipId":"rIdHero","rotate":45,"floating":true,"allowOverlap":true,"positionH":"right","positionV":18.5,"relativeFromH":"page","relativeFromV":"paragraph","distanceTop":2,"distanceBottom":3,"distanceLeft":4,"distanceRight":5,"relativeHeight":251658240},"children":[]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Image","props":{"src":"figure.png","width":120,"height":80,"relationshipId":"rIdHero","rotate":45,"floating":true,"allowOverlap":true,"layoutInCell":true,"positionH":"right","positionV":18.5,"relativeFromH":"page","relativeFromV":"paragraph","distanceTop":2,"distanceBottom":3,"distanceLeft":4,"distanceRight":5,"relativeHeight":251658240},"children":[]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
     }
@@ -4201,6 +4203,14 @@ mod tests {
             (
                 r#"{"src":"x.png","width":1,"height":1,"floating":true,"distanceTop":-1}"#,
                 "non-negative",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"layoutInCell":true}"#,
+                "require `floating={true}`",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"floating":true,"layoutInCell":"yes"}"#,
+                "layoutInCell` must be a boolean",
             ),
         ] {
             let ir = parse(&format!(

@@ -2958,7 +2958,7 @@ fn theme_color_from_element(
 }
 
 fn reverse_image_anchor_attrs(picture: &Pic) -> String {
-    let mut attrs = String::new();
+    let mut attrs = format!(" layoutInCell={{{}}}", picture.layout_in_cell);
     if picture.allow_overlap {
         attrs.push_str(" allowOverlap");
     }
@@ -5590,6 +5590,31 @@ mod tests {
             "expected extracted raster bytes, got {:?}",
             reversed.assets.keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_image_layout_in_cell() {
+        let mut picture = Pic::new_with_dimensions(test_png(2, 1, [0, 0, 0, 255]), 2, 1).floating();
+        picture.layout_in_cell = true;
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_image(picture))),
+        );
+
+        let jsx = reverse_document(&bytes).expect("external image DOCX should reverse");
+
+        assert!(jsx.contains("layoutInCell={true}"), "{jsx}");
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_disabled_image_layout_in_cell() {
+        let picture = Pic::new_with_dimensions(test_png(2, 1, [0, 0, 0, 255]), 2, 1).floating();
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_image(picture))),
+        );
+
+        let jsx = reverse_document(&bytes).expect("external image DOCX should reverse");
+
+        assert!(jsx.contains("layoutInCell={false}"), "{jsx}");
     }
 
     #[test]

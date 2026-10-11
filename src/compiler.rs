@@ -3528,6 +3528,9 @@ fn compile_image_layout(mut picture: Pic, node: &Node, path: &str) -> Result<Pic
     if bool_prop(&node.props, "floating", path)? == Some(true) {
         picture = picture.floating();
     }
+    if let Some(layout_in_cell) = bool_prop(&node.props, "layoutInCell", path)? {
+        picture.layout_in_cell = layout_in_cell;
+    }
     if bool_prop(&node.props, "allowOverlap", path)? == Some(true) {
         // docx-rs 0.4.22 reads `simple_pos` into the `allowOverlap` anchor
         // attribute. Set both fields so the attribute and wrapping agree.
@@ -5799,6 +5802,7 @@ mod tests {
                                 "src": "pixel.png", "width": 12, "height": 12,
                                 "relationshipId": "rIdHero", "rotate": 45,
                                 "floating": true, "allowOverlap": true,
+                                "layoutInCell": true,
                                 "positionH": "right", "positionV": 18.5,
                                 "relativeFromH": "page", "relativeFromV": "paragraph",
                                 "distanceTop": 2, "distanceBottom": 3,
@@ -5826,6 +5830,7 @@ mod tests {
         assert!(
             document.contains(r#"<wp:anchor distT="25400" distB="38100" distL="50800" distR="63500" simplePos="0" allowOverlap="1""#)
                 && document.contains(r#"relativeHeight="251658240""#)
+                && document.contains(r#"layoutInCell="1""#)
                 && document.contains(r#"<wp:positionH relativeFrom="page"><wp:align>right</wp:align>"#)
                 && document.contains(r#"<wp:positionV relativeFrom="paragraph"><wp:posOffset>234950</wp:posOffset>"#)
                 && document.contains(r#"<a:xfrm rot="2700000">"#),
