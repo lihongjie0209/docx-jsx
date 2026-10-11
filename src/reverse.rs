@@ -57,6 +57,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         });
     }
     let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
+    validate_character_indent_xml(bytes)?;
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
@@ -2413,6 +2414,67 @@ fn collect_table_row_xml_metadata(
     Ok(result)
 }
 
+fn validate_character_indent_xml(bytes: &[u8]) -> Result<()> {
+    const UNSUPPORTED: &[&[u8]] = &[
+        b"leftChars",
+        b"startChars",
+        b"rightChars",
+        b"endChars",
+        b"hangingChars",
+        b"firstLineChars",
+    ];
+    for part in zip_entry_names(bytes)?.into_iter().filter(|name| {
+        name.starts_with("word/")
+            && Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+            && !name.contains("/_rels/")
+    }) {
+        let Ok(xml) = read_zip_text(bytes, &part) else {
+            continue;
+        };
+        let mut reader = Reader::from_str(&xml);
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"ind" =>
+                {
+                    for attribute in element.attributes() {
+                        let attribute = attribute.map_err(|error| {
+                            Error::Reverse(format!(
+                                "invalid indentation attribute in {part}: {error}"
+                            ))
+                        })?;
+                        let local_name = attribute.key.local_name();
+                        if UNSUPPORTED.contains(&local_name.as_ref()) {
+                            let raw_value = attribute.value.as_ref();
+                            if raw_value == b"0" || raw_value == b"+0" {
+                                continue;
+                            }
+                            let name = String::from_utf8_lossy(local_name.as_ref());
+                            let value = String::from_utf8_lossy(raw_value);
+                            return Err(Error::Reverse(format!(
+                                "{part} uses `w:{name}={value}` character-unit indentation, which JSX cannot represent in points; replace it with a point-based indentation (`left`/`start`/`right`/`end`/`firstLine`/`hanging`) or keep the original DOCX"
+                            )));
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "cannot parse {part} indentation at byte {}: {error}",
+                        reader.error_position()
+                    )));
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+    }
+    Ok(())
+}
+
 fn collect_section_columns(bytes: &[u8]) -> Result<Vec<usize>> {
     let xml = read_zip_text(bytes, "word/document.xml")?;
     let mut reader = Reader::from_str(&xml);
@@ -4551,6 +4613,34 @@ mod tests {
     }
 
     #[test]
+    fn reverse_external_docx_should_reject_character_unit_indentation() {
+        let packed =
+            external_docx(Paragraph::new().add_run(Run::new().add_text("character indent")));
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document.replace(
+            "<w:pPr><w:rPr /></w:pPr>",
+            r#"<w:pPr><w:ind w:firstLineChars="200" /></w:pPr>"#,
+        );
+        assert!(document.contains("w:firstLineChars"), "{document}");
+        let modified =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let error = reverse_document(&modified)
+            .expect_err("character-unit indentation is not representable by JSX points");
+        assert!(
+            error.to_string().contains("firstLineChars")
+                && error.to_string().contains("points")
+                && error.to_string().contains("replace it"),
+            "diagnostic should identify the unsupported unit and a repair: {error}"
+        );
+    }
+
+    #[test]
     fn reverse_external_docx_should_preserve_paragraph_and_run_style_references() {
         let bytes = external_docx(
             Paragraph::new()
@@ -4995,7 +5085,6 @@ mod tests {
                     ),
                 ),
         );
-
         let jsx = reverse_document(&bytes).expect("external DOCX should reverse");
         let header = jsx
             .split_once("<Header type=\"default\">")
@@ -5201,8 +5290,34 @@ mod tests {
                         .add_paragraph(Paragraph::new().add_run(Run::new().add_text("inside"))),
                 ),
         );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part")
+            .read_to_string(&mut styles)
+            .expect("styles XML");
+        // Isolate TOC recognition from the backend's unsupported character-unit
+        // indentation in its built-in TOC styles.
+        let mut styles_without_character_indent = String::new();
+        let mut remaining_styles = styles.as_str();
+        while let Some((before, after)) = remaining_styles.split_once(r#" w:leftChars=""#) {
+            styles_without_character_indent.push_str(before);
+            let Some((_, remainder)) = after.split_once('"') else {
+                break;
+            };
+            remaining_styles = remainder;
+        }
+        styles_without_character_indent.push_str(remaining_styles);
+        let modified = rewrite_package_parts(
+            &bytes,
+            &[(
+                "word/styles.xml",
+                styles_without_character_indent.as_bytes(),
+            )],
+        );
 
-        let jsx = reverse_document(&bytes).expect("external DOCX should reverse");
+        let jsx = reverse_document(&modified).expect("external DOCX should reverse");
 
         assert!(
             jsx.contains("<TableOfContents")

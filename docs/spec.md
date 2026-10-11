@@ -130,6 +130,13 @@ Colors are uppercase or lowercase six-digit RGB strings without `#`.
   revision metadata without the IR manifest. `gridBefore`, `gridAfter`,
   `widthBefore`, and `widthAfter` have no v1 JSX representation; external
   reverse reports them as unsupported instead of dropping them.
+- Paragraph indentation uses points in JSX. External DOCX values expressed
+  with `w:leftChars`, `w:startChars`, `w:rightChars`, `w:endChars`,
+  `w:firstLineChars`, or `w:hangingChars` cannot be converted losslessly to
+  points when nonzero, and reverse reports the specific unsupported attribute
+  with a repair suggestion instead of silently omitting it. Zero-valued
+  character indentation is semantically equivalent to no indentation and may
+  be omitted.
 - `TableCell`: optional `verticalMerge: "restart" | "continue"`,
   `textDirection: "lr" | "lrV" | "rl" | "rlV" | "tb" | "tbV" | "tbRlV" |
   "tbRl" | "btLr" | "lrTbV"`, and a `margins` object with the same four
