@@ -295,6 +295,7 @@ fn package_document(
     let bytes = patch_section_line_numbering(bytes, &section_line_numbering)?;
     let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
     let bytes = patch_core_properties(bytes, &ir.document.props)?;
+    let bytes = patch_document_protection(bytes, &ir.document.props)?;
     let row_grid = collect_row_grid_properties(&ir.document);
     let mut bytes = bytes;
     for (part, rows) in row_grid {
@@ -323,6 +324,70 @@ fn package_document(
     let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_simple_position_images(bytes)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn patch_document_protection(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
+    let Some(protection) = props.get("documentProtection").and_then(Value::as_object) else {
+        return Ok(bytes);
+    };
+    let mut attributes = String::new();
+    for (property, attribute) in [
+        ("edit", "edit"),
+        ("formatting", "formatting"),
+        ("enforcement", "enforcement"),
+        ("cryptProviderType", "cryptProviderType"),
+        ("cryptAlgorithmClass", "cryptAlgorithmClass"),
+        ("cryptAlgorithmType", "cryptAlgorithmType"),
+        ("cryptAlgorithmSid", "cryptAlgorithmSid"),
+        ("cryptSpinCount", "cryptSpinCount"),
+        ("cryptProvider", "cryptProvider"),
+        ("algIdExt", "algIdExt"),
+        ("algIdExtSource", "algIdExtSource"),
+        ("cryptProviderTypeExt", "cryptProviderTypeExt"),
+        ("cryptProviderTypeExtSource", "cryptProviderTypeExtSource"),
+        ("hash", "hash"),
+        ("salt", "salt"),
+    ] {
+        let Some(value) = protection.get(property) else {
+            continue;
+        };
+        let value = match value {
+            Value::Bool(value) => if *value { "1" } else { "0" }.to_owned(),
+            Value::Number(value) => value.to_string(),
+            Value::String(value) => value.clone(),
+            Value::Null | Value::Array(_) | Value::Object(_) => {
+                return Err(validation(
+                    "Document/documentProtection",
+                    format!("`{property}` has an unsupported value type"),
+                ));
+            }
+        };
+        let _ = write!(attributes, r#" w:{attribute}="{}""#, xml_escape(&value));
+    }
+    let element = format!("<w:documentProtection{attributes} />");
+    let mut settings = read_zip_text_entry(&bytes, "word/settings.xml")?;
+    if settings.contains("<w:documentProtection") {
+        return Err(Error::Compile(
+            "docx-rs unexpectedly emitted `w:documentProtection`; remove the duplicate settings element before compiling".to_owned(),
+        ));
+    }
+    let Some(root_start) = settings.find("<w:settings") else {
+        return Err(Error::Compile(
+            "word/settings.xml is missing its `w:settings` root; cannot insert document protection"
+                .to_owned(),
+        ));
+    };
+    let root_end = settings[root_start..]
+        .find('>')
+        .map(|position| root_start + position + 1)
+        .ok_or_else(|| {
+            Error::Compile("word/settings.xml has an unclosed `w:settings` root".to_owned())
+        })?;
+    let insertion = settings.find("<w:defaultTabStop").unwrap_or(root_end);
+    settings.insert_str(insertion, &element);
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    replace_zip_text_entry(archive, "word/settings.xml", settings.as_bytes())
 }
 
 fn patch_core_properties(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
@@ -6801,7 +6866,7 @@ mod tests {
     #[test]
     fn compile_should_render_document_settings_and_metadata() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada & Co","lastModifiedBy":"Lin","description":"Weekly <report>","language":"zh-CN","revision":7,"subject":"Economy","title":"Status","customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada & Co","lastModifiedBy":"Lin","description":"Weekly <report>","language":"zh-CN","revision":7,"subject":"Economy","title":"Status","documentProtection":{"edit":"readOnly","formatting":false,"enforcement":true,"cryptProviderType":"rsaAES","cryptAlgorithmClass":"hash","cryptAlgorithmType":"typeAny","cryptAlgorithmSid":14,"cryptSpinCount":100000,"cryptProvider":"RSA AES Provider","algIdExt":"A1B2C3D4","algIdExtSource":"urn:example:alg","cryptProviderTypeExt":"01020304","cryptProviderTypeExtSource":"urn:example:provider","hash":"YWJjZA==","salt":"AQIDBA=="},"customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         )
         .expect("fixture should parse");
         ir.validate().expect("fixture should validate");
@@ -6840,6 +6905,10 @@ mod tests {
         assert!(settings.contains(r#"w:defaultTabStop w:val="720""#));
         assert!(settings.contains(r#"w15:docId w15:val="{01234567-89AB-CDEF-0123-456789ABCDEF}""#));
         assert!(settings.contains(r#"w:name="Customer" w:val="Ada""#));
+        assert!(settings.contains(
+            r#"<w:documentProtection w:edit="readOnly" w:formatting="0" w:enforcement="1""#
+        ));
+        assert!(settings.contains(r#"w:hash="YWJjZA==" w:salt="AQIDBA==""#));
         assert!(settings.contains("<w:evenAndOddHeaders />"));
         assert!(settings.contains("<w:adjustLineHeightInTable />"));
         assert!(settings.contains(r#"w:characterSpacingControl w:val="compressPunctuation""#));

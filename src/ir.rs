@@ -1034,6 +1034,7 @@ fn document_props() -> &'static [&'static str] {
         "revision",
         "subject",
         "title",
+        "documentProtection",
         "customProperties",
         "documentId",
         "defaultTabStop",
@@ -1784,6 +1785,9 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
         require_number(value, path, "defaultTabStop", true)?;
     }
     validate_document_core_metadata(&node.props, path)?;
+    if let Some(value) = node.props.get("documentProtection") {
+        validate_document_protection(value, path)?;
+    }
     for key in ["customProperties", "documentVariables"] {
         if let Some(value) = node.props.get(key) {
             validate_string_map(value, path, key)?;
@@ -1841,6 +1845,163 @@ fn validate_document_core_metadata(props: &Map<String, Value>, path: &str) -> Re
         }
     }
     Ok(())
+}
+
+pub(crate) fn validate_document_protection(value: &Value, path: &str) -> Result<()> {
+    let protection_path = format!("{path}.documentProtection");
+    let protection = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`documentProtection` must be an object"))?;
+    validate_object_keys(
+        protection,
+        &protection_path,
+        &[
+            "edit",
+            "formatting",
+            "enforcement",
+            "cryptProviderType",
+            "cryptAlgorithmClass",
+            "cryptAlgorithmType",
+            "cryptAlgorithmSid",
+            "cryptSpinCount",
+            "cryptProvider",
+            "algIdExt",
+            "algIdExtSource",
+            "cryptProviderTypeExt",
+            "cryptProviderTypeExtSource",
+            "hash",
+            "salt",
+        ],
+    )?;
+    if protection.is_empty() {
+        return Err(validation(
+            &protection_path,
+            "must configure at least one protection property",
+        ));
+    }
+    validate_protection_enums(protection, &protection_path)?;
+    validate_protection_numeric_and_boolean(protection, &protection_path)?;
+    validate_protection_strings(protection, &protection_path)?;
+    validate_protection_hash_and_salt(protection, &protection_path)
+}
+
+fn validate_protection_enums(protection: &Map<String, Value>, path: &str) -> Result<()> {
+    for (key, values) in [
+        (
+            "edit",
+            &["none", "readOnly", "comments", "trackedChanges", "forms"][..],
+        ),
+        ("cryptProviderType", &["rsaFull", "rsaAES"][..]),
+        ("cryptAlgorithmClass", &["hash", "encryption", "custom"][..]),
+        ("cryptAlgorithmType", &["typeAny", "custom"][..]),
+    ] {
+        if let Some(value) = protection.get(key) {
+            let actual = value
+                .as_str()
+                .ok_or_else(|| validation(path, format!("`{key}` must be a string")))?;
+            if !values.contains(&actual) {
+                return Err(validation(
+                    path,
+                    format!(
+                        "invalid `{key}` value `{actual}`; expected {}",
+                        values.join(", ")
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_protection_numeric_and_boolean(
+    protection: &Map<String, Value>,
+    path: &str,
+) -> Result<()> {
+    for key in ["formatting", "enforcement"] {
+        if protection.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(path, format!("`{key}` must be a boolean")));
+        }
+    }
+    for key in ["cryptAlgorithmSid", "cryptSpinCount"] {
+        if protection.get(key).is_some_and(|value| {
+            value
+                .as_u64()
+                .is_none_or(|number| number > u64::from(u32::MAX))
+        }) {
+            return Err(validation(
+                path,
+                format!("`{key}` must be a non-negative 32-bit integer"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_protection_strings(protection: &Map<String, Value>, path: &str) -> Result<()> {
+    for key in [
+        "cryptProvider",
+        "algIdExtSource",
+        "cryptProviderTypeExtSource",
+        "hash",
+        "salt",
+    ] {
+        if protection
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` must be a non-empty string"),
+            ));
+        }
+    }
+    for key in ["algIdExt", "cryptProviderTypeExt"] {
+        if let Some(encoded) = protection.get(key).and_then(Value::as_str)
+            && !is_hex_binary_value(encoded)
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` must be exactly 4 bytes (8 hexadecimal characters)"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_protection_hash_and_salt(protection: &Map<String, Value>, path: &str) -> Result<()> {
+    if protection.contains_key("hash") != protection.contains_key("salt") {
+        return Err(validation(
+            path,
+            "`hash` and `salt` must be supplied together; provide both precomputed values or omit both",
+        ));
+    }
+    for key in ["hash", "salt"] {
+        if let Some(encoded) = protection.get(key).and_then(Value::as_str)
+            && !is_base64_value(encoded)
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` must be a non-empty base64 value"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_base64_value(value: &str) -> bool {
+    if value.is_empty() || !value.len().is_multiple_of(4) {
+        return false;
+    }
+    let padding = value.bytes().rev().take_while(|byte| *byte == b'=').count();
+    padding <= 2
+        && value[..value.len() - padding]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/'))
+        && !value[..value.len() - padding].contains('=')
+}
+
+fn is_hex_binary_value(value: &str) -> bool {
+    value.len() == 8 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn validate_default_fonts(node: &Node, path: &str) -> Result<()> {
@@ -5613,7 +5774,7 @@ mod tests {
     #[test]
     fn validate_should_accept_document_settings_and_metadata() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada","lastModifiedBy":"Lin","description":"Report","language":"zh-CN","revision":2,"subject":"Weekly","title":"Status","customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada","lastModifiedBy":"Lin","description":"Report","language":"zh-CN","revision":2,"subject":"Weekly","title":"Status","documentProtection":{"edit":"readOnly","formatting":false,"enforcement":true,"cryptProviderType":"rsaAES","cryptAlgorithmClass":"hash","cryptAlgorithmType":"typeAny","cryptAlgorithmSid":14,"cryptSpinCount":100000,"cryptProvider":"RSA AES Provider","algIdExt":"A1B2C3D4","algIdExtSource":"urn:example:alg","cryptProviderTypeExt":"01020304","cryptProviderTypeExtSource":"urn:example:provider","hash":"YWJjZA==","salt":"AQIDBA=="},"customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         );
         ir.validate()
             .expect("document settings and metadata should validate");
@@ -5809,6 +5970,28 @@ mod tests {
             (r#""lastModifiedBy":"""#, "lastModifiedBy"),
             (r#""revision":0"#, "positive integer"),
             (r#""revision":1.5"#, "positive integer"),
+            (r#""documentProtection":{}"#, "at least one protection"),
+            (
+                r#""documentProtection":{"edit":"unlock"}"#,
+                "invalid `edit` value",
+            ),
+            (
+                r#""documentProtection":{"enforcement":"yes"}"#,
+                "must be a boolean",
+            ),
+            (
+                r#""documentProtection":{"hash":"YWJjZA=="}"#,
+                "must be supplied together",
+            ),
+            (
+                r#""documentProtection":{"hash":"not-base64!","salt":"AQIDBA=="}"#,
+                "base64",
+            ),
+            (
+                r#""documentProtection":{"cryptSpinCount":4294967296}"#,
+                "32-bit integer",
+            ),
+            (r#""documentProtection":{"algIdExt":"A1B2"}"#, "4 bytes"),
             (r#""customProperties":{}"#, "must not be empty"),
             (r#""customProperties":{"Project":1}"#, "string values"),
             (

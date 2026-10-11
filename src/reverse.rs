@@ -4704,7 +4704,7 @@ fn reverse_document_attributes(
     attributes.push_str(&reverse_default_font_attrs(docx)?);
     attributes.push_str(&reverse_doc_default_metrics(docx)?);
     attributes.push_str(&reverse_core_and_custom_properties(docx, bytes)?);
-    attributes.push_str(&reverse_settings_attributes(&docx.settings)?);
+    attributes.push_str(&reverse_settings_attributes(&docx.settings, bytes)?);
     if let Some(items) = collect_custom_xml_items(bytes)? {
         attributes.push_str(&jsx_prop("customXmlItems", &items)?);
     }
@@ -4836,7 +4836,7 @@ fn reverse_core_and_custom_properties(docx: &docx_rs::Docx, bytes: &[u8]) -> Res
     Ok(attributes)
 }
 
-fn reverse_settings_attributes(settings: &docx_rs::Settings) -> Result<String> {
+fn reverse_settings_attributes(settings: &docx_rs::Settings, bytes: &[u8]) -> Result<String> {
     let source = json(settings)?;
     let mut attributes = String::new();
     if let Some(id) = source
@@ -4854,6 +4854,9 @@ fn reverse_settings_attributes(settings: &docx_rs::Settings) -> Result<String> {
         let tab_stop = i64::try_from(tab_stop)
             .map_err(|_| Error::Reverse("default tab stop exceeds supported range".to_owned()))?;
         attributes.push_str(&jsx_prop("defaultTabStop", &points_value(tab_stop)?)?);
+    }
+    if let Some(protection) = collect_document_protection(bytes)? {
+        attributes.push_str(&jsx_prop("documentProtection", &protection)?);
     }
     if let Some(variables) = source.get("docVars").and_then(Value::as_array) {
         let mut output = Map::new();
@@ -4901,6 +4904,121 @@ fn reverse_settings_attributes(settings: &docx_rs::Settings) -> Result<String> {
         ));
     }
     Ok(attributes)
+}
+
+fn collect_document_protection(bytes: &[u8]) -> Result<Option<Value>> {
+    let Ok(xml) = read_zip_text(bytes, "word/settings.xml") else {
+        return Ok(None);
+    };
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut protection = None;
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"documentProtection" => {
+                if protection.is_some() {
+                    return Err(Error::Reverse(
+                        "word/settings.xml contains multiple `w:documentProtection` elements; keep exactly one or remove the duplicates".to_owned(),
+                    ));
+                }
+                protection = Some(parse_document_protection_attributes(&reader, &element)?);
+            }
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"documentProtection" => {
+                return Err(Error::Reverse(
+                    "`w:documentProtection` must be an empty leaf element; remove its child content".to_owned(),
+                ));
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/settings.xml document protection: {error}"
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    protection
+        .map(|properties| {
+            if properties.is_empty() {
+                return Err(Error::Reverse(
+                    "`w:documentProtection` has no attributes; add supported protection settings or remove the empty element".to_owned(),
+                ));
+            }
+            let value = Value::Object(properties);
+            crate::ir::validate_document_protection(&value, "Document").map_err(|error| {
+                Error::Reverse(format!(
+                    "`w:documentProtection` cannot be represented by the DSL: {error}; repair the attributes to match `docx-jsx spec` or extend the DSL"
+                ))
+            })?;
+            Ok(value)
+        })
+        .transpose()
+}
+
+fn parse_document_protection_attributes(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+) -> Result<Map<String, Value>> {
+    const SUPPORTED: &[&str] = &[
+        "edit",
+        "formatting",
+        "enforcement",
+        "cryptProviderType",
+        "cryptAlgorithmClass",
+        "cryptAlgorithmType",
+        "cryptAlgorithmSid",
+        "cryptSpinCount",
+        "cryptProvider",
+        "algIdExt",
+        "algIdExtSource",
+        "cryptProviderTypeExt",
+        "cryptProviderTypeExtSource",
+        "hash",
+        "salt",
+    ];
+    let mut properties = Map::new();
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|error| {
+            Error::Reverse(format!("invalid `w:documentProtection` attribute: {error}"))
+        })?;
+        let name = String::from_utf8_lossy(attribute.key.local_name().as_ref()).into_owned();
+        if !SUPPORTED.contains(&name.as_str()) {
+            return Err(Error::Reverse(format!(
+                "`w:documentProtection` attribute `{name}` is not represented by documentProtection DSL; remove it or extend the DSL before reversing"
+            )));
+        }
+        let value = attribute
+            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+            .map_err(|error| {
+                Error::Reverse(format!(
+                    "cannot decode `w:documentProtection/@{name}`: {error}"
+                ))
+            })?
+            .into_owned();
+        let value = match name.as_str() {
+            "formatting" | "enforcement" => Value::Bool(match value.as_str() {
+                "1" | "true" | "on" => true,
+                "0" | "false" | "off" => false,
+                _ => {
+                    return Err(Error::Reverse(format!(
+                        "`w:documentProtection/@{name}` has invalid on/off value `{value}`; use true, false, 1, 0, on, or off"
+                    )));
+                }
+            }),
+            "cryptAlgorithmSid" | "cryptSpinCount" => {
+                let number = value.parse::<u64>().map_err(|_| {
+                    Error::Reverse(format!(
+                        "`w:documentProtection/@{name}` must be a non-negative integer; repair the value or remove the attribute"
+                    ))
+                })?;
+                Value::Number(number.into())
+            }
+            _ => Value::String(value),
+        };
+        properties.insert(name, value);
+    }
+    Ok(properties)
 }
 
 fn reverse_styles_attribute(
@@ -8099,6 +8217,87 @@ mod tests {
         ] {
             assert!(jsx.contains(expected), "missing {expected} in {jsx}");
         }
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_document_protection_without_manifest() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"documentProtection":{"edit":"readOnly","formatting":false,"enforcement":true,"cryptProviderType":"rsaAES","cryptAlgorithmClass":"hash","cryptAlgorithmType":"typeAny","cryptAlgorithmSid":14,"cryptSpinCount":100000,"cryptProvider":"RSA AES Provider","algIdExt":"A1B2C3D4","algIdExtSource":"urn:example:alg","cryptProviderTypeExt":"01020304","cryptProviderTypeExtSource":"urn:example:provider","hash":"YWJjZA==","salt":"AQIDBA=="}},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["body"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("document protection should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external protection should reverse");
+        for expected in [
+            r#""edit":"readOnly""#,
+            r#""formatting":false"#,
+            r#""enforcement":true"#,
+            r#""cryptAlgorithmSid":14"#,
+            r#""cryptSpinCount":100000"#,
+            r#""hash":"YWJjZA==""#,
+            r#""salt":"AQIDBA==""#,
+        ] {
+            assert!(jsx.contains(expected), "missing {expected} in {jsx}");
+        }
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unsupported_document_protection_attribute() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"documentProtection":{"edit":"readOnly"}},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["body"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("document protection should compile");
+        let external = strip_ir_manifest(&compiled);
+        let mut archive = zip::ZipArchive::new(Cursor::new(external.clone())).expect("DOCX ZIP");
+        let mut settings = String::new();
+        archive
+            .by_name("word/settings.xml")
+            .expect("settings")
+            .read_to_string(&mut settings)
+            .expect("settings should be UTF-8");
+        settings = settings.replace(
+            "w:edit=\"readOnly\"",
+            "w:edit=\"readOnly\" w:algorithmName=\"SHA-512\"",
+        );
+        let external =
+            rewrite_package_parts(&external, &[("word/settings.xml", settings.as_bytes())]);
+        let error = reverse_document(&external).expect_err("unsupported metadata must be rejected");
+        assert!(
+            error.to_string().contains("attribute `algorithmName`")
+                && error.to_string().contains("remove it or extend the DSL"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_incomplete_protection_hash_pair() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"documentProtection":{"edit":"readOnly","hash":"YWJjZA==","salt":"AQIDBA=="}},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["body"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("document protection should compile");
+        let external = strip_ir_manifest(&compiled);
+        let mut archive = zip::ZipArchive::new(Cursor::new(external.clone())).expect("DOCX ZIP");
+        let mut settings = String::new();
+        archive
+            .by_name("word/settings.xml")
+            .expect("settings")
+            .read_to_string(&mut settings)
+            .expect("settings should be UTF-8");
+        settings = settings.replace(" w:salt=\"AQIDBA==\"", "");
+        let external =
+            rewrite_package_parts(&external, &[("word/settings.xml", settings.as_bytes())]);
+        let error = reverse_document(&external).expect_err("partial hash pair must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("`hash` and `salt` must be supplied together"),
+            "{error}"
+        );
     }
 
     #[test]

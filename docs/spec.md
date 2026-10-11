@@ -204,6 +204,18 @@ error instead of a silent drop.
   `language?: string`, `revision?: integer`, `subject?: string`,
   `title?: string`,
   `documentId?: string`, positive `defaultTabStop?: number` (points),
+  `documentProtection?: {edit?,formatting?,enforcement?,cryptProviderType?,cryptAlgorithmClass?,cryptAlgorithmType?,cryptAlgorithmSid?,cryptSpinCount?,cryptProvider?,algIdExt?,algIdExtSource?,cryptProviderTypeExt?,cryptProviderTypeExtSource?,hash?,salt?}`.
+  `edit` is `none | readOnly | comments | trackedChanges | forms`; the two
+  protection flags are booleans; cryptographic enums follow the OOXML values
+  (`rsaFull | rsaAES`, `hash | encryption | custom`, `typeAny | custom`).
+  Numeric cryptographic fields are non-negative 32-bit integers; string fields are
+  non-empty; `algIdExt` and `cryptProviderTypeExt` are even-length hexadecimal
+  data. `hash` and `salt` must be supplied together and are precomputed
+  OOXML base64 values—plaintext passwords are not accepted or hashed by this
+  tool. Restrictions are enforced only when `enforcement` is true.
+  This is an editing restriction, not encryption or a security boundary.
+  Reverse preserves the supported `w:documentProtection` attributes without
+  the IR manifest and rejects unsupported attributes rather than dropping them.
   `documentVariables?: Record<string,string>`, `evenAndOddHeaders?: boolean`,
   `adjustLineHeightInTable?: boolean`, and
   `characterSpacingControl?: "doNotCompress" | "compressPunctuation" | "compressPunctuationAndJapaneseKana"`.

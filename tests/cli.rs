@@ -44,6 +44,7 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("`IndexEntry`"))
         .stdout(predicate::str::contains("`creator?: string`"))
         .stdout(predicate::str::contains("`revision?: integer`"))
+        .stdout(predicate::str::contains("`documentProtection?:"))
         .stdout(predicate::str::contains("type?: \"nextPage\""))
         .stdout(predicate::str::contains("lineNumbering?:"))
         .stdout(predicate::str::contains("docx-jsx pdf"))
@@ -432,7 +433,7 @@ fn cli_should_reverse_and_recompile_core_properties_without_manifest() {
     fs::write(
         &input,
         r#"import { Document, Section, Paragraph } from "docx-jsx";
-export default <Document creator="Ada & Co" lastModifiedBy="Lin" description="Weekly <report>" language="zh-CN" revision={7} subject="Economy" title="Status"><Section><Paragraph>body</Paragraph></Section></Document>;"#,
+export default <Document creator="Ada & Co" lastModifiedBy="Lin" description="Weekly <report>" language="zh-CN" revision={7} subject="Economy" title="Status" documentProtection={{ edit: "readOnly", formatting: false, enforcement: true, hash: "YWJjZA==", salt: "AQIDBA==" }}><Section><Paragraph>body</Paragraph></Section></Document>;"#,
     )
     .expect("source should write");
     Command::cargo_bin("docx-jsx")
@@ -477,6 +478,17 @@ export default <Document creator="Ada & Co" lastModifiedBy="Lin" description="We
         .read_to_string(&mut core)
         .expect("core properties should be UTF-8");
     assert!(core.contains("Ada &amp; Co") && core.contains("Weekly &lt;report&gt;"));
+    let mut settings = String::new();
+    archive
+        .by_name("word/settings.xml")
+        .expect("settings part should exist")
+        .read_to_string(&mut settings)
+        .expect("settings should be UTF-8");
+    assert!(
+        settings.contains(r#"w:edit="readOnly""#)
+            && settings.contains(r#"w:hash="YWJjZA==" w:salt="AQIDBA==""#),
+        "{settings}"
+    );
 }
 
 #[test]
