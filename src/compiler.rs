@@ -347,6 +347,10 @@ fn patch_document_protection(bytes: Vec<u8>, props: &Map<String, Value>) -> Resu
         ("cryptProviderTypeExtSource", "cryptProviderTypeExtSource"),
         ("hash", "hash"),
         ("salt", "salt"),
+        ("algorithmName", "algorithmName"),
+        ("hashValue", "hashValue"),
+        ("saltValue", "saltValue"),
+        ("spinCount", "spinCount"),
     ] {
         let Some(value) = protection.get(property) else {
             continue;
@@ -6866,7 +6870,7 @@ mod tests {
     #[test]
     fn compile_should_render_document_settings_and_metadata() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada & Co","lastModifiedBy":"Lin","description":"Weekly <report>","language":"zh-CN","revision":7,"subject":"Economy","title":"Status","documentProtection":{"edit":"readOnly","formatting":false,"enforcement":true,"cryptProviderType":"rsaAES","cryptAlgorithmClass":"hash","cryptAlgorithmType":"typeAny","cryptAlgorithmSid":14,"cryptSpinCount":100000,"cryptProvider":"RSA AES Provider","algIdExt":"A1B2C3D4","algIdExtSource":"urn:example:alg","cryptProviderTypeExt":"01020304","cryptProviderTypeExtSource":"urn:example:provider","hash":"YWJjZA==","salt":"AQIDBA=="},"customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada & Co","lastModifiedBy":"Lin","description":"Weekly <report>","language":"zh-CN","revision":7,"subject":"Economy","title":"Status","documentProtection":{"edit":"readOnly","formatting":false,"enforcement":true,"cryptProviderType":"rsaAES","cryptAlgorithmClass":"hash","cryptAlgorithmType":"typeAny","cryptAlgorithmSid":14,"cryptSpinCount":100000,"cryptProvider":"RSA AES Provider","algIdExt":"A1B2C3D4","algIdExtSource":"urn:example:alg","cryptProviderTypeExt":"01020304","cryptProviderTypeExtSource":"urn:example:provider","hash":"YWJjZA==","salt":"AQIDBA==","algorithmName":"SHA-512","hashValue":"YWJjZA==","saltValue":"AQIDBA==","spinCount":100000},"customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         )
         .expect("fixture should parse");
         ir.validate().expect("fixture should validate");
@@ -6909,6 +6913,11 @@ mod tests {
             r#"<w:documentProtection w:edit="readOnly" w:formatting="0" w:enforcement="1""#
         ));
         assert!(settings.contains(r#"w:hash="YWJjZA==" w:salt="AQIDBA==""#));
+        assert!(settings.contains(r#"w:algorithmName="SHA-512""#));
+        assert!(
+            settings
+                .contains(r#"w:hashValue="YWJjZA==" w:saltValue="AQIDBA==" w:spinCount="100000""#)
+        );
         assert!(settings.contains("<w:evenAndOddHeaders />"));
         assert!(settings.contains("<w:adjustLineHeightInTable />"));
         assert!(settings.contains(r#"w:characterSpacingControl w:val="compressPunctuation""#));

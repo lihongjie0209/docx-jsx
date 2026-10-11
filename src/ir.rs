@@ -1871,6 +1871,10 @@ pub(crate) fn validate_document_protection(value: &Value, path: &str) -> Result<
             "cryptProviderTypeExtSource",
             "hash",
             "salt",
+            "algorithmName",
+            "hashValue",
+            "saltValue",
+            "spinCount",
         ],
     )?;
     if protection.is_empty() {
@@ -1922,7 +1926,7 @@ fn validate_protection_numeric_and_boolean(
             return Err(validation(path, format!("`{key}` must be a boolean")));
         }
     }
-    for key in ["cryptAlgorithmSid", "cryptSpinCount"] {
+    for key in ["cryptAlgorithmSid", "cryptSpinCount", "spinCount"] {
         if protection.get(key).is_some_and(|value| {
             value
                 .as_u64()
@@ -1943,6 +1947,9 @@ fn validate_protection_strings(protection: &Map<String, Value>, path: &str) -> R
         "algIdExtSource",
         "cryptProviderTypeExtSource",
         "hash",
+        "algorithmName",
+        "hashValue",
+        "saltValue",
         "salt",
     ] {
         if protection
@@ -1975,7 +1982,13 @@ fn validate_protection_hash_and_salt(protection: &Map<String, Value>, path: &str
             "`hash` and `salt` must be supplied together; provide both precomputed values or omit both",
         ));
     }
-    for key in ["hash", "salt"] {
+    if protection.contains_key("hashValue") != protection.contains_key("saltValue") {
+        return Err(validation(
+            path,
+            "`hashValue` and `saltValue` must be supplied together; provide both precomputed values or omit both",
+        ));
+    }
+    for key in ["hash", "salt", "hashValue", "saltValue"] {
         if let Some(encoded) = protection.get(key).and_then(Value::as_str)
             && !is_base64_value(encoded)
         {
@@ -5984,11 +5997,19 @@ mod tests {
                 "must be supplied together",
             ),
             (
+                r#""documentProtection":{"hashValue":"YWJjZA=="}"#,
+                "`hashValue` and `saltValue` must be supplied together",
+            ),
+            (
                 r#""documentProtection":{"hash":"not-base64!","salt":"AQIDBA=="}"#,
                 "base64",
             ),
             (
                 r#""documentProtection":{"cryptSpinCount":4294967296}"#,
+                "32-bit integer",
+            ),
+            (
+                r#""documentProtection":{"spinCount":4294967296}"#,
                 "32-bit integer",
             ),
             (r#""documentProtection":{"algIdExt":"A1B2"}"#, "4 bytes"),
@@ -6013,6 +6034,14 @@ mod tests {
                 .expect_err("fixture should be rejected");
             assert!(error.to_string().contains(expected), "{error}");
         }
+    }
+
+    #[test]
+    fn validate_should_accept_office_2010_document_protection_attributes() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"documentProtection":{"algorithmName":"SHA-512","hashValue":"YWJjZA==","saltValue":"AQIDBA==","spinCount":100000}},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
     }
 
     #[test]

@@ -4976,6 +4976,10 @@ fn parse_document_protection_attributes(
         "cryptProviderTypeExtSource",
         "hash",
         "salt",
+        "algorithmName",
+        "hashValue",
+        "saltValue",
+        "spinCount",
     ];
     let mut properties = Map::new();
     for attribute in element.attributes() {
@@ -5006,7 +5010,7 @@ fn parse_document_protection_attributes(
                     )));
                 }
             }),
-            "cryptAlgorithmSid" | "cryptSpinCount" => {
+            "cryptAlgorithmSid" | "cryptSpinCount" | "spinCount" => {
                 let number = value.parse::<u64>().map_err(|_| {
                     Error::Reverse(format!(
                         "`w:documentProtection/@{name}` must be a non-negative integer; repair the value or remove the attribute"
@@ -8222,7 +8226,7 @@ mod tests {
     #[test]
     fn reverse_external_docx_should_preserve_document_protection_without_manifest() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{"documentProtection":{"edit":"readOnly","formatting":false,"enforcement":true,"cryptProviderType":"rsaAES","cryptAlgorithmClass":"hash","cryptAlgorithmType":"typeAny","cryptAlgorithmSid":14,"cryptSpinCount":100000,"cryptProvider":"RSA AES Provider","algIdExt":"A1B2C3D4","algIdExtSource":"urn:example:alg","cryptProviderTypeExt":"01020304","cryptProviderTypeExtSource":"urn:example:provider","hash":"YWJjZA==","salt":"AQIDBA=="}},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["body"]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"documentProtection":{"edit":"readOnly","formatting":false,"enforcement":true,"cryptProviderType":"rsaAES","cryptAlgorithmClass":"hash","cryptAlgorithmType":"typeAny","cryptAlgorithmSid":14,"cryptSpinCount":100000,"cryptProvider":"RSA AES Provider","algIdExt":"A1B2C3D4","algIdExtSource":"urn:example:alg","cryptProviderTypeExt":"01020304","cryptProviderTypeExtSource":"urn:example:provider","hash":"YWJjZA==","salt":"AQIDBA==","algorithmName":"SHA-512","hashValue":"YWJjZA==","saltValue":"AQIDBA==","spinCount":100000}},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["body"]}]}]}}"#,
         )
         .expect("fixture should parse");
         let compiled = crate::compiler::compile_document(&ir, Path::new("."))
@@ -8237,6 +8241,10 @@ mod tests {
             r#""cryptSpinCount":100000"#,
             r#""hash":"YWJjZA==""#,
             r#""salt":"AQIDBA==""#,
+            r#""algorithmName":"SHA-512""#,
+            r#""hashValue":"YWJjZA==""#,
+            r#""saltValue":"AQIDBA==""#,
+            r#""spinCount":100000"#,
         ] {
             assert!(jsx.contains(expected), "missing {expected} in {jsx}");
         }
@@ -8260,13 +8268,15 @@ mod tests {
             .expect("settings should be UTF-8");
         settings = settings.replace(
             "w:edit=\"readOnly\"",
-            "w:edit=\"readOnly\" w:algorithmName=\"SHA-512\"",
+            "w:edit=\"readOnly\" w:futureProtectionFlag=\"true\"",
         );
         let external =
             rewrite_package_parts(&external, &[("word/settings.xml", settings.as_bytes())]);
         let error = reverse_document(&external).expect_err("unsupported metadata must be rejected");
         assert!(
-            error.to_string().contains("attribute `algorithmName`")
+            error
+                .to_string()
+                .contains("attribute `futureProtectionFlag`")
                 && error.to_string().contains("remove it or extend the DSL"),
             "{error}"
         );

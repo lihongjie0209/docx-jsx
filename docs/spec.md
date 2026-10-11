@@ -204,7 +204,7 @@ error instead of a silent drop.
   `language?: string`, `revision?: integer`, `subject?: string`,
   `title?: string`,
   `documentId?: string`, positive `defaultTabStop?: number` (points),
-  `documentProtection?: {edit?,formatting?,enforcement?,cryptProviderType?,cryptAlgorithmClass?,cryptAlgorithmType?,cryptAlgorithmSid?,cryptSpinCount?,cryptProvider?,algIdExt?,algIdExtSource?,cryptProviderTypeExt?,cryptProviderTypeExtSource?,hash?,salt?}`.
+  `documentProtection?: {edit?,formatting?,enforcement?,cryptProviderType?,cryptAlgorithmClass?,cryptAlgorithmType?,cryptAlgorithmSid?,cryptSpinCount?,cryptProvider?,algIdExt?,algIdExtSource?,cryptProviderTypeExt?,cryptProviderTypeExtSource?,hash?,salt?,algorithmName?,hashValue?,saltValue?,spinCount?}`.
   `edit` is `none | readOnly | comments | trackedChanges | forms`; the two
   protection flags are booleans; cryptographic enums follow the OOXML values
   (`rsaFull | rsaAES`, `hash | encryption | custom`, `typeAny | custom`).
@@ -212,7 +212,9 @@ error instead of a silent drop.
   non-empty; `algIdExt` and `cryptProviderTypeExt` are even-length hexadecimal
   data. `hash` and `salt` must be supplied together and are precomputed
   OOXML base64 values—plaintext passwords are not accepted or hashed by this
-  tool. Restrictions are enforced only when `enforcement` is true.
+  tool. The Office 2010+ fields `algorithmName`, `hashValue`, `saltValue`, and
+  `spinCount` are also preserved. `hashValue` and `saltValue` must be supplied
+  together. Restrictions are enforced only when `enforcement` is true.
   This is an editing restriction, not encryption or a security boundary.
   Reverse preserves the supported `w:documentProtection` attributes without
   the IR manifest and rejects unsupported attributes rather than dropping them.
