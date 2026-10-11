@@ -27,6 +27,7 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("# docx-jsx v1 specification"))
         .stdout(predicate::str::contains("## Component tree"))
         .stdout(predicate::str::contains("`IndexEntry`"))
+        .stdout(predicate::str::contains("type?: \"nextPage\""))
         .stdout(predicate::str::contains("docx-jsx pdf"))
         .stdout(predicate::str::contains("-o <OUTPUT.docx|pdf>"))
         .stdout(predicate::str::contains("inferred from the `-o` suffix"))
@@ -223,7 +224,7 @@ fn cli_should_reverse_docx_to_recompilable_jsx() {
     fs::write(
         &input,
         r#"import { Document, Section, Paragraph, Run, Break, Table, TableRow, TableCell } from "docx-jsx";
-export default <Document><Section><Paragraph align="center"><Run bold italic color="336699">Hello &amp; world<Break type="page" /></Run></Paragraph><Table><TableRow><TableCell><Paragraph>Cell</Paragraph></TableCell></TableRow></Table></Section></Document>;"#,
+export default <Document><Section type="continuous"><Paragraph align="center"><Run bold italic color="336699">Hello &amp; world<Break type="page" /></Run></Paragraph><Table><TableRow><TableCell><Paragraph>Cell</Paragraph></TableCell></TableRow></Table></Section></Document>;"#,
     )
     .expect("input should write");
 
@@ -257,6 +258,7 @@ export default <Document><Section><Paragraph align="center"><Run bold italic col
     assert!(source.contains(r#"{"Hello & world"}"#));
     assert!(source.contains("<Break type=\"page\" />"));
     assert!(source.contains("<TableCell>"));
+    assert!(source.contains(r#"<Section type="continuous""#));
 
     Command::cargo_bin("docx-jsx")
         .expect("binary should build")

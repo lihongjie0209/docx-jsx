@@ -1010,6 +1010,7 @@ fn section_props() -> &'static [&'static str] {
         "documentGrid",
         "pageNumbering",
         "columns",
+        "type",
     ]
 }
 
@@ -2725,6 +2726,18 @@ fn validate_section_semantics(node: &Node, path: &str) -> Result<()> {
         "textDirection",
         &["lrTb", "tbRl", "btLr", "lrTbV", "tbRlV"],
     )?;
+    validate_optional_enum_prop(
+        node,
+        path,
+        "type",
+        &[
+            "nextPage",
+            "nextColumn",
+            "continuous",
+            "evenPage",
+            "oddPage",
+        ],
+    )?;
     if let Some(value) = node.props.get("documentGrid") {
         validate_document_grid(value, path)?;
     }
@@ -4324,6 +4337,18 @@ mod tests {
             .expect_err("numStyleLink cannot define local list properties");
         assert!(
             error.to_string().contains("numStyleLink") && error.to_string().contains("type"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_unknown_section_type() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"type":"continuousPlus"},"children":[]}]}}"#,
+        );
+        let error = ir.validate().expect_err("unknown section type must fail");
+        assert!(
+            error.to_string().contains("type") && error.to_string().contains("nextPage"),
             "{error}"
         );
     }

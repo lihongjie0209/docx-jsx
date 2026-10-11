@@ -238,6 +238,21 @@ fn package_document(
         })
         .collect::<Result<Vec<_>>>()?;
     let bytes = patch_section_columns(cursor.into_inner(), &columns)?;
+    let section_types = ir
+        .document
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            Child::Node(node) if node.kind == NodeKind::Section => Some(
+                node.props
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let bytes = patch_section_types(bytes, &section_types)?;
     let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
     let row_grid = collect_row_grid_properties(&ir.document);
     let mut bytes = bytes;
@@ -664,6 +679,84 @@ fn patch_section_columns(bytes: Vec<u8>, columns: &[usize]) -> Result<Vec<u8>> {
         )));
     }
     replace_zip_text_entry(source, "word/document.xml", document.as_bytes())
+}
+
+fn patch_section_types(bytes: Vec<u8>, section_types: &[Option<String>]) -> Result<Vec<u8>> {
+    if section_types.iter().all(Option::is_none) {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .map_err(|error| Error::Compile(format!("missing word/document.xml: {error}")))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot read word/document.xml: {error}")))?;
+    let mut search_from = 0;
+    let mut section_index = 0;
+    while let Some(relative_start) = xml[search_from..].find("<w:sectPr") {
+        let start = search_from + relative_start;
+        let after_name = start + "<w:sectPr".len();
+        if xml
+            .as_bytes()
+            .get(after_name)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'>')
+        {
+            search_from = after_name;
+            continue;
+        }
+        let close = xml[start..]
+            .find("</w:sectPr>")
+            .map(|offset| start + offset)
+            .ok_or_else(|| Error::Compile("invalid `w:sectPr` in word/document.xml".to_owned()))?;
+        let Some(section_type) = section_types.get(section_index).and_then(Option::as_deref) else {
+            section_index += 1;
+            search_from = close + "</w:sectPr>".len();
+            continue;
+        };
+        if xml[start..close].contains("<w:type ") {
+            return Err(Error::Compile(format!(
+                "docx-rs unexpectedly emitted `w:type` for Section[{section_index}]"
+            )));
+        }
+        let insertion = [
+            "<w:pgSz",
+            "<w:pgMar",
+            "<w:paperSrc",
+            "<w:pgBorders",
+            "<w:lnNumType",
+            "<w:pgNumType",
+            "<w:cols",
+            "<w:formProt",
+            "<w:vAlign",
+            "<w:noEndnote",
+            "<w:titlePg",
+            "<w:textDirection",
+            "<w:bidi",
+            "<w:rtlGutter",
+            "<w:docGrid",
+        ]
+        .iter()
+        .filter_map(|element| xml[start..close].find(element).map(|offset| start + offset))
+        .min()
+        .ok_or_else(|| {
+            Error::Compile(format!(
+                "cannot locate schema position for `w:type` in Section[{section_index}]"
+            ))
+        })?;
+        let section_type_xml = format!(r#"<w:type w:val="{}" />"#, xml_escape(section_type));
+        xml.insert_str(insertion, &section_type_xml);
+        search_from = insertion + section_type_xml.len();
+        section_index += 1;
+    }
+    if section_index < section_types.len() {
+        return Err(Error::Compile(format!(
+            "docx-rs emitted {section_index} section properties for {} JSX Sections",
+            section_types.len()
+        )));
+    }
+    replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
 }
 
 fn patch_taskpane_references(bytes: Vec<u8>, extension_count: usize) -> Result<Vec<u8>> {
@@ -6214,6 +6307,26 @@ mod tests {
         );
         assert!(
             document.contains(r#"<w:cols w:space="425" w:num="3" />"#),
+            "{document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_section_type_in_schema_order() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"type":"continuous"},"children":[{"type":"Paragraph","props":{},"children":["body"]}]}]}}"#,
+        ).expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        assert!(
+            document.contains(r#"<w:sectPr><w:type w:val="continuous" /><w:pgSz"#),
             "{document}"
         );
     }

@@ -60,6 +60,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
+    let section_types = collect_section_types(bytes)?;
     let numbering_multi_level_types = collect_numbering_multi_level_types(bytes)?;
     let table_row_xml = collect_table_row_xml_metadata(bytes)?;
     let table_xml = collect_table_xml_metadata(bytes)?;
@@ -80,6 +81,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         numbering_instances: docx.numberings.numberings.clone(),
         numbering_multi_level_types,
         section_columns,
+        section_types,
         table_row_xml,
         table_xml,
         paragraph_indent_xml,
@@ -235,6 +237,7 @@ struct Writer {
     numbering_instances: Vec<Numbering>,
     numbering_multi_level_types: HashMap<usize, String>,
     section_columns: Vec<usize>,
+    section_types: Vec<Option<String>>,
     table_row_xml: HashMap<String, Vec<TableRowXmlMetadata>>,
     table_row_indices: HashMap<String, usize>,
     table_xml: HashMap<String, Vec<TableXmlMetadata>>,
@@ -318,12 +321,23 @@ impl Writer {
                 groups.len()
             )));
         }
+        if !self.section_types.is_empty() && self.section_types.len() != groups.len() {
+            return Err(Error::Reverse(format!(
+                "word/document.xml contains {} section types for {} reconstructed sections; repair the section-break structure so each section is unambiguous",
+                self.section_types.len(),
+                groups.len()
+            )));
+        }
         for (index, (children, break_property)) in groups.into_iter().enumerate() {
             let property = break_property.unwrap_or(&docx.document.section_property);
             let columns = self.section_columns.get(index).copied().unwrap_or(1);
+            let section_type = self.section_types.get(index).and_then(Option::as_deref);
             self.line(
                 1,
-                &format!("<Section{}>", section_jsx_attrs(property, columns)?),
+                &format!(
+                    "<Section{}>",
+                    section_jsx_attrs(property, columns, section_type)?
+                ),
             );
             self.apply_sdt = false;
             self.headers_and_footers(property, 2)?;
@@ -3447,6 +3461,78 @@ fn collect_section_columns(bytes: &[u8]) -> Result<Vec<usize>> {
     Ok(sections)
 }
 
+fn collect_section_types(bytes: &[u8]) -> Result<Vec<Option<String>>> {
+    let xml = read_zip_text(bytes, "word/document.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut in_section = false;
+    let mut saw_type = false;
+    let mut current_type = None;
+    let mut sections = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"sectPr" => {
+                if in_section {
+                    return Err(Error::Reverse(
+                        "word/document.xml contains nested section properties; repair the malformed `w:sectPr` structure".to_owned(),
+                    ));
+                }
+                in_section = true;
+                saw_type = false;
+                current_type = None;
+            }
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"sectPr" => {
+                sections.push(None);
+            }
+            Ok(Event::Start(element) | Event::Empty(element))
+                if in_section && element.local_name().as_ref() == b"type" =>
+            {
+                if saw_type {
+                    return Err(Error::Reverse(
+                        "section contains multiple `w:type` elements; keep one section type"
+                            .to_owned(),
+                    ));
+                }
+                saw_type = true;
+                let value = xml_attribute(&reader, &element, b"val")?.ok_or_else(|| {
+                    Error::Reverse(
+                        "section `w:type` is missing `w:val`; add a supported section type or remove the element".to_owned(),
+                    )
+                })?;
+                if ![
+                    "nextPage",
+                    "nextColumn",
+                    "continuous",
+                    "evenPage",
+                    "oddPage",
+                ]
+                .contains(&value.as_str())
+                {
+                    return Err(Error::Reverse(format!(
+                        "section uses unsupported w:type `{value}`; use nextPage, nextColumn, continuous, evenPage, or oddPage"
+                    )));
+                }
+                current_type = Some(value);
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"sectPr" => {
+                sections.push(current_type.take());
+                in_section = false;
+                saw_type = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/document.xml section types at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(sections)
+}
+
 fn parse_section_columns(reader: &Reader<&[u8]>, element: &BytesStart<'_>) -> Result<usize> {
     let columns = xml_attribute(reader, element, b"num")?
         .map(|value| value.parse::<usize>())
@@ -3492,9 +3578,16 @@ fn parse_section_columns(reader: &Reader<&[u8]>, element: &BytesStart<'_>) -> Re
     Ok(columns)
 }
 
-fn section_jsx_attrs(property: &docx_rs::SectionProperty, columns: usize) -> Result<String> {
+fn section_jsx_attrs(
+    property: &docx_rs::SectionProperty,
+    columns: usize,
+    section_type: Option<&str>,
+) -> Result<String> {
     let data = json(property)?;
     let mut attrs = String::new();
+    if let Some(section_type) = section_type {
+        attrs.push_str(&attr("type", section_type));
+    }
     if columns != 1 {
         let _ = write!(attrs, " columns={{{columns}}}");
     }
@@ -6789,6 +6882,49 @@ mod tests {
                 "margins={{top:72,right:72,bottom:72,left:72,header:35.45,footer:35.45,gutter:0}}"
             ) && jsx.contains(r#"documentGrid={{type:"default",linePitch:18}}"#),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_section_type_without_manifest() {
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        document = document.replace("<w:sectPr>", r#"<w:sectPr><w:type w:val="continuous" />"#);
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(
+            jsx.contains(r#"<Section type="continuous" pageSize="A4""#),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unknown_section_type_with_repair() {
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        document = document.replace("<w:sectPr>", r#"<w:sectPr><w:type w:val="customBreak" />"#);
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let error = reverse_document(&external)
+            .expect_err("unsupported section type must not be collapsed");
+        assert!(
+            error.to_string().contains("customBreak") && error.to_string().contains("nextPage"),
+            "{error}"
         );
     }
 

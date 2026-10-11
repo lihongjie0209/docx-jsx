@@ -61,7 +61,7 @@ export default (
       { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center", indent: 6 }, cell: { verticalAlign: "center", shading: "EAF2F8", margins: { top: 1, right: 1, bottom: 1, left: 1 } } },
     ]}
   >
-    <Section pageSize={{ width: 595.3, height: 841.9 }} margins={{ top: 72, right: 72, bottom: 72, left: 72 }} columns={2}>
+    <Section type="continuous" pageSize={{ width: 595.3, height: 841.9 }} margins={{ top: 72, right: 72, bottom: 72, left: 72 }} columns={2}>
       <Heading level={1}>Open XML validation fixture</Heading>
       <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.

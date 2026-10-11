@@ -269,13 +269,14 @@ error instead of a silent drop.
   References not declared in `Document.styles` remain legal so built-in styles
   from Word templates can be used. Reverse conversion preserves style ids and
   definitions rather than expanding inherited properties onto every node.
-- `Section`: `pageSize?: "A4" | "Letter" | {width,height}`,
+- `Section`: `type?: "nextPage" | "nextColumn" | "continuous" | "evenPage" | "oddPage"`
+  (`w:type`; omitted means Word's default `nextPage`), `pageSize?: "A4" | "Letter" | {width,height}`,
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
   `documentGrid?: {type,linePitch?,charSpace?}`, and
   `pageNumbering?: {start?,chapterStyle?}`, and `columns?: 1..45` (default 1).
   Columns are equal-width with the backend's default 425-twip spacing. External
-  reverse preserves the column count; layouts with custom column widths,
+  reverse preserves `type` and the column count; layouts with custom column widths,
   spacing, or separators are rejected with a repair suggestion because this
   DSL does not yet model those values. Document-grid `type` is `default`,
   `lines`, `linesAndChars`, or `snapToChars`; `linePitch` is a positive point
