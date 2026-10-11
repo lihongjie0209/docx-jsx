@@ -58,7 +58,7 @@ export default (
       { id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: { spacingAfter: 6 } },
       { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: { fonts: { ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC", hint: "eastAsia" }, size: 11 }, paragraph: { keepNext: false, keepLines: false } },
       { id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: { italic: true } },
-      { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center" } },
+      { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center", indent: 6 }, cell: { verticalAlign: "center", shading: "EAF2F8", margins: { top: 1, right: 1, bottom: 1, left: 1 } } },
     ]}
   >
     <Section pageSize={{ width: 595.3, height: 841.9 }} margins={{ top: 72, right: 72, bottom: 72, left: 72 }} columns={2}>

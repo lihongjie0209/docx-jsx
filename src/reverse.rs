@@ -2293,7 +2293,17 @@ fn is_section_break_marker(child: &NestedBlock<'_>) -> bool {
 #[allow(clippy::too_many_lines)]
 fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
     let source = json(&cell.property)?;
+    let properties = table_cell_jsx_props(&source)?;
     let mut attributes = String::new();
+    for (name, value) in properties {
+        attributes.push_str(&jsx_prop(&name, &value)?);
+    }
+    Ok(attributes)
+}
+
+#[allow(clippy::too_many_lines)]
+fn table_cell_jsx_props(source: &Value) -> Result<Map<String, Value>> {
+    let mut properties = Map::new();
     if let Some(width) = source.get("width").filter(|value| !value.is_null()) {
         let value = width
             .get("width")
@@ -2308,7 +2318,7 @@ fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
                 let twips = i64::try_from(value).map_err(|_| {
                     Error::Reverse("TableCell width exceeds the supported point range".to_owned())
                 })?;
-                attributes.push_str(&jsx_prop("width", &points_value(twips)?)?);
+                properties.insert("width".to_owned(), points_value(twips)?);
             }
             "pct" if value <= 5_000 => {
                 let percent = if value % 50 == 0 {
@@ -2323,7 +2333,7 @@ fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
                         Error::Reverse("TableCell percentage width is out of range".to_owned())
                     })?
                 };
-                attributes.push_str(&jsx_prop("widthPercent", &Value::Number(percent))?);
+                properties.insert("widthPercent".to_owned(), Value::Number(percent));
             }
             "pct" => {
                 return Err(Error::Reverse(format!(
@@ -2347,7 +2357,7 @@ fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
             ));
         }
         if span > 1 {
-            attributes.push_str(&jsx_prop("colSpan", &Value::Number(span.into()))?);
+            properties.insert("colSpan".to_owned(), Value::Number(span.into()));
         }
     }
     if let Some(value) = source.get("verticalAlign").filter(|value| !value.is_null()) {
@@ -2359,7 +2369,10 @@ fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
                 "TableCell vertical alignment `{alignment}` is unsupported; use top, center, or bottom in the DOCX"
             )));
         }
-        attributes.push_str(&attr("verticalAlign", alignment));
+        properties.insert(
+            "verticalAlign".to_owned(),
+            Value::String(alignment.to_owned()),
+        );
     }
     if let Some(value) = source.get("verticalMerge").filter(|value| !value.is_null()) {
         let merge = scalar_string(value)
@@ -2369,7 +2382,7 @@ fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
                 "TableCell vertical merge `{merge}` is unsupported; repair `w:vMerge`"
             )));
         }
-        attributes.push_str(&attr("verticalMerge", merge));
+        properties.insert("verticalMerge".to_owned(), Value::String(merge.to_owned()));
     }
     if let Some(value) = source.get("textDirection").filter(|value| !value.is_null()) {
         let direction = scalar_string(value)
@@ -2383,11 +2396,14 @@ fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
                 "TableCell text direction `{direction}` is unsupported; repair `w:textDirection`"
             )));
         }
-        attributes.push_str(&attr("textDirection", direction));
+        properties.insert(
+            "textDirection".to_owned(),
+            Value::String(direction.to_owned()),
+        );
     }
     if let Some(value) = source.get("margins").filter(|value| !value.is_null()) {
         let margins = table_cell_margins_jsx(value)?;
-        attributes.push_str(&jsx_prop("margins", &margins)?);
+        properties.insert("margins".to_owned(), margins);
     }
     if let Some(value) = source.get("shading").filter(|value| !value.is_null()) {
         let fill = value.get("fill").and_then(Value::as_str).ok_or_else(|| {
@@ -2406,13 +2422,13 @@ fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
             ));
         }
         if fill != "FFFFFF" {
-            attributes.push_str(&attr("shading", fill));
+            properties.insert("shading".to_owned(), Value::String(fill.to_owned()));
         }
     }
     if let Some(value) = source.get("borders").filter(|value| !value.is_null()) {
-        attributes.push_str(&jsx_prop("border", &table_cell_border_jsx(value)?)?);
+        properties.insert("border".to_owned(), table_cell_border_jsx(value)?);
     }
-    Ok(attributes)
+    Ok(properties)
 }
 
 fn table_cell_margins_jsx(source: &Value) -> Result<Value> {
@@ -4353,10 +4369,79 @@ fn reverse_style_definition(
     if let Some(paragraph) = reverse_paragraph_properties(&source["paragraphProperty"])? {
         definition.insert("paragraph".to_owned(), Value::Object(paragraph));
     }
+    if style.style_type == docx_rs::StyleType::Table {
+        if let Some(table) = reverse_table_style_properties(&source["tableProperty"])? {
+            definition.insert("table".to_owned(), Value::Object(table));
+        }
+        if let Some(cell) = reverse_table_cell_properties(&source["tableCellProperty"])? {
+            definition.insert("cell".to_owned(), Value::Object(cell));
+        }
+    }
     if is_stock_normal(&definition) {
         return Ok(None);
     }
     Ok(Some(Value::Object(definition)))
+}
+
+fn reverse_table_style_properties(source: &Value) -> Result<Option<Map<String, Value>>> {
+    let mut output = Map::new();
+    if let Some(width) = source.get("width").filter(|value| !value.is_null()) {
+        let width_value = width
+            .get("width")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let width_type = width
+            .get("widthType")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if width_value != 0 || width_type != "auto" {
+            return Err(Error::Reverse(
+                "table style contains a width property that this JSX style schema cannot represent; remove `w:tblW` from the style or apply width to a `Table` instance".to_owned(),
+            ));
+        }
+    }
+    if let Some(value) = source
+        .get("justification")
+        .and_then(scalar_string)
+        .filter(|value| *value != "left")
+    {
+        output.insert("align".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = source.get("indent").filter(|value| !value.is_null()) {
+        let width_type = value
+            .get("widthType")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if width_type != "dxa" {
+            return Err(Error::Reverse(format!(
+                "table style indent uses `{width_type}`, which JSX cannot represent; convert it to dxa or remove the style indent"
+            )));
+        }
+        let twips = value.get("width").and_then(Value::as_i64).ok_or_else(|| {
+            Error::Reverse("table style indent is malformed; repair `w:tblInd`".to_owned())
+        })?;
+        output.insert("indent".to_owned(), points_value(twips)?);
+    }
+    if source.get("style").is_some_and(|value| !value.is_null())
+        || source.get("layout").is_some_and(|value| !value.is_null())
+        || source.get("position").is_some_and(|value| !value.is_null())
+    {
+        return Err(Error::Reverse(
+            "table style contains nested style, layout, or positioning properties not representable by JSX; remove them from `w:tblPr` or use the corresponding property on a `Table` instance".to_owned(),
+        ));
+    }
+    if let Some(value) = source.get("margins").filter(|value| !value.is_null()) {
+        output.insert("margins".to_owned(), table_cell_margins_jsx(value)?);
+    }
+    if let Some(value) = source.get("borders").filter(|value| !value.is_null()) {
+        output.insert("border".to_owned(), table_cell_border_jsx(value)?);
+    }
+    Ok((!output.is_empty()).then_some(output))
+}
+
+fn reverse_table_cell_properties(source: &Value) -> Result<Option<Map<String, Value>>> {
+    let output = table_cell_jsx_props(source)?;
+    Ok((!output.is_empty()).then_some(output))
 }
 
 fn is_stock_normal(definition: &Map<String, Value>) -> bool {
@@ -4769,9 +4854,9 @@ mod tests {
         Level, LevelJc, LevelSuffixType, LevelText, LineSpacing, LineSpacingType, NumberFormat,
         Numbering, NumberingId, PageMargin, PageOrientationType, PageSize, Paragraph, Pic, Run,
         RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag,
-        Style, StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition,
-        TableCellBorders, TableOfContents, TableRow, TextDirectionType, ThemeColor, VAlignType,
-        VMergeType, WidthType,
+        Style, StyleType, Table, TableAlignmentType, TableCell, TableCellBorder,
+        TableCellBorderPosition, TableCellBorders, TableCellProperty, TableOfContents, TableRow,
+        TextDirectionType, ThemeColor, VAlignType, VMergeType, WidthType,
     };
     use std::io::Write;
 
@@ -5095,6 +5180,36 @@ mod tests {
             error.to_string().contains("pattern or foreground color")
                 && error.to_string().contains("solid fill"),
             "diagnostic should explain the unsupported shading and repair: {error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_table_style_table_and_cell_properties() {
+        let style = Style::new("ReportTable", StyleType::Table)
+            .name("Report Table")
+            .table_align(TableAlignmentType::Center)
+            .table_indent(120)
+            .table_cell_property(
+                TableCellProperty::new()
+                    .vertical_align(VAlignType::Center)
+                    .shading(Shading::new().fill("D9EAF7")),
+            );
+        let mut bytes = Cursor::new(Vec::new());
+        Docx::new()
+            .add_style(style)
+            .build()
+            .pack(&mut bytes)
+            .expect("external DOCX fixture should pack");
+
+        let jsx = reverse_document(&bytes.into_inner()).expect("external DOCX should reverse");
+
+        assert!(
+            jsx.contains(r#""align":"center""#)
+                && jsx.contains(r#""indent":6"#)
+                && jsx.contains(r#""verticalAlign":"center""#)
+                && jsx.contains(r#""shading":"D9EAF7""#)
+                && !jsx.contains(r#""id":"Normal""#),
+            "table style properties must survive external reverse: {jsx}"
         );
     }
 

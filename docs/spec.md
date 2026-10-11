@@ -246,7 +246,10 @@ error instead of a silent drop.
   Table styles additionally accept
   `table?: {indent,align,margins,border}` and
   `cell?: {width,colSpan,verticalAlign,verticalMerge,textDirection,shading,margins,border}`.
-  These reuse the corresponding `Table` and `TableCell` property formats.
+  These reuse the corresponding `Table` and `TableCell` property formats, and
+  external reverse restores table-style table/cell properties without the IR
+  manifest. Values not representable in these objects cause a repair-oriented
+  reverse error rather than being omitted.
   Width, layout, and nested style references belong on `Table`; they are
   rejected inside a style because OOXML `StyleTableProperties` does not permit
   them even though docx-rs exposes setters that serialize invalid markup.
