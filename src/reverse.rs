@@ -58,6 +58,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     }
     let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     validate_character_indent_xml(bytes)?;
+    validate_simple_positioned_images(bytes)?;
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
@@ -2464,6 +2465,47 @@ fn validate_character_indent_xml(bytes: &[u8]) -> Result<()> {
                 Err(error) => {
                     return Err(Error::Reverse(format!(
                         "cannot parse {part} indentation at byte {}: {error}",
+                        reader.error_position()
+                    )));
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+    }
+    Ok(())
+}
+
+fn validate_simple_positioned_images(bytes: &[u8]) -> Result<()> {
+    for part in zip_entry_names(bytes)?.into_iter().filter(|name| {
+        name.starts_with("word/")
+            && Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+            && !name.contains("/_rels/")
+    }) {
+        let Ok(xml) = read_zip_text(bytes, &part) else {
+            continue;
+        };
+        let mut reader = Reader::from_str(&xml);
+        let mut buffer = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"anchor" =>
+                {
+                    if xml_attribute(&reader, &element, b"simplePos")?
+                        .is_some_and(|value| !matches!(value.as_str(), "0" | "false" | "off"))
+                    {
+                        return Err(Error::Reverse(format!(
+                            "{part} contains `wp:anchor/@simplePos=1`, which the current JSX model cannot represent; convert the placement to `positionH`/`positionV` or retain the DOCX"
+                        )));
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "cannot parse {part} drawing placement at byte {}: {error}",
                         reader.error_position()
                     )));
                 }
@@ -5615,6 +5657,41 @@ mod tests {
         let jsx = reverse_document(&bytes).expect("external image DOCX should reverse");
 
         assert!(jsx.contains("layoutInCell={false}"), "{jsx}");
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_simple_positioned_images() {
+        let picture = Pic::new_with_dimensions(test_png(2, 1, [0, 0, 0, 255]), 2, 1).floating();
+        let packed = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_image(picture))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document
+            .replacen("simplePos=\"0\"", "simplePos=\"1\"", 1)
+            .replacen(
+                r#"<wp:simplePos x="0" y="0" />"#,
+                r#"<wp:simplePos x="25400" y="-12700" />"#,
+                1,
+            );
+        assert!(document.contains("simplePos=\"1\""));
+        let modified =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+
+        let error = reverse_document(&modified)
+            .expect_err("simple-position coordinates are not representable in JSX");
+
+        assert!(
+            error.to_string().contains("simplePos")
+                && error.to_string().contains("positionH")
+                && error.to_string().contains("retain the DOCX"),
+            "diagnostic should name the unsupported placement and repair: {error}"
+        );
     }
 
     #[test]

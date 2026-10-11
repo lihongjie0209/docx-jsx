@@ -368,6 +368,8 @@ error instead of a silent drop.
   those sidecar files beside the JSX output. `simplePosition` is not exposed:
   docx-rs 0.4.22 writes its `simple_pos` value into `allowOverlap` and hardcodes
   `simplePos="0"`, so it cannot produce the requested semantics faithfully.
+  External reverse rejects drawings with `wp:anchor/@simplePos="1"` and advises
+  converting their placement to `positionH`/`positionV` or retaining the DOCX.
 - `Table`: `width?`, `widthPercent?`, `align?`, `layout?: "auto" | "fixed"`,
   `columnWidths?: number[]`, `border?: {style?,size?,color?}`. Point and percent
   widths are mutually exclusive.
