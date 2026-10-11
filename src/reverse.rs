@@ -58,6 +58,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
+    let section_columns = collect_section_columns(bytes)?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
         images.by_id.entry(id).or_insert(asset);
@@ -70,6 +71,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         run_theme_colors: theme_colors.runs,
         abstract_nums: docx.numberings.abstract_nums.clone(),
         numbering_instances: docx.numberings.numberings.clone(),
+        section_columns,
         ..Writer::default()
     };
     writer.components.insert("Document");
@@ -217,6 +219,7 @@ struct Writer {
     run_theme_index: usize,
     abstract_nums: Vec<AbstractNumbering>,
     numbering_instances: Vec<Numbering>,
+    section_columns: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -269,9 +272,20 @@ impl Writer {
         if groups.is_empty() {
             groups.push((nested.as_slice(), None));
         }
-        for (children, break_property) in groups {
+        if !self.section_columns.is_empty() && self.section_columns.len() != groups.len() {
+            return Err(Error::Reverse(format!(
+                "word/document.xml contains {} section properties for {} reconstructed sections; repair the section-break structure so each section has one `w:sectPr`",
+                self.section_columns.len(),
+                groups.len()
+            )));
+        }
+        for (index, (children, break_property)) in groups.into_iter().enumerate() {
             let property = break_property.unwrap_or(&docx.document.section_property);
-            self.line(1, &format!("<Section{}>", section_jsx_attrs(property)?));
+            let columns = self.section_columns.get(index).copied().unwrap_or(1);
+            self.line(
+                1,
+                &format!("<Section{}>", section_jsx_attrs(property, columns)?),
+            );
             self.apply_sdt = false;
             self.headers_and_footers(property, 2)?;
             self.apply_sdt = true;
@@ -2218,9 +2232,135 @@ fn is_section_break_marker(child: &NestedBlock<'_>) -> bool {
         })
 }
 
-fn section_jsx_attrs(property: &docx_rs::SectionProperty) -> Result<String> {
+fn collect_section_columns(bytes: &[u8]) -> Result<Vec<usize>> {
+    let xml = read_zip_text(bytes, "word/document.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut current_columns = None;
+    let mut inside_columns = false;
+    let mut saw_columns = false;
+    let mut sections = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"sectPr" => {
+                if current_columns.replace(1).is_some() {
+                    return Err(Error::Reverse(
+                        "word/document.xml contains nested section properties; repair the malformed `w:sectPr` structure".to_owned(),
+                    ));
+                }
+                saw_columns = false;
+            }
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"sectPr" => {
+                sections.push(1);
+            }
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"cols" => {
+                if current_columns.is_some() {
+                    if saw_columns {
+                        return Err(Error::Reverse(
+                            "section contains multiple `w:cols` elements; keep exactly one column definition per section".to_owned(),
+                        ));
+                    }
+                    saw_columns = true;
+                    current_columns = Some(parse_section_columns(&reader, &element)?);
+                    inside_columns = true;
+                }
+            }
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"cols" => {
+                if current_columns.is_some() {
+                    if saw_columns {
+                        return Err(Error::Reverse(
+                            "section contains multiple `w:cols` elements; keep exactly one column definition per section".to_owned(),
+                        ));
+                    }
+                    saw_columns = true;
+                    current_columns = Some(parse_section_columns(&reader, &element)?);
+                }
+            }
+            Ok(Event::Start(element) | Event::Empty(element)) if inside_columns => {
+                let name = element.local_name();
+                let error = if name.as_ref() == b"col" {
+                    "section uses individually sized columns, which cannot be represented by the equal-width `columns` property; use equal-width columns or keep the original DOCX".to_owned()
+                } else {
+                    format!(
+                        "section `w:cols` contains unsupported `<{}>` data; remove the custom column data or keep the original DOCX",
+                        String::from_utf8_lossy(name.as_ref())
+                    )
+                };
+                return Err(Error::Reverse(error));
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"cols" => {
+                inside_columns = false;
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"sectPr" => {
+                sections.push(current_columns.take().unwrap_or(1));
+                inside_columns = false;
+                saw_columns = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/document.xml section columns at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(sections)
+}
+
+fn parse_section_columns(reader: &Reader<&[u8]>, element: &BytesStart<'_>) -> Result<usize> {
+    let columns = xml_attribute(reader, element, b"num")?
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|_| {
+            Error::Reverse(
+                "section column count is not an integer; repair `w:cols/@w:num`".to_owned(),
+            )
+        })?
+        .unwrap_or(1);
+    if !(1..=45).contains(&columns) {
+        return Err(Error::Reverse(format!(
+            "section column count `{columns}` is outside the supported range 1–45; set `w:cols/@w:num` to a supported count"
+        )));
+    }
+    let separator = xml_attribute(reader, element, b"sep")?;
+    if separator
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "0" | "false" | "off"))
+    {
+        return Err(Error::Reverse(
+            "section columns use a separator line, which is not represented by the `columns` property; remove the separator or keep the original DOCX".to_owned(),
+        ));
+    }
+    let equal_width = xml_attribute(reader, element, b"equalWidth")?;
+    if equal_width
+        .as_deref()
+        .is_some_and(|value| matches!(value, "0" | "false" | "off"))
+    {
+        return Err(Error::Reverse(
+            "section columns are not equal-width, which cannot be represented by `columns`; use equal-width columns or keep the original DOCX".to_owned(),
+        ));
+    }
+    if columns > 1 {
+        let space = xml_attribute(reader, element, b"space")?;
+        if space.as_deref() != Some("425") {
+            return Err(Error::Reverse(format!(
+                "section column spacing `{}` twips is not representable; use the backend default of 425 twips or keep the original DOCX",
+                space.as_deref().unwrap_or("unspecified")
+            )));
+        }
+    }
+    Ok(columns)
+}
+
+fn section_jsx_attrs(property: &docx_rs::SectionProperty, columns: usize) -> Result<String> {
     let data = json(property)?;
     let mut attrs = String::new();
+    if columns != 1 {
+        let _ = write!(attrs, " columns={{{columns}}}");
+    }
     if let Some(size) = data.get("pageSize") {
         let width = size.get("w").and_then(Value::as_u64).unwrap_or(0);
         let height = size.get("h").and_then(Value::as_u64).unwrap_or(0);
@@ -4758,6 +4898,49 @@ mod tests {
                 && jsx.contains(r#"pageSize="Letter""#)
                 && jsx.contains(r#"orientation="landscape""#),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_without_manifest_should_preserve_section_columns() {
+        let ir: crate::ir::IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"columns":2},"children":[{"type":"Paragraph","props":{},"children":["first"]}]},{"type":"Section","props":{"columns":3},"children":[{"type":"Paragraph","props":{},"children":["second"]}]}]}}"#,
+        )
+        .expect("fixture IR should parse");
+        let compiled =
+            crate::compiler::compile_document(&ir, Path::new(".")).expect("fixture should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(
+            jsx.contains("columns={2}") && jsx.contains("columns={3}"),
+            "section column counts must survive structural reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_should_reject_unrepresented_section_column_spacing() {
+        let packed = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("columns"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document.replace(
+            r#"<w:cols w:space="425" w:num="1" />"#,
+            r#"<w:cols w:space="500" w:num="2" />"#,
+        );
+        assert!(document.contains(r#"w:space="500" w:num="2""#));
+        let modified =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let error =
+            reverse_document(&modified).expect_err("custom column spacing must not be dropped");
+        assert!(
+            error.to_string().contains("spacing") && error.to_string().contains("425 twips"),
+            "diagnostic should name the unsupported value and repair: {error}"
         );
     }
 

@@ -198,13 +198,33 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     docx.pack(&mut cursor)
         .map_err(|error| Error::Compile(error.to_string()))?;
+    let columns = ir
+        .document
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            Child::Node(node) if node.kind == NodeKind::Section => Some(
+                usize::try_from(
+                    node.props
+                        .get("columns")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(1),
+                )
+                .map_err(|_| {
+                    Error::Compile("section column count exceeds platform range".to_owned())
+                }),
+            ),
+            Child::Node(_) | Child::String(_) | Child::Number(_) => None,
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let bytes = patch_section_columns(cursor.into_inner(), &columns)?;
     let extension_count = ir
         .document
         .props
         .get("webExtensions")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
-    let bytes = patch_taskpane_references(cursor.into_inner(), extension_count)?;
+    let bytes = patch_taskpane_references(bytes, extension_count)?;
     let bytes = patch_external_hyperlink_relationships(bytes, &ir.document)?;
     let custom_xml_count = ir
         .document
@@ -218,6 +238,54 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn patch_section_columns(bytes: Vec<u8>, columns: &[usize]) -> Result<Vec<u8>> {
+    if columns.iter().all(|count| *count == 1) {
+        return Ok(bytes);
+    }
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut document = String::new();
+    source
+        .by_name("word/document.xml")
+        .map_err(|error| Error::Compile(format!("missing word/document.xml: {error}")))?
+        .read_to_string(&mut document)
+        .map_err(|error| Error::Compile(format!("cannot read word/document.xml: {error}")))?;
+    let mut offset = 0;
+    let mut column_index = 0;
+    while let Some(relative_start) = document[offset..].find("<w:cols") {
+        let start = offset + relative_start;
+        let end = document[start..]
+            .find('>')
+            .map(|relative_end| start + relative_end + 1)
+            .ok_or_else(|| {
+                Error::Compile("invalid `w:cols` element in word/document.xml".to_owned())
+            })?;
+        let num_start = document[start..end]
+            .find("w:num=\"")
+            .map(|relative| start + relative + "w:num=\"".len())
+            .ok_or_else(|| Error::Compile("docx-rs emitted `w:cols` without `w:num`".to_owned()))?;
+        let num_end = document[num_start..end]
+            .find('"')
+            .map(|relative| num_start + relative)
+            .ok_or_else(|| {
+                Error::Compile("invalid `w:cols/@w:num` in word/document.xml".to_owned())
+            })?;
+        let column_count = columns.get(column_index).ok_or_else(|| {
+            Error::Compile("DOCX section count does not match the JSX Section count".to_owned())
+        })?;
+        document.replace_range(num_start..num_end, &column_count.to_string());
+        offset = num_start + column_count.to_string().len();
+        column_index += 1;
+    }
+    if column_index != columns.len() {
+        return Err(Error::Compile(format!(
+            "docx-rs emitted {column_index} section column elements for {} JSX Sections",
+            columns.len()
+        )));
+    }
+    replace_zip_text_entry(source, "word/document.xml", document.as_bytes())
 }
 
 fn patch_taskpane_references(bytes: Vec<u8>, extension_count: usize) -> Result<Vec<u8>> {
@@ -5020,6 +5088,30 @@ mod tests {
             r#"<w:docGrid w:type="linesAndChars" w:linePitch="360" w:charSpace="-10" />"#
         ));
         assert!(document.contains(r#"<w:pgNumType w:start="3" w:chapStyle="1" />"#));
+    }
+
+    #[test]
+    fn compile_should_render_columns_for_each_section() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"columns":2},"children":[{"type":"Paragraph","props":{},"children":["two columns"]}]},{"type":"Section","props":{"columns":3},"children":[{"type":"Paragraph","props":{},"children":["three columns"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        assert!(
+            document.contains(r#"<w:cols w:space="425" w:num="2" />"#),
+            "{document}"
+        );
+        assert!(
+            document.contains(r#"<w:cols w:space="425" w:num="3" />"#),
+            "{document}"
+        );
     }
 
     #[test]

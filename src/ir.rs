@@ -978,6 +978,7 @@ fn section_props() -> &'static [&'static str] {
         "textDirection",
         "documentGrid",
         "pageNumbering",
+        "columns",
     ]
 }
 
@@ -2550,6 +2551,16 @@ fn validate_section_semantics(node: &Node, path: &str) -> Result<()> {
     }
     if let Some(value) = node.props.get("pageNumbering") {
         validate_page_numbering(value, path)?;
+    }
+    if node.props.get("columns").is_some_and(|value| {
+        value
+            .as_u64()
+            .is_none_or(|columns| !(1..=45).contains(&columns))
+    }) {
+        return Err(validation(
+            path,
+            "`columns` must be an integer from 1 to 45",
+        ));
     }
     Ok(())
 }
@@ -4937,7 +4948,7 @@ mod tests {
     #[test]
     fn validate_should_accept_section_page_configuration() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1"}},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1"},"columns":2},"children":[]}]}}"#,
         );
         ir.validate()
             .expect("section configuration should validate");
@@ -5144,6 +5155,18 @@ mod tests {
             ),
             (r#""pageNumbering":{}"#, "must not be empty"),
             (r#""pageNumbering":{"start":1.5}"#, "non-negative integer"),
+            (
+                r#""columns":0"#,
+                "`columns` must be an integer from 1 to 45",
+            ),
+            (
+                r#""columns":46"#,
+                "`columns` must be an integer from 1 to 45",
+            ),
+            (
+                r#""columns":2.5"#,
+                "`columns` must be an integer from 1 to 45",
+            ),
             (r#""titlePage":"yes""#, "boolean"),
         ] {
             let source = format!(

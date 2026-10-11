@@ -254,7 +254,11 @@ error instead of a silent drop.
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
   `documentGrid?: {type,linePitch?,charSpace?}`, and
-  `pageNumbering?: {start?,chapterStyle?}`. Document-grid `type` is `default`,
+  `pageNumbering?: {start?,chapterStyle?}`, and `columns?: 1..45` (default 1).
+  Columns are equal-width with the backend's default 425-twip spacing. External
+  reverse preserves the column count; layouts with custom column widths,
+  spacing, or separators are rejected with a repair suggestion because this
+  DSL does not yet model those values. Document-grid `type` is `default`,
   `lines`, `linesAndChars`, or `snapToChars`; `linePitch` is a positive point
   measurement, while `charSpace` is a signed integer in OOXML 1/4096-em units.
   `pageNumbering.start` is a non-negative integer and `chapterStyle` is a
