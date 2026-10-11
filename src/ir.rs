@@ -880,6 +880,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::TableRow => &["height", "heightRule", "cantSplit", "inserted", "deleted"],
         NodeKind::TableCell => &[
             "width",
+            "widthPercent",
             "colSpan",
             "verticalAlign",
             "verticalMerge",
@@ -4172,7 +4173,7 @@ mod tests {
     #[test]
     fn validate_should_accept_extended_table_and_cell_properties() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"style":"GridTable4","indent":12,"margins":{"top":2,"right":3,"bottom":4,"left":5}},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"verticalMerge":"restart","textDirection":"tbRl","margins":{"top":1,"right":2,"bottom":3,"left":4}},"children":[{"type":"TableOfContents","props":{},"children":[]},{"type":"ContentControl","props":{"alias":"Cell"},"children":["value"]}]}]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{"style":"GridTable4","indent":12,"margins":{"top":2,"right":3,"bottom":4,"left":5}},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"widthPercent":50,"verticalMerge":"restart","textDirection":"tbRl","margins":{"top":1,"right":2,"bottom":3,"left":4}},"children":[{"type":"TableOfContents","props":{},"children":[]},{"type":"ContentControl","props":{"alias":"Cell"},"children":["value"]}]}]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
     }

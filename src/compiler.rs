@@ -3804,6 +3804,9 @@ fn compile_cell(
     if let Some(width) = number_prop(&node.props, "width", path)? {
         cell = cell.width(to_twips_usize(width, path)?, WidthType::Dxa);
     }
+    if let Some(width) = number_prop(&node.props, "widthPercent", path)? {
+        cell = cell.width(percent_to_fiftieths(width, path)?, WidthType::Pct);
+    }
     if let Some(span) = node.props.get("colSpan") {
         let span = span
             .as_u64()
@@ -5728,7 +5731,7 @@ mod tests {
                         "children": [{
                             "type": "TableRow", "props": {"cantSplit": true, "inserted": {"author": "Ada", "date": "2026-08-14T00:00:00Z"}}, "children": [{
                                 "type": "TableCell",
-                                "props": {"colSpan": 2, "verticalAlign": "center", "verticalMerge": "restart", "textDirection": "tbRl", "margins": {"top": 1, "right": 2, "bottom": 3, "left": 4}, "shading": "EEEEEE", "border": {"left": false, "topLeftToBottomRight": {"style": "dotted", "size": 0.5, "color": "993366"}}},
+                                "props": {"width": 120, "colSpan": 2, "verticalAlign": "center", "verticalMerge": "restart", "textDirection": "tbRl", "margins": {"top": 1, "right": 2, "bottom": 3, "left": 4}, "shading": "EEEEEE", "border": {"left": false, "topLeftToBottomRight": {"style": "dotted", "size": 0.5, "color": "993366"}}},
                                 "children": [
                                     {"type": "Paragraph", "props": {}, "children": ["cell"]},
                                     {"type": "TableOfContents", "props": {}, "children": []},
@@ -5737,7 +5740,7 @@ mod tests {
                             }]
                         }, {
                             "type": "TableRow", "props": {"deleted": {"author": "Linus"}}, "children": [{
-                                "type": "TableCell", "props": {}, "children": []
+                                "type": "TableCell", "props": {"widthPercent": 50}, "children": []
                             }]
                         }]
                     }]
@@ -5761,6 +5764,8 @@ mod tests {
                 && document.contains(r#"<w:tblInd w:w="240" w:type="dxa" />"#)
                 && document.contains("<w:tblCellMar>")
                 && document.contains("<w:tcMar>")
+                && document.contains(r#"<w:tcW w:w="2400" w:type="dxa" />"#)
+                && document.contains(r#"<w:tcW w:w="2500" w:type="pct" />"#)
                 && document.contains(r#"<w:vMerge w:val="restart" />"#)
                 && document.contains(r#"<w:textDirection w:val="tbRl" />"#)
                 && document

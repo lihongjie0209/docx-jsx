@@ -84,7 +84,7 @@ Windows.
 | Sections | Supported | Page size/orientation/margins, equal-width columns, headers/footers, title pages, text direction, document grid, page numbering |
 | Paragraphs and headings | Supported | Full line spacing, indentation, nine-slot run-default fonts, frames, borders, IDs, tabs, bidi, outline and tracked format changes |
 | Runs and semantic text | Supported | Independent physical/theme font slots and hint, emphasis, effects, borders/shading, symbols, breaks, revisions and semantic wrappers |
-| Tables | Supported | Grid/width/layout, positioning, margins, all border positions/styles, row height/rule and cant-split state, row revisions and cell layout; external reverse preserves supported row properties and errors on backend-dropped row-grid data |
+| Tables | Supported | Grid/width/layout, positioning, margins, point/percent cell widths, all border positions/styles, row height/rule and cant-split state, row revisions and cell layout; external reverse preserves row and cell properties and errors on unrepresentable values |
 | Fields and indexes | Supported | Generic and typed fields, TOC/figures/entries, captions, index fields and cross-references |
 | Lists and numbering | Supported | Bullet/ordered shorthand plus per-level format, text, suffix, restart, legal numbering, indent and run formatting; external reverse rebuilds `w:numPr` runs as `List` |
 | Annotations and controls | Supported | Bookmarks, comments, footnotes, inline and document-level bound content controls, and hyperlinks with ContentControl/revision/bookmark/comment children |

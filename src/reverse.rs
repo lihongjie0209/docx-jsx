@@ -1080,7 +1080,10 @@ impl Writer {
             for cell in &row.cells {
                 let TableRowChild::TableCell(cell) = cell;
                 self.components.insert("TableCell");
-                self.line(depth + 2, "<TableCell>");
+                self.line(
+                    depth + 2,
+                    &format!("<TableCell{}>", table_cell_jsx_attrs(cell)?),
+                );
                 self.emit_cell_children(&cell.children, depth + 3)?;
                 self.line(depth + 2, "</TableCell>");
             }
@@ -2285,6 +2288,235 @@ fn is_section_break_marker(child: &NestedBlock<'_>) -> bool {
             ParagraphChild::Run(run) => run_is_ignorable(run),
             _ => false,
         })
+}
+
+#[allow(clippy::too_many_lines)]
+fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
+    let source = json(&cell.property)?;
+    let mut attributes = String::new();
+    if let Some(width) = source.get("width").filter(|value| !value.is_null()) {
+        let value = width
+            .get("width")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| Error::Reverse("TableCell width is malformed".to_owned()))?;
+        let width_type = width
+            .get("widthType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Reverse("TableCell width unit is missing".to_owned()))?;
+        match width_type {
+            "dxa" => {
+                let twips = i64::try_from(value).map_err(|_| {
+                    Error::Reverse("TableCell width exceeds the supported point range".to_owned())
+                })?;
+                attributes.push_str(&jsx_prop("width", &points_value(twips)?)?);
+            }
+            "pct" if value <= 5_000 => {
+                let percent = if value % 50 == 0 {
+                    Number::from(value / 50)
+                } else {
+                    Number::from_f64(
+                        f64::from(u32::try_from(value).map_err(|_| {
+                            Error::Reverse("TableCell percentage width is out of range".to_owned())
+                        })?) / 50.0,
+                    )
+                    .ok_or_else(|| {
+                        Error::Reverse("TableCell percentage width is out of range".to_owned())
+                    })?
+                };
+                attributes.push_str(&jsx_prop("widthPercent", &Value::Number(percent))?);
+            }
+            "pct" => {
+                return Err(Error::Reverse(format!(
+                    "TableCell percentage width `{value}` exceeds JSX's 100 percent limit; reduce the width or retain the DOCX"
+                )));
+            }
+            _ => {
+                return Err(Error::Reverse(format!(
+                    "TableCell width uses `{width_type}`, which JSX cannot represent; convert the width to `dxa` or `pct` or retain the DOCX"
+                )));
+            }
+        }
+    }
+    if let Some(value) = source.get("gridSpan").filter(|value| !value.is_null()) {
+        let span = scalar_u64(value).ok_or_else(|| {
+            Error::Reverse("TableCell grid span is malformed; repair `w:gridSpan`".to_owned())
+        })?;
+        if span == 0 {
+            return Err(Error::Reverse(
+                "TableCell grid span is zero and is not valid; set `colSpan` to a positive integer or repair `w:gridSpan`".to_owned(),
+            ));
+        }
+        if span > 1 {
+            attributes.push_str(&jsx_prop("colSpan", &Value::Number(span.into()))?);
+        }
+    }
+    if let Some(value) = source.get("verticalAlign").filter(|value| !value.is_null()) {
+        let alignment = scalar_string(value).ok_or_else(|| {
+            Error::Reverse("TableCell vertical alignment is malformed".to_owned())
+        })?;
+        if !["top", "center", "bottom"].contains(&alignment) {
+            return Err(Error::Reverse(format!(
+                "TableCell vertical alignment `{alignment}` is unsupported; use top, center, or bottom in the DOCX"
+            )));
+        }
+        attributes.push_str(&attr("verticalAlign", alignment));
+    }
+    if let Some(value) = source.get("verticalMerge").filter(|value| !value.is_null()) {
+        let merge = scalar_string(value)
+            .ok_or_else(|| Error::Reverse("TableCell vertical merge is malformed".to_owned()))?;
+        if !["restart", "continue"].contains(&merge) {
+            return Err(Error::Reverse(format!(
+                "TableCell vertical merge `{merge}` is unsupported; repair `w:vMerge`"
+            )));
+        }
+        attributes.push_str(&attr("verticalMerge", merge));
+    }
+    if let Some(value) = source.get("textDirection").filter(|value| !value.is_null()) {
+        let direction = scalar_string(value)
+            .ok_or_else(|| Error::Reverse("TableCell text direction is malformed".to_owned()))?;
+        if ![
+            "lr", "lrV", "rl", "rlV", "tb", "tbV", "tbRlV", "tbRl", "btLr", "lrTbV",
+        ]
+        .contains(&direction)
+        {
+            return Err(Error::Reverse(format!(
+                "TableCell text direction `{direction}` is unsupported; repair `w:textDirection`"
+            )));
+        }
+        attributes.push_str(&attr("textDirection", direction));
+    }
+    if let Some(value) = source.get("margins").filter(|value| !value.is_null()) {
+        let margins = table_cell_margins_jsx(value)?;
+        attributes.push_str(&jsx_prop("margins", &margins)?);
+    }
+    if let Some(value) = source.get("shading").filter(|value| !value.is_null()) {
+        let fill = value.get("fill").and_then(Value::as_str).ok_or_else(|| {
+            Error::Reverse("TableCell shading has no representable fill color".to_owned())
+        })?;
+        if fill.len() != 6 || !fill.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::Reverse(
+                "TableCell shading fill is not six-digit RGB; repair `w:shd/@w:fill` or retain the DOCX".to_owned(),
+            ));
+        }
+        if value.get("shdType").and_then(Value::as_str) != Some("clear")
+            || value.get("color").and_then(Value::as_str) != Some("auto")
+        {
+            return Err(Error::Reverse(
+                "TableCell shading uses a pattern or foreground color not represented by JSX; use a solid fill or retain the DOCX".to_owned(),
+            ));
+        }
+        if fill != "FFFFFF" {
+            attributes.push_str(&attr("shading", fill));
+        }
+    }
+    if let Some(value) = source.get("borders").filter(|value| !value.is_null()) {
+        attributes.push_str(&jsx_prop("border", &table_cell_border_jsx(value)?)?);
+    }
+    Ok(attributes)
+}
+
+fn table_cell_margins_jsx(source: &Value) -> Result<Value> {
+    let mut margins = Map::new();
+    for edge in ["top", "right", "bottom", "left"] {
+        let value = source.get(edge).filter(|value| !value.is_null()).ok_or_else(|| {
+            Error::Reverse(format!(
+                "TableCell margins specify only some edges; JSX requires all four, so add explicit {edge} spacing or retain the DOCX"
+            ))
+        })?;
+        let width_type = value
+            .get("widthType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Reverse(format!("TableCell `{edge}` margin unit is missing")))?;
+        if width_type != "dxa" {
+            return Err(Error::Reverse(format!(
+                "TableCell `{edge}` margin uses `{width_type}`, which JSX cannot represent; convert it to `dxa` or retain the DOCX"
+            )));
+        }
+        let twips = value
+            .get("val")
+            .and_then(Value::as_u64)
+            .and_then(|value| i64::try_from(value).ok())
+            .ok_or_else(|| Error::Reverse(format!("TableCell `{edge}` margin is malformed")))?;
+        margins.insert(edge.to_owned(), points_value(twips)?);
+    }
+    Ok(Value::Object(margins))
+}
+
+fn table_cell_border_jsx(source: &Value) -> Result<Value> {
+    let borders = source
+        .as_object()
+        .ok_or_else(|| Error::Reverse("TableCell borders are malformed".to_owned()))?;
+    let mut result = Map::new();
+    for (source_edge, target_edge) in [
+        ("top", "top"),
+        ("right", "right"),
+        ("bottom", "bottom"),
+        ("left", "left"),
+        ("insideH", "insideHorizontal"),
+        ("insideV", "insideVertical"),
+        ("tl2br", "topLeftToBottomRight"),
+        ("tr2bl", "topRightToBottomLeft"),
+    ] {
+        let Some(border) = borders.get(source_edge).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let style = border
+            .get("borderType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Error::Reverse(format!("TableCell `{source_edge}` border style is missing"))
+            })?;
+        if style == "nil" || style == "none" {
+            result.insert(target_edge.to_owned(), Value::Bool(false));
+            continue;
+        }
+        if border
+            .get("space")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            != 0
+        {
+            return Err(Error::Reverse(format!(
+                "TableCell `{source_edge}` border has nonzero spacing, which JSX cannot represent; remove the border spacing or retain the DOCX"
+            )));
+        }
+        let size = border.get("size").and_then(Value::as_u64).ok_or_else(|| {
+            Error::Reverse(format!(
+                "TableCell `{source_edge}` border size is malformed"
+            ))
+        })?;
+        let color = border
+            .get("color")
+            .and_then(Value::as_str)
+            .filter(|color| color.len() == 6 && color.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| {
+                Error::Reverse(format!(
+                    "TableCell `{source_edge}` border color is not six-digit RGB; use an explicit RGB color or retain the DOCX"
+                ))
+            })?;
+        let border_size = if size % 8 == 0 {
+            Number::from(size / 8)
+        } else {
+            Number::from_f64(
+                f64::from(u32::try_from(size).map_err(|_| {
+                    Error::Reverse(format!(
+                        "TableCell `{source_edge}` border size is out of range"
+                    ))
+                })?) / 8.0,
+            )
+            .ok_or_else(|| {
+                Error::Reverse(format!(
+                    "TableCell `{source_edge}` border size is out of range"
+                ))
+            })?
+        };
+        let mut spec = Map::new();
+        spec.insert("style".to_owned(), Value::String(style.to_owned()));
+        spec.insert("size".to_owned(), Value::Number(border_size));
+        spec.insert("color".to_owned(), Value::String(color.to_owned()));
+        result.insert(target_edge.to_owned(), Value::Object(spec));
+    }
+    Ok(Value::Object(result))
 }
 
 fn table_row_jsx_attrs(row: &docx_rs::TableRow, row_xml: TableRowXmlMetadata) -> Result<String> {
@@ -4532,12 +4764,14 @@ fn unsupported(context: &str, value: &impl std::fmt::Debug) -> Error {
 mod tests {
     use super::*;
     use docx_rs::{
-        AbstractNumbering, CharacterSpacingValues, Comment, Delete, DocGrid, Docx, Footer, Header,
-        HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, Level, LevelJc, LevelSuffixType,
-        LevelText, LineSpacing, LineSpacingType, NumberFormat, Numbering, NumberingId, PageMargin,
-        PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, Section, Settings,
-        SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Table, TableCell,
-        TableOfContents, TableRow, ThemeColor,
+        AbstractNumbering, BorderType, CellMargins, CharacterSpacingValues, Comment, Delete,
+        DocGrid, Docx, Footer, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
+        Level, LevelJc, LevelSuffixType, LevelText, LineSpacing, LineSpacingType, NumberFormat,
+        Numbering, NumberingId, PageMargin, PageOrientationType, PageSize, Paragraph, Pic, Run,
+        RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag,
+        Style, StyleType, Table, TableCell, TableCellBorder, TableCellBorderPosition,
+        TableCellBorders, TableOfContents, TableRow, TextDirectionType, ThemeColor, VAlignType,
+        VMergeType, WidthType,
     };
     use std::io::Write;
 
@@ -4764,6 +4998,104 @@ mod tests {
         let jsx = reverse_document(&bytes.into_inner()).expect("external DOCX should reverse");
 
         assert!(jsx.contains(r#"<Table style="Grid">"#), "{jsx}");
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_table_cell_properties() {
+        let mut cell = TableCell::new()
+            .width(1600, WidthType::Dxa)
+            .grid_span(2)
+            .vertical_merge(VMergeType::Restart)
+            .vertical_align(VAlignType::Center)
+            .text_direction(TextDirectionType::TbRl)
+            .shading(Shading::new().fill("D9EAF7"))
+            .set_borders(
+                TableCellBorders::with_empty().set(
+                    TableCellBorder::new(TableCellBorderPosition::Top)
+                        .border_type(BorderType::Double)
+                        .size(8)
+                        .color("112233"),
+                ),
+            );
+        cell.property = cell.property.margins(
+            CellMargins::new()
+                .margin_top(20, WidthType::Dxa)
+                .margin_right(40, WidthType::Dxa)
+                .margin_bottom(60, WidthType::Dxa)
+                .margin_left(80, WidthType::Dxa),
+        );
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![TableRow::new(vec![cell])])));
+
+        let jsx = reverse_document(&bytes).expect("external table cell should reverse");
+
+        assert!(
+            jsx.contains(r#"<TableCell width={80} colSpan={2} verticalAlign="center" verticalMerge="restart" textDirection="tbRl" margins={{"#)
+                && jsx.contains(r#"shading="D9EAF7""#)
+                && jsx.contains(r#"border={{"top":{"style":"double","size":1,"color":"112233"}}}"#),
+            "cell properties must survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unsupported_table_cell_width() {
+        let cell = TableCell::new().width(120, WidthType::Auto);
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![TableRow::new(vec![cell])])));
+
+        let error = reverse_document(&bytes)
+            .expect_err("percent cell width is not represented by JSX point width");
+
+        assert!(
+            error.to_string().contains("auto")
+                && error.to_string().contains("convert")
+                && error.to_string().contains("retain the DOCX"),
+            "diagnostic should explain cell width conversion: {error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_percent_table_cell_width() {
+        let cell = TableCell::new().width(2500, WidthType::Pct);
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![TableRow::new(vec![cell])])));
+
+        let jsx = reverse_document(&bytes).expect("percent cell width should reverse");
+
+        assert!(jsx.contains("<TableCell widthPercent={50}>"), "{jsx}");
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_partial_table_cell_margins() {
+        let mut cell = TableCell::new();
+        cell.property = cell.property.margin_top(20, WidthType::Dxa);
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![TableRow::new(vec![cell])])));
+
+        let error = reverse_document(&bytes)
+            .expect_err("partial margins cannot be represented by the four-edge JSX object");
+
+        assert!(
+            error.to_string().contains("only some edges")
+                && error.to_string().contains("add explicit"),
+            "diagnostic should explain how to repair partial margins: {error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_patterned_table_cell_shading() {
+        let cell = TableCell::new().shading(
+            Shading::new()
+                .shd_type(ShdType::Pct10)
+                .color("112233")
+                .fill("D9EAF7"),
+        );
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![TableRow::new(vec![cell])])));
+
+        let error = reverse_document(&bytes)
+            .expect_err("patterned shading cannot be represented by solid JSX fill");
+
+        assert!(
+            error.to_string().contains("pattern or foreground color")
+                && error.to_string().contains("solid fill"),
+            "diagnostic should explain the unsupported shading and repair: {error}"
+        );
     }
 
     #[test]

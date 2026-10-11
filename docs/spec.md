@@ -378,8 +378,14 @@ error instead of a silent drop.
   The default height rule is supplied by Word when omitted. Height is converted
   to/from whole twips; an external row height that is not a whole twip cannot
   be represented and causes reverse to fail with a repair suggestion.
-- `TableCell`: `width?`, `colSpan?`,
-  `verticalAlign?: "top" | "center" | "bottom"`, `shading?`, `border?`.
+- `TableCell`: mutually exclusive `width?` in points or `widthPercent?` from 0
+  through 100, `colSpan?`,
+  `verticalAlign?: "top" | "center" | "bottom"`, `verticalMerge?`,
+  `textDirection?`, `margins?`, `shading?`, and `border?`. External reverse
+  restores these properties from DOCX cells without the IR manifest. A cell
+  width that uses an unsupported unit, margins with missing edges or non-`dxa`
+  units, nonzero border spacing, and patterned shading are reported instead of
+  silently dropped.
 - Table, TableCell, and their custom-style equivalents also accept an advanced
   border object. Table positions are `top`, `right`, `bottom`, `left`,
   `insideHorizontal`, and `insideVertical`; cells additionally accept
