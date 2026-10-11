@@ -93,7 +93,7 @@ export default (
         <ListItem>First numbered</ListItem>
       </List>
       <Table style="ValidationTable" widthPercent={100} border={{ style: "single", size: 0.5, color: "808080" }}>
-        <TableRow>
+        <TableRow height={30} heightRule="exact" cantSplit>
           <TableCell shading="D9EAF7"><Paragraph>Component</Paragraph></TableCell>
           <TableCell><Paragraph>Status</Paragraph></TableCell>
         </TableRow>

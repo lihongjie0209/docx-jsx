@@ -13,6 +13,7 @@ use docx_rs::{
     StructuredDataTag, StructuredDataTagChild, TableCellContent, TableChild, TableRowChild,
     TextBoxContentChild,
 };
+use num_traits::ToPrimitive;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 use serde::Serialize;
@@ -59,6 +60,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
+    let table_row_xml = collect_table_row_xml_metadata(bytes)?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
         images.by_id.entry(id).or_insert(asset);
@@ -72,6 +74,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         abstract_nums: docx.numberings.abstract_nums.clone(),
         numbering_instances: docx.numberings.numberings.clone(),
         section_columns,
+        table_row_xml,
         ..Writer::default()
     };
     writer.components.insert("Document");
@@ -91,6 +94,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let document_attrs = reverse_document_attributes(&docx, &style_metadata, &writer, bytes)?;
     writer.line(0, &format!("<Document{document_attrs}>"));
     writer.emit_sections(&docx)?;
+    writer.validate_table_row_xml_consumed()?;
     writer.line(0, "</Document>");
 
     let imports = writer
@@ -220,6 +224,13 @@ struct Writer {
     abstract_nums: Vec<AbstractNumbering>,
     numbering_instances: Vec<Numbering>,
     section_columns: Vec<usize>,
+    table_row_xml: HashMap<String, Vec<TableRowXmlMetadata>>,
+    table_row_indices: HashMap<String, usize>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TableRowXmlMetadata {
+    cant_split: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -1059,7 +1070,11 @@ impl Writer {
         for row in &table.rows {
             let TableChild::TableRow(row) = row;
             self.components.insert("TableRow");
-            self.line(depth + 1, "<TableRow>");
+            let row_xml = self.next_table_row_xml_metadata()?;
+            self.line(
+                depth + 1,
+                &format!("<TableRow{}>", table_row_jsx_attrs(row, row_xml)?),
+            );
             for cell in &row.cells {
                 let TableRowChild::TableCell(cell) = cell;
                 self.components.insert("TableCell");
@@ -1070,6 +1085,44 @@ impl Writer {
             self.line(depth + 1, "</TableRow>");
         }
         self.line(depth, "</Table>");
+        Ok(())
+    }
+
+    fn next_table_row_xml_metadata(&mut self) -> Result<TableRowXmlMetadata> {
+        let part = self
+            .image_scope
+            .as_deref()
+            .unwrap_or("word/document.xml")
+            .to_owned();
+        let index = self.table_row_indices.entry(part.clone()).or_default();
+        let Some(metadata) = self
+            .table_row_xml
+            .get(&part)
+            .and_then(|rows| rows.get(*index))
+            .copied()
+        else {
+            return Err(Error::Reverse(format!(
+                "docx-rs exposed a table row that is missing from `{part}`; repair the table structure or retain the original DOCX"
+            )));
+        };
+        *index += 1;
+        Ok(metadata)
+    }
+
+    fn validate_table_row_xml_consumed(&self) -> Result<()> {
+        for (part, rows) in &self.table_row_xml {
+            let consumed = self
+                .table_row_indices
+                .get(part)
+                .copied()
+                .unwrap_or_default();
+            if consumed != rows.len() {
+                return Err(Error::Reverse(format!(
+                    "`{part}` contains {} table rows but docx-rs exposed {consumed}; reverse would lose row structure, so repair the table XML or keep the original DOCX",
+                    rows.len()
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -2230,6 +2283,134 @@ fn is_section_break_marker(child: &NestedBlock<'_>) -> bool {
             ParagraphChild::Run(run) => run_is_ignorable(run),
             _ => false,
         })
+}
+
+fn table_row_jsx_attrs(row: &docx_rs::TableRow, row_xml: TableRowXmlMetadata) -> Result<String> {
+    let source = json(&row.property)?;
+    for key in ["gridBefore", "gridAfter", "widthBefore", "widthAfter"] {
+        if source.get(key).is_some_and(|value| !value.is_null()) {
+            return Err(Error::Reverse(format!(
+                "TableRow `{key}` is not representable in the current JSX spec; keep the original DOCX or remove that row-grid value"
+            )));
+        }
+    }
+
+    let mut attributes = String::new();
+    if let Some(value) = source.get("rowHeight").filter(|value| !value.is_null()) {
+        let height = value.as_f64().ok_or_else(|| {
+            Error::Reverse(
+                "TableRow height is not numeric; repair the row height in the DOCX".to_owned(),
+            )
+        })?;
+        let twips = height.to_i64().filter(|twips| {
+            height.is_finite() && height.fract() == 0.0 && *twips >= 0
+        }).ok_or_else(|| {
+            Error::Reverse(format!(
+                "TableRow height `{height}` cannot be represented as a non-negative whole number of twips; repair the row height"
+            ))
+        })?;
+        attributes.push_str(&jsx_prop("height", &points_value(twips)?)?);
+    }
+    if let Some(value) = source.get("heightRule").filter(|value| !value.is_null()) {
+        let rule = scalar_string(value).ok_or_else(|| {
+            Error::Reverse(
+                "TableRow height rule is invalid; use `auto`, `atLeast`, or `exact` in the DOCX"
+                    .to_owned(),
+            )
+        })?;
+        if !["auto", "atLeast", "exact"].contains(&rule) {
+            return Err(Error::Reverse(format!(
+                "TableRow height rule `{rule}` is unsupported; use `auto`, `atLeast`, or `exact`"
+            )));
+        }
+        attributes.push_str(&attr("heightRule", rule));
+    }
+    if row_xml.cant_split.unwrap_or_else(|| {
+        source
+            .get("cantSplit")
+            .is_some_and(|value| value.as_bool().unwrap_or(false))
+    }) {
+        attributes.push_str(" cantSplit");
+    }
+    for (source_key, target_key) in [("ins", "inserted"), ("del", "deleted")] {
+        let Some(value) = source.get(source_key).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let revision = value.as_object().ok_or_else(|| {
+            Error::Reverse(format!(
+                "TableRow `{source_key}` revision metadata is malformed; repair its author/date or remove the revision"
+            ))
+        })?;
+        if revision
+            .get("children")
+            .and_then(Value::as_array)
+            .is_some_and(|children| !children.is_empty())
+        {
+            return Err(Error::Reverse(format!(
+                "TableRow `{source_key}` contains child revision data not modeled by JSX; preserve the original DOCX or remove the nested row revision"
+            )));
+        }
+        let mut metadata = Map::new();
+        for key in ["author", "date"] {
+            if let Some(value) = revision.get(key).and_then(Value::as_str) {
+                metadata.insert(key.to_owned(), Value::String(value.to_owned()));
+            }
+        }
+        attributes.push_str(&jsx_prop(target_key, &Value::Object(metadata))?);
+    }
+    Ok(attributes)
+}
+
+fn collect_table_row_xml_metadata(
+    bytes: &[u8],
+) -> Result<HashMap<String, Vec<TableRowXmlMetadata>>> {
+    let mut result = HashMap::new();
+    for part in zip_entry_names(bytes)?.into_iter().filter(|name| {
+        name == "word/document.xml"
+            || (name.starts_with("word/header") || name.starts_with("word/footer"))
+                && Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                && !name.contains("/_rels/")
+    }) {
+        let xml = read_zip_text(bytes, &part)?;
+        let mut reader = Reader::from_str(&xml);
+        let mut buffer = Vec::new();
+        let mut rows = Vec::<TableRowXmlMetadata>::new();
+        let mut active_rows = Vec::<usize>::new();
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(element)) if element.local_name().as_ref() == b"tr" => {
+                    rows.push(TableRowXmlMetadata::default());
+                    active_rows.push(rows.len() - 1);
+                }
+                Ok(Event::Empty(element)) if element.local_name().as_ref() == b"tr" => {
+                    rows.push(TableRowXmlMetadata::default());
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"cantSplit" =>
+                {
+                    if let Some(index) = active_rows.last().copied() {
+                        rows[index].cant_split = Some(xml_on_off(&reader, &element)?);
+                    }
+                }
+                Ok(Event::End(element)) if element.local_name().as_ref() == b"tr" => {
+                    active_rows.pop();
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "cannot parse {part} table row properties at byte {}: {error}",
+                        reader.error_position()
+                    )));
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+        result.insert(part, rows);
+    }
+    Ok(result)
 }
 
 fn collect_section_columns(bytes: &[u8]) -> Result<Vec<usize>> {
@@ -4248,8 +4429,8 @@ mod tests {
     use super::*;
     use docx_rs::{
         AbstractNumbering, CharacterSpacingValues, Comment, Delete, DocGrid, Docx, Footer, Header,
-        Hyperlink, HyperlinkType, IndentLevel, Insert, Level, LevelJc, LevelSuffixType, LevelText,
-        LineSpacing, LineSpacingType, NumberFormat, Numbering, NumberingId, PageMargin,
+        HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, Level, LevelJc, LevelSuffixType,
+        LevelText, LineSpacing, LineSpacingType, NumberFormat, Numbering, NumberingId, PageMargin,
         PageOrientationType, PageSize, Paragraph, Pic, Run, RunFonts, Section, Settings,
         SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Table, TableCell,
         TableOfContents, TableRow, ThemeColor,
@@ -4898,6 +5079,71 @@ mod tests {
                 && jsx.contains(r#"pageSize="Letter""#)
                 && jsx.contains(r#"orientation="landscape""#),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_table_row_layout() {
+        let row = TableRow::new(vec![
+            TableCell::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("row"))),
+        ])
+        .row_height(560.0)
+        .height_rule(HeightRule::Exact)
+        .cant_split();
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![row])));
+        let jsx = reverse_document(&bytes).expect("external row layout should reverse");
+        assert!(
+            jsx.contains(r#"<TableRow height={28} heightRule="exact" cantSplit>"#),
+            "row height, rule, and cantSplit must survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_table_row_revisions() {
+        let cell =
+            || TableCell::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("row")));
+        let inserted = TableRow::new(vec![cell()]).insert(
+            Insert::new_with_empty()
+                .author("Ada")
+                .date("2026-08-14T00:00:00Z"),
+        );
+        let deleted = TableRow::new(vec![cell()])
+            .delete(Delete::new().author("Lin").date("2026-08-15T00:00:00Z"));
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![inserted, deleted])));
+        let jsx = reverse_document(&bytes).expect("external row revisions should reverse");
+        assert!(
+            jsx.contains(r#"inserted={{"author":"Ada","date":"2026-08-14T00:00:00Z"}}"#)
+                && jsx.contains(r#"deleted={{"author":"Lin","date":"2026-08-15T00:00:00Z"}}"#),
+            "row revisions must survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unrepresented_table_row_grid_data() {
+        let row = TableRow::new(vec![
+            TableCell::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("row"))),
+        ]);
+        let packed = pack_docx(Docx::new().add_table(Table::new(vec![row])));
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document.replace(
+            "<w:trPr />",
+            r#"<w:trPr><w:gridBefore w:val="2" /></w:trPr>"#,
+        );
+        assert!(document.contains("w:gridBefore"));
+        let modified =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let error = reverse_document(&modified)
+            .expect_err("unrepresented row grid data must not be discarded");
+        assert!(
+            error.to_string().contains("gridBefore")
+                && error.to_string().contains("not representable"),
+            "diagnostic should identify unrepresented row data: {error}"
         );
     }
 

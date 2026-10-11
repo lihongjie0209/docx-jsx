@@ -126,6 +126,10 @@ Colors are uppercase or lowercase six-digit RGB strings without `#`.
   conflicts with `yAlign`.
 - `TableRow`: optional `inserted` or `deleted` revision metadata object with
   string `author?` and `date?`; the two revision states are mutually exclusive.
+  External reverse restores `height`, `heightRule`, `cantSplit`, and row
+  revision metadata without the IR manifest. `gridBefore`, `gridAfter`,
+  `widthBefore`, and `widthAfter` have no v1 JSX representation; external
+  reverse reports them as unsupported instead of dropping them.
 - `TableCell`: optional `verticalMerge: "restart" | "continue"`,
   `textDirection: "lr" | "lrV" | "rl" | "rlV" | "tb" | "tbV" | "tbRlV" |
   "tbRl" | "btLr" | "lrTbV"`, and a `margins` object with the same four
@@ -354,8 +358,11 @@ error instead of a silent drop.
 - `Table`: `width?`, `widthPercent?`, `align?`, `layout?: "auto" | "fixed"`,
   `columnWidths?: number[]`, `border?: {style?,size?,color?}`. Point and percent
   widths are mutually exclusive.
-- `TableRow`: `height?`, `heightRule?: "auto" | "atLeast" | "exact"`,
-  `cantSplit?`.
+- `TableRow`: optional `height` in points (`1 pt = 20 twips`),
+  `heightRule?: "auto" | "atLeast" | "exact"`, and `cantSplit?: boolean`.
+  The default height rule is supplied by Word when omitted. Height is converted
+  to/from whole twips; an external row height that is not a whole twip cannot
+  be represented and causes reverse to fail with a repair suggestion.
 - `TableCell`: `width?`, `colSpan?`,
   `verticalAlign?: "top" | "center" | "bottom"`, `shading?`, `border?`.
 - Table, TableCell, and their custom-style equivalents also accept an advanced
