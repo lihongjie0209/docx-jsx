@@ -41,6 +41,7 @@ struct CompileContext {
     numbering_style_links: Vec<(usize, Option<String>, Option<String>)>,
     used_paragraph_ids: BTreeSet<String>,
     next_generated_paragraph_id: u32,
+    deleted_comment_dependencies: Vec<Comment>,
 }
 
 struct ParagraphPropertyPatch {
@@ -87,6 +88,7 @@ impl Default for CompileContext {
             numbering_style_links: Vec::new(),
             used_paragraph_ids: BTreeSet::new(),
             next_generated_paragraph_id: 0xf000_0000,
+            deleted_comment_dependencies: Vec::new(),
         }
     }
 }
@@ -162,11 +164,24 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
             .add_abstract_numbering(abstract_numbering)
             .add_numbering(numbering);
     }
+    let mut comment_seed_paragraph_ids = Vec::new();
+    for comment in std::mem::take(&mut context.deleted_comment_dependencies) {
+        let paragraph_id = next_generated_paragraph_id(&mut context);
+        comment_seed_paragraph_ids.push(paragraph_id.clone());
+        let comment_id = comment.id();
+        docx = docx.add_paragraph(
+            Paragraph::new()
+                .id(paragraph_id)
+                .add_comment_start(comment)
+                .add_comment_end(comment_id),
+        );
+    }
     package_document(
         docx,
         ir,
         &context.character_indent_patches,
         &context.numbering_style_links,
+        &comment_seed_paragraph_ids,
     )
 }
 
@@ -247,6 +262,7 @@ fn package_document(
     ir: &IrEnvelope,
     paragraph_character_indents: &[ParagraphPropertyPatch],
     numbering_style_links: &[(usize, Option<String>, Option<String>)],
+    comment_seed_paragraph_ids: &[String],
 ) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     docx.pack(&mut cursor)
@@ -263,7 +279,8 @@ fn package_document(
                 Child::Node(_) | Child::String(_) | Child::Number(_) => None,
             })
             .collect::<Result<Vec<_>>>()?;
-    let bytes = patch_section_columns(cursor.into_inner(), &columns)?;
+    let bytes = strip_comment_seed_paragraphs(cursor.into_inner(), comment_seed_paragraph_ids)?;
+    let bytes = patch_section_columns(bytes, &columns)?;
     let section_types = ir
         .document
         .children
@@ -593,14 +610,7 @@ fn register_paragraph_character_indentation(
     {
         (id.to_ascii_uppercase(), false)
     } else {
-        loop {
-            let id = format!("{:08X}", context.next_generated_paragraph_id);
-            context.next_generated_paragraph_id =
-                context.next_generated_paragraph_id.wrapping_sub(1);
-            if context.used_paragraph_ids.insert(id.clone()) {
-                break (id, true);
-            }
-        }
+        (next_generated_paragraph_id(context), true)
     };
     paragraph = paragraph.id(id.clone());
     context
@@ -612,6 +622,16 @@ fn register_paragraph_character_indentation(
             suppress_line_numbers,
         });
     (paragraph, has_character_indents)
+}
+
+fn next_generated_paragraph_id(context: &mut CompileContext) -> String {
+    loop {
+        let id = format!("{:08X}", context.next_generated_paragraph_id);
+        context.next_generated_paragraph_id = context.next_generated_paragraph_id.wrapping_sub(1);
+        if context.used_paragraph_ids.insert(id.clone()) {
+            return id;
+        }
+    }
 }
 
 fn patch_paragraph_character_indentation(
@@ -2056,6 +2076,38 @@ fn first_normal_style_range(xml: &str) -> Option<std::ops::Range<usize>> {
     let start = xml[..marker].rfind("<w:style")?;
     let close = xml[marker..].find("</w:style>")?;
     Some(start..marker + close + "</w:style>".len())
+}
+
+fn strip_comment_seed_paragraphs(bytes: Vec<u8>, paragraph_ids: &[String]) -> Result<Vec<u8>> {
+    if paragraph_ids.is_empty() {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .map_err(|error| Error::Compile(format!("missing word/document.xml: {error}")))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot read word/document.xml: {error}")))?;
+    for id in paragraph_ids {
+        let marker = format!(r#"<w:p w14:paraId="{id}""#);
+        let Some(start) = xml.find(&marker) else {
+            return Err(Error::Compile(format!(
+                "temporary comment dependency paragraph `{id}` was not found"
+            )));
+        };
+        let end = xml[start..]
+            .find("</w:p>")
+            .map(|offset| start + offset + "</w:p>".len())
+            .ok_or_else(|| {
+                Error::Compile(format!(
+                    "temporary comment dependency paragraph `{id}` is unterminated"
+                ))
+            })?;
+        xml.replace_range(start..end, "");
+    }
+    replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
 }
 
 fn replace_zip_text_entry(
@@ -3820,7 +3872,7 @@ fn compile_paragraph_children(
                     paragraph.add_insert(compile_inserted(inserted, entry_dir, &child_path)?);
             }
             Child::Node(deleted) if deleted.kind == NodeKind::Deleted => {
-                paragraph = paragraph.add_delete(compile_deleted(deleted, &child_path)?);
+                paragraph = paragraph.add_delete(compile_deleted(deleted, &child_path, context)?);
             }
             Child::Node(moved) if moved.kind == NodeKind::MovedFrom => {
                 paragraph =
@@ -4003,7 +4055,7 @@ fn compile_inserted(node: &Node, entry_dir: &Path, path: &str) -> Result<Insert>
     Ok(inserted)
 }
 
-fn compile_deleted(node: &Node, path: &str) -> Result<Delete> {
+fn compile_deleted(node: &Node, path: &str, context: &mut CompileContext) -> Result<Delete> {
     let mut deleted = Delete::new();
     if let Some(author) = string_prop(&node.props, "author", path)? {
         deleted = deleted.author(author);
@@ -4013,6 +4065,39 @@ fn compile_deleted(node: &Node, path: &str) -> Result<Delete> {
     }
     for (index, child) in node.children.iter().enumerate() {
         let child_path = format!("{path}/child[{index}]");
+        if let Child::Node(comment_node) = child
+            && comment_node.kind == NodeKind::Comment
+        {
+            context.next_comment_id += 1;
+            let id = context.next_comment_id;
+            let text = required_string(&comment_node.props, "text", &child_path)?;
+            let comment_run = Run::new().add_text(text);
+            let mut comment = Comment::new(id).add_paragraph(Paragraph::new().add_run(comment_run));
+            if let Some(author) = string_prop(&comment_node.props, "author", &child_path)? {
+                comment = comment.author(author);
+            }
+            if let Some(date) = string_prop(&comment_node.props, "date", &child_path)? {
+                comment = comment.date(date);
+            }
+            context.deleted_comment_dependencies.push(comment.clone());
+            deleted = deleted.add_comment_start(comment);
+            for (selected_index, selected) in comment_node.children.iter().enumerate() {
+                let selected_path = format!("{child_path}/child[{selected_index}]");
+                let run = match selected {
+                    Child::Node(run) if run.kind == NodeKind::Run => {
+                        let mut output = compile_run_properties(&run.props, &selected_path)?;
+                        for text_child in &run.children {
+                            output = add_deleted_text(output, text_child, &selected_path)?;
+                        }
+                        output
+                    }
+                    selected => add_deleted_text(Run::new(), selected, &selected_path)?,
+                };
+                deleted = deleted.add_run(run);
+            }
+            deleted = deleted.add_comment_end(id);
+            continue;
+        }
         let run = match child {
             Child::Node(run) if run.kind == NodeKind::Run => {
                 let mut output = compile_run_properties(&run.props, &child_path)?;
@@ -4086,7 +4171,7 @@ fn compile_hyperlink_child(
             Ok(hyperlink.add_structured_data_tag(compile_content_control(node, entry_dir, path)?))
         }
         NodeKind::Inserted => Ok(hyperlink.add_insert(compile_inserted(node, entry_dir, path)?)),
-        NodeKind::Deleted => Ok(hyperlink.add_delete(compile_deleted(node, path)?)),
+        NodeKind::Deleted => Ok(hyperlink.add_delete(compile_deleted(node, path, context)?)),
         NodeKind::InlineBookmark => {
             context.next_bookmark_id += 1;
             let id = context.next_bookmark_id;
@@ -7701,6 +7786,36 @@ mod tests {
                 && document.find("</w:sdt>").expect("sdt end")
                     < document.find("after").expect("after"),
             "block sdt should sit between surrounding paragraphs: {document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_comment_range_inside_deleted_text() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{"author":"Ada"},"children":[{"type":"Comment","props":{"text":"Typo","author":"Grace"},"children":["removed"]}]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        let deleted = document
+            .split_once("<w:del ")
+            .and_then(|(_, rest)| rest.split_once("</w:del>"))
+            .map(|(content, _)| content)
+            .expect("deleted range should exist");
+        assert!(
+            deleted.contains("<w:commentRangeStart w:id=\"1\" />")
+                && deleted.contains("<w:delText")
+                && deleted.contains("removed")
+                && deleted.contains("<w:commentRangeEnd w:id=\"1\" />")
+                && deleted.contains("<w:commentReference w:id=\"1\" />"),
+            "comment range should enclose deleted text: {deleted}"
         );
     }
 

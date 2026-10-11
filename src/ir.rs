@@ -544,17 +544,7 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
         }
     }
     if node.kind == NodeKind::Deleted {
-        for child in &node.children {
-            if let Child::Node(run) = child
-                && run.kind == NodeKind::Run
-                && run
-                    .children
-                    .iter()
-                    .any(|child| matches!(child, Child::Node(node) if node.kind != NodeKind::Text))
-            {
-                return Err(validation(path, "Deleted Run only accepts text content"));
-            }
-        }
+        validate_deleted_children(node, path)?;
     }
 
     for (index, child) in node.children.iter().enumerate() {
@@ -597,6 +587,41 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
                     return Err(validation(path, "text is not allowed here"));
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_deleted_children(node: &Node, path: &str) -> Result<()> {
+    for child in &node.children {
+        if let Child::Node(run) = child
+            && run.kind == NodeKind::Run
+            && run
+                .children
+                .iter()
+                .any(|child| matches!(child, Child::Node(node) if node.kind != NodeKind::Text))
+        {
+            return Err(validation(path, "Deleted Run only accepts text content"));
+        }
+        let Child::Node(comment) = child else {
+            continue;
+        };
+        if comment.kind != NodeKind::Comment {
+            continue;
+        }
+        if comment.children.iter().any(|selected| match selected {
+            Child::String(_) | Child::Number(_) => false,
+            Child::Node(text) if text.kind == NodeKind::Text => false,
+            Child::Node(run) if run.kind == NodeKind::Run => run.children.iter().any(|child| {
+                !matches!(child, Child::String(_) | Child::Number(_))
+                    && !matches!(child, Child::Node(node) if node.kind == NodeKind::Text)
+            }),
+            Child::Node(_) => true,
+        }) {
+            return Err(validation(
+                path,
+                "Comment inside Deleted can select only text (`Text`, `Run`, string, or number); move formatting to the `Run` or keep the comment outside the deletion",
+            ));
         }
     }
     Ok(())
@@ -712,7 +737,7 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         NodeKind::Footnote => {
             child == NodeKind::Run || (allows_run_child(child) && child != NodeKind::Footnote)
         }
-        NodeKind::Deleted => matches!(child, NodeKind::Run | NodeKind::Text),
+        NodeKind::Deleted => matches!(child, NodeKind::Run | NodeKind::Text | NodeKind::Comment),
     }
 }
 
@@ -5650,6 +5675,31 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{"author":"Ada"},"children":[{"type":"Run","props":{"bold":true},"children":["old"]}]},{"type":"Inserted","props":{"author":"Ada"},"children":["new"]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_comment_range_inside_deleted_text() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{"author":"Ada"},"children":[{"type":"Comment","props":{"text":"Typo","author":"Grace"},"children":["removed"]}]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("a comment range over deleted text should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_formatted_wrapper_inside_deleted_comment_range() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{},"children":[{"type":"Comment","props":{"text":"Typo"},"children":[{"type":"Hyperlink","props":{"href":"https://example.com"},"children":["removed"]}]}]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("comment range in deleted text must not accept unsupported wrappers");
+        assert!(
+            error
+                .to_string()
+                .contains("Comment inside Deleted can select only text"),
+            "{error}"
+        );
     }
 
     #[test]

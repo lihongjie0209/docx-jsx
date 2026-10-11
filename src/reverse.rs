@@ -1001,14 +1001,35 @@ impl Writer {
                 attr("date", &value.date)
             ),
         );
-        for child in &value.children {
-            match child {
-                DeleteChild::Run(run) => self.run(run, depth + 1)?,
-                child => return Err(unsupported("deleted revision", child)),
-            }
+        for child in nest_deleted_ranges(&value.children, &self.comments)? {
+            self.emit_deleted_inline(&child, depth + 1)?;
         }
         self.line(depth, "</Deleted>");
         Ok(())
+    }
+
+    fn emit_deleted_inline(&mut self, child: &DeletedInline<'_>, depth: usize) -> Result<()> {
+        match child {
+            DeletedInline::Run(run) => self.run(run, depth),
+            DeletedInline::Comment { comment, children } => {
+                self.components.insert("Comment");
+                let text = comment_text(comment)?;
+                self.line(
+                    depth,
+                    &format!(
+                        "<Comment{}{}{}>",
+                        attr("text", &text),
+                        attr("author", &comment.author),
+                        attr("date", &comment.date)
+                    ),
+                );
+                for child in children {
+                    self.emit_deleted_inline(child, depth + 1)?;
+                }
+                self.line(depth, "</Comment>");
+                Ok(())
+            }
+        }
     }
 
     fn moved_from(&mut self, value: &MoveFrom, depth: usize) -> Result<()> {
@@ -1699,6 +1720,14 @@ enum NestedInline<'a> {
     },
 }
 
+enum DeletedInline<'a> {
+    Run(&'a docx_rs::Run),
+    Comment {
+        comment: Comment,
+        children: Vec<DeletedInline<'a>>,
+    },
+}
+
 enum RangeFrame<'a> {
     Bookmark {
         id: usize,
@@ -2007,6 +2036,73 @@ fn comment_end_id(value: &docx_rs::CommentRangeEnd) -> Result<usize> {
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
         .ok_or_else(|| Error::Reverse("comment range end is missing an id".to_owned()))
+}
+
+fn nest_deleted_ranges<'a>(
+    children: &'a [DeleteChild],
+    comments: &HashMap<usize, Comment>,
+) -> Result<Vec<DeletedInline<'a>>> {
+    let mut root = Vec::new();
+    let mut stack: Vec<(usize, Comment, Vec<DeletedInline<'a>>)> = Vec::new();
+    for child in children {
+        match child {
+            DeleteChild::Run(run) => {
+                push_deleted_child(&mut stack, &mut root, DeletedInline::Run(run.as_ref()));
+            }
+            DeleteChild::CommentStart(start) => stack.push((
+                start.id,
+                resolve_comment(start.id, &start.comment, comments)?,
+                Vec::new(),
+            )),
+            DeleteChild::CommentEnd(end) => {
+                let end_id = comment_end_id(end)?;
+                match stack.pop() {
+                    Some((id, comment, nested)) if id == end_id => push_deleted_child(
+                        &mut stack,
+                        &mut root,
+                        DeletedInline::Comment {
+                            comment,
+                            children: nested,
+                        },
+                    ),
+                    Some((id, _, _)) => {
+                        return Err(range_error(
+                            "overlapping comment ranges in deleted text",
+                            end_id.max(id),
+                            "close the inner comment range before the outer one so deleted comments nest as JSX",
+                        ));
+                    }
+                    None => {
+                        return Err(range_error(
+                            "unmatched comment end in deleted text",
+                            end_id,
+                            "pair each `w:commentRangeStart` with a matching `w:commentRangeEnd` inside the deleted revision",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((id, _, _)) = stack.last() {
+        return Err(range_error(
+            "unmatched comment start in deleted text",
+            *id,
+            "add the matching `w:commentRangeEnd` inside the deleted revision or remove the orphan marker",
+        ));
+    }
+    Ok(root)
+}
+
+fn push_deleted_child<'a>(
+    stack: &mut Vec<(usize, Comment, Vec<DeletedInline<'a>>)>,
+    root: &mut Vec<DeletedInline<'a>>,
+    child: DeletedInline<'a>,
+) {
+    if let Some((_, _, children)) = stack.last_mut() {
+        children.push(child);
+    } else {
+        root.push(child);
+    }
 }
 
 fn comment_text(comment: &Comment) -> Result<String> {
@@ -7547,6 +7643,27 @@ mod tests {
                 && jsx.contains(r#"{"commented"}"#)
                 && jsx.contains("</Comment>"),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_nest_comment_inside_deleted_text() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{"author":"Ada"},"children":[{"type":"Comment","props":{"text":"Typo","author":"Grace"},"children":["removed"]}]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled =
+            crate::compiler::compile_document(&ir, Path::new(".")).expect("fixture should compile");
+        let bytes = strip_ir_manifest(&compiled);
+
+        let jsx = reverse_document(&bytes).expect("manifest-free DOCX should reverse");
+        assert!(
+            jsx.contains(r#"<Deleted author="Ada""#)
+                && jsx.contains(r#"<Comment text="Typo" author="Grace""#)
+                && jsx.contains(r#"{"removed"}"#)
+                && jsx.contains("</Comment>")
+                && jsx.contains("</Deleted>"),
+            "comment range should remain nested inside deleted text: {jsx}"
         );
     }
 
