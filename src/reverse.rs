@@ -4803,12 +4803,11 @@ fn reverse_doc_default_metrics(docx: &docx_rs::Docx) -> Result<String> {
 
 fn reverse_core_and_custom_properties(docx: &docx_rs::Docx, bytes: &[u8]) -> Result<String> {
     let mut attributes = String::new();
-    let (created, updated) = parse_core_timestamps(bytes)?;
-    if let Some(created) = created {
-        attributes.push_str(&attr("createdAt", &created));
-    }
-    if let Some(updated) = updated {
-        attributes.push_str(&attr("updatedAt", &updated));
+    for (name, value) in parse_core_properties(bytes)? {
+        match value {
+            Value::String(value) => attributes.push_str(&attr(&name, &value)),
+            value => attributes.push_str(&jsx_prop(&name, &value)?),
+        }
     }
     if !docx.doc_props.custom.properties.is_empty() {
         let mut properties = Map::new();
@@ -4932,37 +4931,83 @@ fn reverse_styles_attribute(
     jsx_prop("styles", &Value::Array(styles))
 }
 
-fn parse_core_timestamps(bytes: &[u8]) -> Result<(Option<String>, Option<String>)> {
+fn parse_core_properties(bytes: &[u8]) -> Result<Map<String, Value>> {
     let Ok(xml) = read_zip_text(bytes, "docProps/core.xml") else {
-        return Ok((None, None));
+        return Ok(Map::new());
     };
-    let mut reader = Reader::from_str(&xml);
-    reader.config_mut().trim_text(true);
-    let mut created = None;
-    let mut modified = None;
+    let properties = read_core_property_values(&xml)?;
+    normalize_core_properties(properties)
+}
+
+fn read_core_property_values(xml: &str) -> Result<Map<String, Value>> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let property_names = [
+        (b"created".as_slice(), "createdAt"),
+        (b"modified".as_slice(), "updatedAt"),
+        (b"creator".as_slice(), "creator"),
+        (b"lastModifiedBy".as_slice(), "lastModifiedBy"),
+        (b"description".as_slice(), "description"),
+        (b"language".as_slice(), "language"),
+        (b"revision".as_slice(), "revision"),
+        (b"subject".as_slice(), "subject"),
+        (b"title".as_slice(), "title"),
+    ];
+    let mut properties = Map::new();
     let mut current = None;
+    let mut current_value = String::new();
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(element)) => match element.local_name().as_ref() {
-                b"created" => current = Some("created"),
-                b"modified" => current = Some("modified"),
-                _ => {}
-            },
+            Ok(Event::Start(element)) => {
+                current = property_names
+                    .iter()
+                    .find(|(local_name, _)| *local_name == element.local_name().as_ref())
+                    .map(|(_, property)| *property);
+                current_value.clear();
+            }
             Ok(Event::Text(text)) => {
-                let value = text.decode().map_err(|error| {
+                let decoded = text.decode().map_err(|error| {
                     Error::Reverse(format!("cannot decode docProps/core.xml: {error}"))
                 })?;
-                match current {
-                    Some("created") => created = Some(value.into_owned()),
-                    Some("modified") => modified = Some(value.into_owned()),
-                    _ => {}
+                let value = quick_xml::escape::unescape(&decoded).map_err(|error| {
+                    Error::Reverse(format!("cannot unescape docProps/core.xml text: {error}"))
+                })?;
+                current_value.push_str(&value);
+            }
+            Ok(Event::GeneralRef(reference)) if current.is_some() => {
+                let name = reference.decode().map_err(|error| {
+                    Error::Reverse(format!("cannot decode docProps/core.xml entity: {error}"))
+                })?;
+                if let Some(character) = reference.resolve_char_ref().map_err(|error| {
+                    Error::Reverse(format!(
+                        "cannot resolve docProps/core.xml character: {error}"
+                    ))
+                })? {
+                    current_value.push(character);
+                } else {
+                    let character = match name.as_ref() {
+                        "amp" => '&',
+                        "lt" => '<',
+                        "gt" => '>',
+                        "apos" => '\'',
+                        "quot" => '"',
+                        _ => {
+                            return Err(Error::Reverse(format!(
+                                "docProps/core.xml contains unsupported entity `&{name};`; replace it with a predefined or numeric XML entity"
+                            )));
+                        }
+                    };
+                    current_value.push(character);
                 }
             }
-            Ok(Event::End(element))
-                if matches!(element.local_name().as_ref(), b"created" | b"modified") =>
-            {
-                current = None;
+            Ok(Event::End(_)) => {
+                if let Some(property) = current.take() {
+                    properties.insert(
+                        property.to_owned(),
+                        Value::String(std::mem::take(&mut current_value)),
+                    );
+                }
             }
             Ok(Event::Eof) => break,
             Err(error) => {
@@ -4974,10 +5019,57 @@ fn parse_core_timestamps(bytes: &[u8]) -> Result<(Option<String>, Option<String>
         }
         buf.clear();
     }
-    Ok((
-        created.filter(|value| value != "1970-01-01T00:00:00Z"),
-        modified.filter(|value| value != "1970-01-01T00:00:00Z"),
-    ))
+    Ok(properties)
+}
+
+fn normalize_core_properties(mut properties: Map<String, Value>) -> Result<Map<String, Value>> {
+    for (property, default) in [
+        ("createdAt", "1970-01-01T00:00:00Z"),
+        ("updatedAt", "1970-01-01T00:00:00Z"),
+        ("creator", "unknown"),
+        ("lastModifiedBy", "unknown"),
+        ("revision", "1"),
+    ] {
+        if properties.get(property).and_then(Value::as_str) == Some(default) {
+            properties.remove(property);
+        }
+    }
+    if let Some(revision) = properties.remove("revision") {
+        let text = revision.as_str().unwrap_or_default();
+        let parsed = text.parse::<u64>().map_err(|_| {
+            Error::Reverse(format!(
+                "docProps/core.xml has invalid `cp:revision` value `{text}`; use a positive integer or repair the core properties"
+            ))
+        })?;
+        if parsed == 0 {
+            return Err(Error::Reverse(
+                "docProps/core.xml has invalid `cp:revision` value `0`; use a positive integer"
+                    .to_owned(),
+            ));
+        }
+        properties.insert("revision".to_owned(), Value::Number(parsed.into()));
+    }
+    for property in [
+        "createdAt",
+        "updatedAt",
+        "creator",
+        "lastModifiedBy",
+        "description",
+        "language",
+        "subject",
+        "title",
+    ] {
+        if properties
+            .get(property)
+            .and_then(Value::as_str)
+            .is_some_and(str::is_empty)
+        {
+            return Err(Error::Reverse(format!(
+                "docProps/core.xml contains an empty `{property}` value; provide non-empty core metadata or remove the empty element"
+            )));
+        }
+    }
+    Ok(properties)
 }
 
 fn collect_custom_xml_items(bytes: &[u8]) -> Result<Option<Value>> {
@@ -7983,6 +8075,54 @@ mod tests {
                 && jsx.contains(" adjustLineHeightInTable")
                 && jsx.contains(r#"characterSpacingControl="compressPunctuation""#),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_all_core_properties_without_manifest() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada & Co","lastModifiedBy":"Lin","description":"Weekly <report>","language":"zh-CN","revision":7,"subject":"Economy","title":"Status"},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["body"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("core properties should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external core properties should reverse");
+        for expected in [
+            r#"creator="Ada &amp; Co""#,
+            r#"lastModifiedBy="Lin""#,
+            r#"description="Weekly &lt;report&gt;""#,
+            r#"language="zh-CN""#,
+            r"revision={7}",
+            r#"subject="Economy""#,
+            r#"title="Status""#,
+        ] {
+            assert!(jsx.contains(expected), "missing {expected} in {jsx}");
+        }
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_non_integer_core_revision() {
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut core = String::new();
+        archive
+            .by_name("docProps/core.xml")
+            .expect("core properties")
+            .read_to_string(&mut core)
+            .expect("core properties should be UTF-8");
+        core = core.replace(
+            "<cp:revision>1</cp:revision>",
+            "<cp:revision>latest</cp:revision>",
+        );
+        let malformed = rewrite_package_parts(&bytes, &[("docProps/core.xml", core.as_bytes())]);
+        let error = reverse_document(&malformed).expect_err("invalid revision should be rejected");
+        assert!(
+            error.to_string().contains("invalid `cp:revision`")
+                && error.to_string().contains("positive integer"),
+            "{error}"
         );
     }
 

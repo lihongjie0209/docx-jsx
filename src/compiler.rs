@@ -294,6 +294,7 @@ fn package_document(
         .collect::<Vec<_>>();
     let bytes = patch_section_line_numbering(bytes, &section_line_numbering)?;
     let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
+    let bytes = patch_core_properties(bytes, &ir.document.props)?;
     let row_grid = collect_row_grid_properties(&ir.document);
     let mut bytes = bytes;
     for (part, rows) in row_grid {
@@ -322,6 +323,70 @@ fn package_document(
     let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_simple_position_images(bytes)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn patch_core_properties(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
+    let fields = [
+        ("creator", "dc:creator"),
+        ("lastModifiedBy", "cp:lastModifiedBy"),
+        ("description", "dc:description"),
+        ("language", "dc:language"),
+        ("subject", "dc:subject"),
+        ("title", "dc:title"),
+    ];
+    let mut xml = read_zip_text_entry(&bytes, "docProps/core.xml")?;
+    let mut changed = false;
+    for (property, element) in fields {
+        if let Some(value) = props.get(property).and_then(Value::as_str) {
+            replace_xml_element_text(&mut xml, element, value)?;
+            changed = true;
+        }
+    }
+    if let Some(revision) = props.get("revision").and_then(Value::as_u64) {
+        replace_xml_element_text(&mut xml, "cp:revision", &revision.to_string())?;
+        changed = true;
+    }
+    if !changed {
+        return Ok(bytes);
+    }
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    replace_zip_text_entry(archive, "docProps/core.xml", xml.as_bytes())
+}
+
+fn read_zip_text_entry(bytes: &[u8], name: &str) -> Result<String> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name(name)
+        .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot decode {name}: {error}")))?;
+    Ok(xml)
+}
+
+fn replace_xml_element_text(xml: &mut String, element: &str, value: &str) -> Result<()> {
+    let open = format!("<{element}>");
+    let close = format!("</{element}>");
+    let Some(open_start) = xml.find(&open) else {
+        let root_close = "</cp:coreProperties>";
+        let insertion = xml.find(root_close).ok_or_else(|| {
+            Error::Compile("docProps/core.xml is missing `cp:coreProperties`".to_owned())
+        })?;
+        xml.insert_str(
+            insertion,
+            &format!("<{element}>{}</{element}>", xml_escape(value)),
+        );
+        return Ok(());
+    };
+    let start = open_start + open.len();
+    let end = xml[start..]
+        .find(&close)
+        .map(|end| start + end)
+        .ok_or_else(|| Error::Compile(format!("docProps/core.xml has an unclosed `{element}`")))?;
+    xml.replace_range(start..end, &xml_escape(value));
+    Ok(())
 }
 
 fn collect_existing_paragraph_ids(node: &Node, ids: &mut BTreeSet<String>) {
@@ -6736,7 +6801,7 @@ mod tests {
     #[test]
     fn compile_should_render_document_settings_and_metadata() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada & Co","lastModifiedBy":"Lin","description":"Weekly <report>","language":"zh-CN","revision":7,"subject":"Economy","title":"Status","customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         )
         .expect("fixture should parse");
         ir.validate().expect("fixture should validate");
@@ -6768,6 +6833,9 @@ mod tests {
             .expect("styles should be UTF-8");
 
         assert!(core.contains("2026-08-14T00:00:00Z") && core.contains("2026-08-15T00:00:00Z"));
+        assert!(core.contains("Ada &amp; Co") && core.contains("Weekly &lt;report&gt;"));
+        assert!(core.contains("zh-CN") && core.contains("<cp:revision>7</cp:revision>"));
+        assert!(core.contains("Economy") && core.contains("Status"));
         assert!(custom.contains(r#"name="Project""#) && custom.contains("Apollo"));
         assert!(settings.contains(r#"w:defaultTabStop w:val="720""#));
         assert!(settings.contains(r#"w15:docId w15:val="{01234567-89AB-CDEF-0123-456789ABCDEF}""#));

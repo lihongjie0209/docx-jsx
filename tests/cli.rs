@@ -42,6 +42,8 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("# docx-jsx v1 specification"))
         .stdout(predicate::str::contains("## Component tree"))
         .stdout(predicate::str::contains("`IndexEntry`"))
+        .stdout(predicate::str::contains("`creator?: string`"))
+        .stdout(predicate::str::contains("`revision?: integer`"))
         .stdout(predicate::str::contains("type?: \"nextPage\""))
         .stdout(predicate::str::contains("lineNumbering?:"))
         .stdout(predicate::str::contains("docx-jsx pdf"))
@@ -420,6 +422,61 @@ export default <Document><Section columns={{count:2,spacing:18,separator:true}}>
         "{document}"
     );
     assert!(document.contains(r#"w:equalWidth="0""#), "{document}");
+}
+
+#[test]
+fn cli_should_reverse_and_recompile_core_properties_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("metadata.tsx");
+    let compiled = directory.path().join("metadata.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document creator="Ada & Co" lastModifiedBy="Lin" description="Weekly <report>" language="zh-CN" revision={7} subject="Economy" title="Status"><Section><Paragraph>body</Paragraph></Section></Document>;"#,
+    )
+    .expect("source should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    let external = directory.path().join("external.docx");
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("compiled DOCX should read")),
+    )
+    .expect("external DOCX should write");
+    let reversed = directory.path().join("reversed.jsx");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let rebuilt = directory.path().join("rebuilt.docx");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should read");
+    assert!(jsx.contains("creator=\"Ada &amp; Co\""), "{jsx}");
+    let source = fs::read(&rebuilt).expect("rebuilt DOCX should read");
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(source))
+        .expect("rebuilt DOCX should remain a ZIP archive");
+    let mut core = String::new();
+    archive
+        .by_name("docProps/core.xml")
+        .expect("core properties should exist")
+        .read_to_string(&mut core)
+        .expect("core properties should be UTF-8");
+    assert!(core.contains("Ada &amp; Co") && core.contains("Weekly &lt;report&gt;"));
 }
 
 #[test]

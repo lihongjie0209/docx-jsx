@@ -1027,6 +1027,13 @@ fn document_props() -> &'static [&'static str] {
         "customXmlItems",
         "createdAt",
         "updatedAt",
+        "creator",
+        "lastModifiedBy",
+        "description",
+        "language",
+        "revision",
+        "subject",
+        "title",
         "customProperties",
         "documentId",
         "defaultTabStop",
@@ -1776,18 +1783,7 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
     if let Some(value) = node.props.get("defaultTabStop") {
         require_number(value, path, "defaultTabStop", true)?;
     }
-    for key in ["createdAt", "updatedAt", "documentId"] {
-        if node
-            .props
-            .get(key)
-            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
-        {
-            return Err(validation(
-                path,
-                format!("`{key}` must be a non-empty string"),
-            ));
-        }
-    }
+    validate_document_core_metadata(&node.props, path)?;
     for key in ["customProperties", "documentVariables"] {
         if let Some(value) = node.props.get(key) {
             validate_string_map(value, path, key)?;
@@ -1810,6 +1806,39 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
     )?;
     if let Some(value) = node.props.get("styles") {
         validate_style_definitions(value, path)?;
+    }
+    Ok(())
+}
+
+fn validate_document_core_metadata(props: &Map<String, Value>, path: &str) -> Result<()> {
+    for key in [
+        "createdAt",
+        "updatedAt",
+        "documentId",
+        "creator",
+        "lastModifiedBy",
+        "description",
+        "language",
+        "subject",
+        "title",
+    ] {
+        if props
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` must be a non-empty string"),
+            ));
+        }
+    }
+    if let Some(value) = props.get("revision") {
+        let revision = value
+            .as_u64()
+            .ok_or_else(|| validation(path, "`revision` must be a positive integer"))?;
+        if revision == 0 {
+            return Err(validation(path, "`revision` must be a positive integer"));
+        }
     }
     Ok(())
 }
@@ -5584,7 +5613,7 @@ mod tests {
     #[test]
     fn validate_should_accept_document_settings_and_metadata() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"defaultCharacterSpacing":0.5,"createdAt":"2026-08-14T00:00:00Z","updatedAt":"2026-08-15T00:00:00Z","creator":"Ada","lastModifiedBy":"Lin","description":"Report","language":"zh-CN","revision":2,"subject":"Weekly","title":"Status","customProperties":{"Project":"Apollo"},"documentId":"01234567-89AB-CDEF-0123-456789ABCDEF","defaultTabStop":36,"documentVariables":{"Customer":"Ada"},"evenAndOddHeaders":true,"adjustLineHeightInTable":true,"characterSpacingControl":"compressPunctuation"},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         );
         ir.validate()
             .expect("document settings and metadata should validate");
@@ -5776,6 +5805,10 @@ mod tests {
     fn validate_should_reject_invalid_document_settings_and_metadata() {
         for (props, expected) in [
             (r#""createdAt":"""#, "createdAt"),
+            (r#""creator":"""#, "creator"),
+            (r#""lastModifiedBy":"""#, "lastModifiedBy"),
+            (r#""revision":0"#, "positive integer"),
+            (r#""revision":1.5"#, "positive integer"),
             (r#""customProperties":{}"#, "must not be empty"),
             (r#""customProperties":{"Project":1}"#, "string values"),
             (

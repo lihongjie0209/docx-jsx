@@ -20,6 +20,13 @@ export default (
   <Document
     createdAt="2026-08-14T00:00:00Z"
     updatedAt="2026-08-14T00:00:00Z"
+    creator="docx-jsx validation"
+    lastModifiedBy="Open XML SDK"
+    description="Schema validation fixture"
+    language="en-US"
+    revision={3}
+    subject="Open XML validation"
+    title="docx-jsx fixture"
     defaultFonts={{
       ascii: "Times New Roman",
       hiAnsi: "Times New Roman",

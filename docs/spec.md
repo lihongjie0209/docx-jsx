@@ -200,11 +200,19 @@ error instead of a silent drop.
   merging slots. Positive `defaultSize?: number`, signed
   `defaultCharacterSpacing?: number` (points), `createdAt?: string`,
   `updatedAt?: string`, `customProperties?: Record<string,string>`,
+  `creator?: string`, `lastModifiedBy?: string`, `description?: string`,
+  `language?: string`, `revision?: integer`, `subject?: string`,
+  `title?: string`,
   `documentId?: string`, positive `defaultTabStop?: number` (points),
   `documentVariables?: Record<string,string>`, `evenAndOddHeaders?: boolean`,
   `adjustLineHeightInTable?: boolean`, and
   `characterSpacingControl?: "doNotCompress" | "compressPunctuation" | "compressPunctuationAndJapaneseKana"`.
-  Metadata strings, IDs, property names, and variable names must be non-empty;
+  Core-property strings, metadata strings, IDs, property names, and variable
+  names must be non-empty; `revision` must be a positive integer. Core
+  properties map to `docProps/core.xml` and reverse from external DOCX without
+  the IR manifest. Empty or default values injected by docx-rs (`unknown` for
+  creator/modifier and `1` for revision) are omitted on reverse when no
+  meaningful distinction can be recovered.
   maps must not be empty. These values are emitted to the standard core,
   custom-property, styles, and settings package parts.
   `defaultLineSpacing?: {before?,after?,line?,beforeLines?,afterLines?,lineRule?}`
