@@ -79,7 +79,7 @@ children are text. Pure whitespace between structural elements is ignored.
 | --- | --- |
 | `Document` | one or more `Section` |
 | `Section` | `Header`, `Footer`, `Heading`, `Paragraph`, `Caption`, `Index`, `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `Bookmark`, `Table`, `List`, `ContentControl` |
-| `Header`, `Footer` | `Paragraph`, `Caption`, `Table`, `List` |
+| `Header`, `Footer` | `Paragraph`, `Caption`, `Table`, `List`, block `ContentControl` |
 | `Paragraph` | `Run`, `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Hyperlink`, `ContentControl`, `Field`, `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField`, `IndexEntry`, `Comment`, `InlineBookmark`, `Inserted`, `Deleted`, `MovedFrom`, `MovedTo`, `Footnote`, `Tab`, `TabStop`, `PositionalTab`, `Symbol`, `Bold`, `Italic`, `Underline`, `StrikeThrough`, `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText`, `PageNumber`, `TotalPages`, `PageReference`, `TocEntry`, string, number |
 | `Heading` | same inline children as `Paragraph` |
 | `Caption` | same inline children as `Paragraph` |
@@ -91,7 +91,7 @@ children are text. Pure whitespace between structural elements is ignored.
 | `Deleted` | `Run`, `Text`, string, number |
 | `MovedFrom`, `MovedTo` | run-level inline content |
 | `Hyperlink` | `Run`, `Text`, `Break`, `Image`, `ContentControl`, `Inserted`, `Deleted`, `InlineBookmark`, `Comment`, string, number |
-| `ContentControl` | inline: `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Footnote`, `Tab`, `PositionalTab`, `Symbol`, `PageReference`, string, number. block (Section child): `Paragraph`, `Heading`, `Caption`, `Table`, `List` |
+| `ContentControl` | inline: `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Footnote`, `Tab`, `PositionalTab`, `Symbol`, `PageReference`, string, number. block (`Section`, `Header`, or `Footer` child): `Paragraph`, `Heading`, `Caption`, `Table`, `List` |
 | `Field` | `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Tab`, `PositionalTab`, `Symbol`, string, number |
 | `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField` | same result children as `Field` |
 | `Text` | string, number |
@@ -165,8 +165,9 @@ a reason and a repair suggestion instead of empty adjacent markers.
 Body-level `w:sdt` that is a table of contents, figures, or entries field
 reverses as `TableOfContents` / `TableOfFigures` / `TableOfEntries`. Other
 body-level and table-cell structured tags reverse as `ContentControl`.
-Header/footer structured tags have no public writer API and error. The
-generated module imports only the components it uses and default-exports
+Header/footer block structured tags reverse as `ContentControl` in the same
+container, preserving supported aliases and data bindings. The generated
+module imports only the components it uses and default-exports
 one `Document`. External reverse also restores section `margins` and
 `documentGrid` from `w:sectPr`, paragraph `keepNext` / `keepLines` /
 `outlineLevel` from `w:pPr`, and run `themeColor` / `themeShade` /
@@ -527,13 +528,15 @@ error instead of a silent drop.
   `leader?: "none" | "dot" | "heavy" | "hyphen" | "middleDot" | "underscore"`.
 - `ContentControl`: optional `alias`, `xpath`, `prefixMappings`, and
   `storeItemId` strings. It emits a native Word structured document tag
-  (`w:sdt`). When any data-binding property is used, `xpath` is required and
-  the values are emitted as `w:dataBinding` attributes. As a paragraph,
-  hyperlink, or table-cell child it requires inline content. As a `Section`
-  child it maps to `Docx::add_structured_data_tag` and requires block
+  (`w:sdt`). When any data-binding property is used, non-empty `xpath` and
+  `storeItemId` are required; the latter is the custom XML data-store item GUID
+  required by OOXML. The values are emitted as `w:dataBinding` attributes. As a paragraph,
+  hyperlink, or table-cell child it requires inline content. As a `Section`,
+  `Header`, or `Footer` child it maps to docx-rs `StructuredDataTag` block
   children (`Paragraph`, `Heading`, `Caption`, `Table`, `List`); inline and
   block children cannot be mixed. External reverse restores a body-level
-  `w:sdt` as a section-level `ContentControl` wrapping those block children.
+  `w:sdt` as a `ContentControl` wrapping those block children in the original
+  `Section`, `Header`, or `Footer` container.
 - `Field`: required non-empty `instruction`, optional `dirty?: boolean`
   (default `true`), and optional inline result content. It emits a complex Word
   field (`begin`, `instrText`, `separate`, result, `end`). This supports native

@@ -6,19 +6,20 @@ use std::path::Path;
 use docx_rs::{
     AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, CharacterSpacingValues,
     Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, DrawingPosition, FieldCharType,
-    Footer, Footnote, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
-    InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelOverride, LevelSuffixType,
-    LevelText, LineSpacing, LineSpacingType, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering,
-    NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType, PageSize, Paragraph,
-    ParagraphBorder, ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic,
-    PicAlign, PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo,
-    RelativeFromHType, RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType,
-    SpecialIndentType, Start, StructuredDataTag, Style, StyleType, StyleWithLevel, Sym,
-    Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType, TableBorder,
-    TableBorderPosition, TableBorders, TableCell, TableCellBorder, TableCellBorderPosition,
-    TableCellBorders, TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents,
-    TablePositionProperty, TableRow, TextAlignmentType, TextBorder, TextDirectionType, ThemeColor,
-    VAlignType, VMergeType, VertAlignType, WebExtension, WidthType,
+    Footer, FooterChild, Footnote, Header, HeaderChild, HeightRule, Hyperlink, HyperlinkType,
+    IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelOverride,
+    LevelSuffixType, LevelText, LineSpacing, LineSpacingType, MoveFrom, MoveTo, NumPages,
+    NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType,
+    PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition, ParagraphBorders,
+    ParagraphPropertyChange, Pic, PicAlign, PositionalTab, PositionalTabAlignmentType,
+    PositionalTabRelativeTo, RelativeFromHType, RelativeFromVType, Run, RunFonts, Section,
+    Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag, Style, StyleType,
+    StyleWithLevel, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType,
+    TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
+    TableCellBorderPosition, TableCellBorders, TableCellMargins, TableCellProperty,
+    TableLayoutType, TableOfContents, TablePositionProperty, TableRow, TextAlignmentType,
+    TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType, VertAlignType, WebExtension,
+    WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -5643,6 +5644,14 @@ fn compile_header(
                     header = header.add_paragraph(paragraph);
                 }
             }
+            NodeKind::ContentControl => {
+                let control =
+                    compile_block_content_control(child, entry_dir, &child_path, context)?;
+                header.has_numbering |= control.has_numbering;
+                header
+                    .children
+                    .push(HeaderChild::StructuredDataTag(Box::new(control)));
+            }
             _ => return Err(validation(&child_path, "unsupported Header child")),
         }
     }
@@ -5681,6 +5690,14 @@ fn compile_footer(
                 for paragraph in compile_list(child, entry_dir, &child_path, context)? {
                     footer = footer.add_paragraph(paragraph);
                 }
+            }
+            NodeKind::ContentControl => {
+                let control =
+                    compile_block_content_control(child, entry_dir, &child_path, context)?;
+                footer.has_numbering |= control.has_numbering;
+                footer
+                    .children
+                    .push(FooterChild::StructuredDataTag(Box::new(control)));
             }
             _ => return Err(validation(&child_path, "unsupported Footer child")),
         }
@@ -7685,6 +7702,34 @@ mod tests {
                     < document.find("after").expect("after"),
             "block sdt should sit between surrounding paragraphs: {document}"
         );
+    }
+
+    #[test]
+    fn compile_should_render_header_and_footer_block_content_controls() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Header","props":{},"children":[{"type":"ContentControl","props":{"alias":"HeaderData","xpath":"/root/header","storeItemId":"{ABC}"},"children":[{"type":"Paragraph","props":{},"children":["header"]}]}]},{"type":"Footer","props":{},"children":[{"type":"ContentControl","props":{"alias":"FooterData","xpath":"/root/footer","storeItemId":"{ABC}"},"children":[{"type":"Paragraph","props":{},"children":["footer"]}]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        for (part, alias, text) in [
+            ("word/header1.xml", "HeaderData", "header"),
+            ("word/footer1.xml", "FooterData", "footer"),
+        ] {
+            let mut xml = String::new();
+            archive
+                .by_name(part)
+                .expect("header/footer part should exist")
+                .read_to_string(&mut xml)
+                .expect("XML should be UTF-8");
+            assert!(
+                xml.contains(&format!(r#"<w:alias w:val="{alias}""#))
+                    && xml.contains(&format!(r#"w:xpath="/root/{text}""#))
+                    && xml.contains(text),
+                "block content control missing from {part}: {xml}"
+            );
+        }
     }
 
     #[test]

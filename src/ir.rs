@@ -677,10 +677,7 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         NodeKind::Table => child == NodeKind::TableRow,
         NodeKind::TableRow => child == NodeKind::TableCell,
         NodeKind::TableCell => allows_table_cell_child(child),
-        NodeKind::Header | NodeKind::Footer => matches!(
-            child,
-            NodeKind::Paragraph | NodeKind::Caption | NodeKind::Table | NodeKind::List
-        ),
+        NodeKind::Header | NodeKind::Footer => allows_header_footer_child(child),
         NodeKind::Hyperlink => allows_hyperlink_child(child),
         NodeKind::ListItem
         | NodeKind::Inserted
@@ -717,6 +714,17 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         }
         NodeKind::Deleted => matches!(child, NodeKind::Run | NodeKind::Text),
     }
+}
+
+fn allows_header_footer_child(child: NodeKind) -> bool {
+    matches!(
+        child,
+        NodeKind::Paragraph
+            | NodeKind::Caption
+            | NodeKind::Table
+            | NodeKind::List
+            | NodeKind::ContentControl
+    )
 }
 
 fn allows_hyperlink_child(child: NodeKind) -> bool {
@@ -762,11 +770,23 @@ fn validate_content_control_placement(parent: NodeKind, control: &Node, path: &s
             "ContentControl cannot mix block and inline children; use only paragraphs/tables or only inline runs",
         ));
     }
-    if parent == NodeKind::Section {
+    if matches!(
+        parent,
+        NodeKind::Section | NodeKind::Header | NodeKind::Footer
+    ) {
         if !has_block {
+            let placement = if parent == NodeKind::Section {
+                "document-level"
+            } else if parent == NodeKind::Header {
+                "header"
+            } else {
+                "footer"
+            };
             return Err(validation(
                 path,
-                "document-level ContentControl requires block children (`Paragraph`, `Heading`, `Caption`, `Table`, or `List`)",
+                format!(
+                    "{placement} ContentControl requires block children (`Paragraph`, `Heading`, `Caption`, `Table`, or `List`)"
+                ),
             ));
         }
     } else if has_block {
@@ -3737,6 +3757,18 @@ fn validate_revision_and_control_semantics(node: &Node, path: &str) -> Result<()
                 "ContentControl data binding requires non-empty `xpath`",
             ));
         }
+        if has_binding
+            && node
+                .props
+                .get("storeItemId")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Err(validation(
+                path,
+                "ContentControl data binding requires non-empty `storeItemId` (the custom XML data-store item GUID)",
+            ));
+        }
     }
     if node.kind == NodeKind::Field
         && node
@@ -4956,6 +4988,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_should_accept_header_block_content_control() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Header","props":{},"children":[{"type":"ContentControl","props":{"alias":"HeaderData"},"children":[{"type":"Paragraph","props":{},"children":["header"]}]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("header block ContentControl should validate");
+    }
+
+    #[test]
     fn validate_should_reject_section_content_control_with_inline_children() {
         let ir = parse(
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"ContentControl","props":{"alias":"BlockData"},"children":["loose"]}]}]}}"#,
@@ -5674,6 +5715,22 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"ContentControl","props":{"alias":"Customer","xpath":"/root/customer","prefixMappings":"xmlns:x='urn:test'","storeItemId":"{ABC}"},"children":["Ada"]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_bound_content_control_without_store_item_id() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"ContentControl","props":{"xpath":"/root/customer"},"children":["Ada"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("data binding without storeItemId is invalid OOXML");
+        assert!(
+            error
+                .to_string()
+                .contains("requires non-empty `storeItemId`"),
+            "{error}"
+        );
     }
 
     #[test]

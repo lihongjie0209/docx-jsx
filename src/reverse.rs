@@ -108,6 +108,8 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         .map(|(id, path, _)| (id.clone(), path.clone()))
         .collect();
     writer.sdt_plan = parse_sdt_plan(bytes)?;
+    writer.header_footer_sdt_props =
+        parse_header_footer_sdt_props(bytes, &writer.header_footer_parts)?;
     let document_attrs = reverse_document_attributes(&docx, &style_metadata, &writer, bytes)?;
     writer.line(0, &format!("<Document{document_attrs}>"));
     writer.emit_sections(&docx)?;
@@ -236,6 +238,8 @@ struct Writer {
     images: ImageCatalog,
     image_scope: Option<String>,
     header_footer_parts: HashMap<String, String>,
+    header_footer_sdt_props: HashMap<String, Vec<SdtProps>>,
+    header_footer_sdt_indices: HashMap<String, usize>,
     assets: BTreeMap<String, Vec<u8>>,
     style_theme_colors: HashMap<String, ThemeColorInfo>,
     run_theme_colors: Vec<ThemeColorInfo>,
@@ -536,7 +540,24 @@ impl Writer {
     fn block_content_control(&mut self, tag: &StructuredDataTag, depth: usize) -> Result<()> {
         self.components.insert("ContentControl");
         let mut props = sdt_props_from_tag(tag);
-        if self.apply_sdt {
+        if let Some(part) = self
+            .image_scope
+            .as_deref()
+            .filter(|part| self.header_footer_sdt_props.contains_key(*part))
+        {
+            let index = self
+                .header_footer_sdt_indices
+                .entry(part.to_owned())
+                .or_default();
+            if let Some(xml_props) = self
+                .header_footer_sdt_props
+                .get(part)
+                .and_then(|values| values.get(*index))
+            {
+                merge_sdt_props(&mut props, xml_props);
+            }
+            *index += 1;
+        } else if self.apply_sdt {
             if let Some(xml_props) = self.sdt_plan.body_tags.get(self.body_sdt_index) {
                 merge_sdt_props(&mut props, xml_props);
             }
@@ -1351,8 +1372,9 @@ impl Writer {
                     self.table(table, depth)?;
                     index += 1;
                 }
-                value @ HeaderChild::StructuredDataTag(_) => {
-                    return Err(unsupported("header", value));
+                HeaderChild::StructuredDataTag(tag) => {
+                    self.block_content_control(tag, depth)?;
+                    index += 1;
                 }
             }
         }
@@ -1387,8 +1409,9 @@ impl Writer {
                     self.table(table, depth)?;
                     index += 1;
                 }
-                value @ FooterChild::StructuredDataTag(_) => {
-                    return Err(unsupported("footer", value));
+                FooterChild::StructuredDataTag(tag) => {
+                    self.block_content_control(tag, depth)?;
+                    index += 1;
                 }
             }
         }
@@ -2564,6 +2587,39 @@ fn parse_sdt_plan(bytes: &[u8]) -> Result<SdtPlan> {
         buf.clear();
     }
     Ok(plan)
+}
+
+fn parse_header_footer_sdt_props(
+    bytes: &[u8],
+    parts: &HashMap<String, String>,
+) -> Result<HashMap<String, Vec<SdtProps>>> {
+    let mut output = HashMap::new();
+    for part in parts.values() {
+        let Ok(xml) = read_zip_text(bytes, part) else {
+            continue;
+        };
+        let mut reader = Reader::from_str(&xml);
+        reader.config_mut().trim_text(true);
+        let mut props = Vec::new();
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(element)) if element.local_name().as_ref() == b"sdt" => {
+                    props.push(parse_sdt_properties_until_content(&mut reader)?);
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "invalid {part} while reading structured tags: {error}"
+                    )));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+        output.insert(part.clone(), props);
+    }
+    Ok(output)
 }
 
 fn parse_container_events(
@@ -8014,6 +8070,37 @@ mod tests {
         assert!(
             jsx.contains(r#"<ContentControl alias="BlockData">"#) && jsx.contains(r#"{"body"}"#),
             "body control alias must not be stolen by the cell SDT: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_header_footer_content_controls() {
+        let bytes = pack_docx(
+            Docx::new()
+                .header(Header {
+                    children: vec![HeaderChild::StructuredDataTag(Box::new(
+                        StructuredDataTag::new()
+                            .alias("HeaderData")
+                            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("head"))),
+                    ))],
+                    ..Header::new()
+                })
+                .footer(Footer {
+                    children: vec![FooterChild::StructuredDataTag(Box::new(
+                        StructuredDataTag::new()
+                            .alias("FooterData")
+                            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("foot"))),
+                    ))],
+                    ..Footer::new()
+                }),
+        );
+        let jsx = reverse_document(&bytes).expect("external DOCX should reverse");
+        assert!(
+            jsx.contains(r#"<ContentControl alias="HeaderData">"#)
+                && jsx.contains(r#"<ContentControl alias="FooterData">"#)
+                && jsx.contains(r#"{"head"}"#)
+                && jsx.contains(r#"{"foot"}"#),
+            "header/footer block controls should retain their placement and aliases: {jsx}"
         );
     }
 
