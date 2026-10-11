@@ -60,6 +60,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
+    let numbering_multi_level_types = collect_numbering_multi_level_types(bytes)?;
     let table_row_xml = collect_table_row_xml_metadata(bytes)?;
     let table_xml = collect_table_xml_metadata(bytes)?;
     let paragraph_indent_xml = collect_paragraph_indent_metadata(bytes)?;
@@ -77,6 +78,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         run_theme_colors: theme_colors.runs,
         abstract_nums: docx.numberings.abstract_nums.clone(),
         numbering_instances: docx.numberings.numberings.clone(),
+        numbering_multi_level_types,
         section_columns,
         table_row_xml,
         table_xml,
@@ -231,6 +233,7 @@ struct Writer {
     run_theme_index: usize,
     abstract_nums: Vec<AbstractNumbering>,
     numbering_instances: Vec<Numbering>,
+    numbering_multi_level_types: HashMap<usize, String>,
     section_columns: Vec<usize>,
     table_row_xml: HashMap<String, Vec<TableRowXmlMetadata>>,
     table_row_indices: HashMap<String, usize>,
@@ -1409,16 +1412,6 @@ impl Writer {
                     "paragraph references numbering `{num_id}` which is missing from word/numbering.xml; restore the numbering definition or remove `w:numPr`"
                 ))
             })?;
-        if instance
-            .level_overrides
-            .iter()
-            .any(|value| value.override_level.is_some())
-        {
-            return Err(Error::Reverse(
-                "numbering uses a full level override; flatten the override into the abstract definition or simplify the list before reversing"
-                    .to_owned(),
-            ));
-        }
         let definition = self
             .abstract_nums
             .iter()
@@ -1438,12 +1431,34 @@ impl Writer {
                     .to_owned(),
             ));
         }
-        let starts = instance
-            .level_overrides
-            .iter()
-            .filter_map(|value| value.override_start.map(|start| (value.level, start)))
-            .collect::<HashMap<_, _>>();
-        reverse_list_definition(definition, &starts)
+        let mut attrs = reverse_list_definition(
+            definition,
+            self.numbering_multi_level_types
+                .get(&definition.id)
+                .map(String::as_str),
+        )?;
+        if !instance.level_overrides.is_empty() {
+            let mut overrides = Vec::with_capacity(instance.level_overrides.len());
+            for override_level in &instance.level_overrides {
+                let mut value = Map::new();
+                value.insert("level".to_owned(), Value::from(override_level.level));
+                if let Some(start) = override_level.override_start {
+                    value.insert("start".to_owned(), Value::from(start));
+                }
+                if let Some(definition) = &override_level.override_level {
+                    value.insert(
+                        "definition".to_owned(),
+                        reverse_level_definition(definition)?,
+                    );
+                }
+                overrides.push(Value::Object(value));
+            }
+            let encoded = serde_json::to_string(&overrides).map_err(|error| {
+                Error::Reverse(format!("cannot serialize list overrides: {error}"))
+            })?;
+            let _ = write!(attrs, " overrides={{{encoded}}}");
+        }
+        Ok(attrs)
     }
 
     fn list_item(&mut self, paragraph: &docx_rs::Paragraph, depth: usize) -> Result<()> {
@@ -3253,6 +3268,107 @@ fn validate_raw_character_indent(values: &BTreeMap<String, i64>, owner: &str) ->
     Ok(())
 }
 
+fn collect_numbering_multi_level_types(bytes: &[u8]) -> Result<HashMap<usize, String>> {
+    if !zip_entry_names(bytes)?
+        .iter()
+        .any(|name| name == "word/numbering.xml")
+    {
+        return Ok(HashMap::new());
+    }
+    let xml = read_zip_text(bytes, "word/numbering.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut current_id = None;
+    let mut output = HashMap::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"abstractNum" => {
+                if current_id.is_some() {
+                    return Err(Error::Reverse(
+                        "word/numbering.xml has nested `w:abstractNum` elements; repair the malformed numbering definition".to_owned(),
+                    ));
+                }
+                current_id = xml_attribute(&reader, &element, b"abstractNumId")?
+                    .and_then(|value| value.parse::<usize>().ok());
+                let Some(id) = current_id else {
+                    return Err(Error::Reverse(
+                        "word/numbering.xml has an abstract numbering definition without a numeric `w:abstractNumId`; restore its ID".to_owned(),
+                    ));
+                };
+                if output.insert(id, String::new()).is_some() {
+                    return Err(Error::Reverse(format!(
+                        "word/numbering.xml repeats abstract numbering ID `{id}`; make numbering IDs unique"
+                    )));
+                }
+            }
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"abstractNum" => {
+                let id = xml_attribute(&reader, &element, b"abstractNumId")?
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .ok_or_else(|| Error::Reverse(
+                        "word/numbering.xml has an abstract numbering definition without a numeric `w:abstractNumId`; restore its ID".to_owned(),
+                    ))?;
+                if output.insert(id, String::new()).is_some() {
+                    return Err(Error::Reverse(format!(
+                        "word/numbering.xml repeats abstract numbering ID `{id}`; make numbering IDs unique"
+                    )));
+                }
+            }
+            Ok(Event::Start(element) | Event::Empty(element))
+                if element.local_name().as_ref() == b"multiLevelType" =>
+            {
+                let Some(id) = current_id else {
+                    return Err(Error::Reverse(
+                        "`w:multiLevelType` is outside an abstract numbering definition".to_owned(),
+                    ));
+                };
+                let multi_level_type = xml_attribute(&reader, &element, b"val")?.ok_or_else(|| {
+                    Error::Reverse(format!(
+                        "abstract numbering `{id}` has `w:multiLevelType` without `w:val`; add singleLevel, multilevel, or hybridMultilevel"
+                    ))
+                })?;
+                let recorded_type = output.get_mut(&id).ok_or_else(|| {
+                    Error::Reverse(format!(
+                        "abstract numbering `{id}` has a multi-level type outside its `w:abstractNum`; place it inside the definition"
+                    ))
+                })?;
+                if !recorded_type.is_empty() {
+                    return Err(Error::Reverse(format!(
+                        "abstract numbering `{id}` contains multiple `w:multiLevelType` values; keep one"
+                    )));
+                }
+                if multi_level_type.is_empty() {
+                    return Err(Error::Reverse(format!(
+                        "abstract numbering `{id}` has an empty `w:multiLevelType`; use singleLevel, multilevel, or hybridMultilevel"
+                    )));
+                }
+                *recorded_type = multi_level_type;
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"abstractNum" => {
+                current_id.take();
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/numbering.xml multi-level type at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    if current_id.is_some() {
+        return Err(Error::Reverse(
+            "word/numbering.xml has an unclosed `w:abstractNum`; close the numbering definition"
+                .to_owned(),
+        ));
+    }
+    Ok(output
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .collect())
+}
+
 fn collect_section_columns(bytes: &[u8]) -> Result<Vec<usize>> {
     let xml = read_zip_text(bytes, "word/document.xml")?;
     let mut reader = Reader::from_str(&xml);
@@ -3851,37 +3967,39 @@ fn nested_block_paragraph<'a>(child: &'a NestedBlock<'a>) -> Result<&'a docx_rs:
 
 fn reverse_list_definition(
     definition: &AbstractNumbering,
-    start_overrides: &HashMap<usize, usize>,
+    multi_level_type: Option<&str>,
 ) -> Result<String> {
-    if let Some(attrs) = collapse_list_shorthand(definition, start_overrides) {
-        return Ok(attrs);
+    let mut attrs = if let Some(attrs) = collapse_list_shorthand(definition) {
+        attrs
+    } else {
+        let mut levels = Vec::new();
+        for level in &definition.levels {
+            levels.push(reverse_level_definition(level)?);
+        }
+        let encoded = serde_json::to_string(&levels)
+            .map_err(|error| Error::Reverse(format!("cannot serialize list levels: {error}")))?;
+        format!(" levels={{{encoded}}}")
+    };
+    if let Some(multi_level_type) = multi_level_type {
+        if !["singleLevel", "multilevel", "hybridMultilevel"].contains(&multi_level_type) {
+            return Err(Error::Reverse(format!(
+                "numbering uses unsupported w:multiLevelType `{multi_level_type}`; use singleLevel, multilevel, or hybridMultilevel"
+            )));
+        }
+        attrs.push_str(&attr("multiLevelType", multi_level_type));
     }
-    let mut levels = Vec::new();
-    for level in &definition.levels {
-        levels.push(reverse_level_definition(level, start_overrides)?);
-    }
-    let encoded = serde_json::to_string(&levels)
-        .map_err(|error| Error::Reverse(format!("cannot serialize list levels: {error}")))?;
-    Ok(format!(" levels={{{encoded}}}"))
+    Ok(attrs)
 }
 
-fn collapse_list_shorthand(
-    definition: &AbstractNumbering,
-    start_overrides: &HashMap<usize, usize>,
-) -> Option<String> {
+fn collapse_list_shorthand(definition: &AbstractNumbering) -> Option<String> {
     if definition.levels.len() != 9 {
         return None;
     }
     let first = definition.levels.first()?;
-    let start = start_overrides
-        .get(&first.level)
-        .copied()
-        .or_else(|| {
-            json(&first.start)
-                .ok()
-                .and_then(|value| value.as_u64())
-                .and_then(|value| usize::try_from(value).ok())
-        })
+    let start = json(&first.start)
+        .ok()
+        .and_then(|value| value.as_u64())
+        .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(1);
     let format = json(&first.format).ok()?;
     let format = format.as_str()?;
@@ -3894,15 +4012,10 @@ fn collapse_list_shorthand(
         if level.level != index {
             return None;
         }
-        let level_start = start_overrides
-            .get(&level.level)
-            .copied()
-            .or_else(|| {
-                json(&level.start)
-                    .ok()
-                    .and_then(|value| value.as_u64())
-                    .and_then(|value| usize::try_from(value).ok())
-            })
+        let level_start = json(&level.start)
+            .ok()
+            .and_then(|value| value.as_u64())
+            .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(1);
         if level_start != start {
             return None;
@@ -3957,10 +4070,7 @@ fn collapse_list_shorthand(
     Some(attrs)
 }
 
-fn reverse_level_definition(
-    level: &Level,
-    start_overrides: &HashMap<usize, usize>,
-) -> Result<Value> {
+fn reverse_level_definition(level: &Level) -> Result<Value> {
     let source = json(level)?;
     let mut output = Map::new();
     if let Some(value) = source.get("format").and_then(Value::as_str) {
@@ -3969,12 +4079,10 @@ fn reverse_level_definition(
     if let Some(value) = source.get("text").and_then(Value::as_str) {
         output.insert("text".to_owned(), Value::String(value.to_owned()));
     }
-    let start = start_overrides.get(&level.level).copied().or_else(|| {
-        source
-            .get("start")
-            .and_then(Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-    });
+    let start = source
+        .get("start")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok());
     if let Some(start) = start {
         output.insert("start".to_owned(), Value::Number(start.into()));
     }
@@ -5365,12 +5473,12 @@ mod tests {
     use docx_rs::{
         AbstractNumbering, BorderType, CellMargins, CharacterSpacingValues, Comment, Delete,
         DocGrid, Docx, Footer, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
-        Level, LevelJc, LevelSuffixType, LevelText, LineSpacing, LineSpacingType, NumberFormat,
-        Numbering, NumberingId, PageMargin, PageOrientationType, PageSize, Paragraph, Pic, Run,
-        RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag,
-        Style, StyleType, Table, TableAlignmentType, TableBorder, TableBorderPosition,
-        TableBorders, TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders,
-        TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents,
+        Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing, LineSpacingType,
+        NumberFormat, Numbering, NumberingId, PageMargin, PageOrientationType, PageSize, Paragraph,
+        Pic, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start,
+        StructuredDataTag, Style, StyleType, Table, TableAlignmentType, TableBorder,
+        TableBorderPosition, TableBorders, TableCell, TableCellBorder, TableCellBorderPosition,
+        TableCellBorders, TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents,
         TablePositionProperty, TableRow, TextDirectionType, ThemeColor, VAlignType, VMergeType,
         WidthType,
     };
@@ -7274,6 +7382,8 @@ mod tests {
                 )
                 .paragraph_style("ListParagraph"),
             );
+        let mut definition = definition;
+        definition.multi_level_type = Some("hybridMultilevel".to_owned());
         let bytes = pack_docx(
             Docx::new()
                 .add_abstract_numbering(definition)
@@ -7284,12 +7394,40 @@ mod tests {
         let jsx = reverse_document(&bytes).expect("custom levels should reverse");
         assert!(
             jsx.contains("levels={")
+                && jsx.contains(r#"multiLevelType="hybridMultilevel""#)
                 && jsx.contains(r#""format":"decimal""#)
                 && jsx.contains(r#""suffix":"space""#)
                 && jsx.contains(r#""legal":true"#)
                 && jsx.contains(r#""format":"lowerLetter""#)
                 && jsx.contains(r#""paragraphStyle":"ListParagraph""#)
                 && jsx.contains(r#"style="ListParagraph""#),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_instance_level_replacement() {
+        let replacement = Level::new(
+            0,
+            Start::new(1),
+            NumberFormat::new("lowerLetter"),
+            LevelText::new("%1)"),
+            LevelJc::new("left"),
+        );
+        let bytes = pack_docx(
+            Docx::new()
+                .add_abstract_numbering(default_list_abstract(7, true))
+                .add_numbering(
+                    Numbering::new(7, 7)
+                        .add_override(LevelOverride::new(0).level(replacement))
+                        .add_override(LevelOverride::new(1).start(4)),
+                )
+                .add_paragraph(numbered(7, 0, "item")),
+        );
+        let jsx = reverse_document(&bytes).expect("level replacement should reverse");
+        assert!(
+            jsx.contains(r#"overrides={[{"level":0,"definition":{"format":"lowerLetter""#,)
+                && jsx.contains(r#"{"level":1,"start":4}"#),
             "{jsx}"
         );
     }

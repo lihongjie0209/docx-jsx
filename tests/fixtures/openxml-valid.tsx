@@ -86,6 +86,7 @@ export default (
       </ContentControl>
       <List
         type="ordered"
+        multiLevelType="hybridMultilevel"
         levels={[
           {
             format: "decimal",
@@ -96,6 +97,11 @@ export default (
             hanging: 18,
           },
         ]}
+        overrides={[{
+          level: 0,
+          start: 4,
+          definition: { format: "lowerLetter", text: "%1)" },
+        }]}
       >
         <ListItem indentStartChars={120} indentEndChars={80} hangingChars={20}>First numbered</ListItem>
       </List>

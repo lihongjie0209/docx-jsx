@@ -366,6 +366,94 @@ fn cli_should_reverse_and_rebuild_external_simple_position_image() {
 }
 
 #[test]
+fn cli_should_reverse_and_rebuild_numbering_level_overrides() {
+    let directory = tempdir().expect("tempdir should work");
+    let replacement = docx_rs::Level::new(
+        0,
+        docx_rs::Start::new(1),
+        docx_rs::NumberFormat::new("lowerLetter"),
+        docx_rs::LevelText::new("%1)"),
+        docx_rs::LevelJc::new("left"),
+    );
+    let mut abstract_numbering = docx_rs::AbstractNumbering::new(9)
+        .add_level(docx_rs::Level::new(
+            0,
+            docx_rs::Start::new(1),
+            docx_rs::NumberFormat::new("decimal"),
+            docx_rs::LevelText::new("%1."),
+            docx_rs::LevelJc::new("left"),
+        ))
+        .add_level(docx_rs::Level::new(
+            1,
+            docx_rs::Start::new(1),
+            docx_rs::NumberFormat::new("lowerLetter"),
+            docx_rs::LevelText::new("%2."),
+            docx_rs::LevelJc::new("left"),
+        ));
+    abstract_numbering.multi_level_type = Some("hybridMultilevel".to_owned());
+    let mut package = std::io::Cursor::new(Vec::new());
+    docx_rs::Docx::new()
+        .add_abstract_numbering(abstract_numbering)
+        .add_numbering(
+            docx_rs::Numbering::new(9, 9)
+                .add_override(docx_rs::LevelOverride::new(0).level(replacement))
+                .add_override(docx_rs::LevelOverride::new(1).start(4)),
+        )
+        .add_paragraph(
+            docx_rs::Paragraph::new()
+                .numbering(docx_rs::NumberingId::new(9), docx_rs::IndentLevel::new(0))
+                .add_run(docx_rs::Run::new().add_text("item")),
+        )
+        .build()
+        .pack(&mut package)
+        .expect("external DOCX should pack");
+    let external_docx = directory.path().join("external.docx");
+    fs::write(&external_docx, package.into_inner()).expect("external DOCX should write");
+
+    let reversed = directory.path().join("reversed.jsx");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external_docx)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let source = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        source.contains(r#"overrides={[{"level":0,"definition":{"format":"lowerLetter""#)
+            && source.contains(r#"{"level":1,"start":4}"#)
+            && source.contains(r#"multiLevelType="hybridMultilevel""#),
+        "{source}"
+    );
+
+    let rebuilt = directory.path().join("rebuilt.docx");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    let bytes = fs::read(&rebuilt).expect("rebuilt DOCX should exist");
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("rebuilt DOCX should be a ZIP");
+    let mut numbering = String::new();
+    archive
+        .by_name("word/numbering.xml")
+        .expect("numbering part should exist")
+        .read_to_string(&mut numbering)
+        .expect("numbering XML should read");
+    assert!(
+        numbering.contains(r#"<w:lvlOverride w:ilvl="0"><w:lvl w:ilvl="0">"#)
+            && numbering.contains(r#"<w:lvlOverride w:ilvl="1"><w:startOverride w:val="4" />"#)
+            && numbering.contains(r#"<w:multiLevelType w:val="hybridMultilevel" />"#)
+            && numbering.contains(r#"w:val="lowerLetter""#),
+        "{numbering}"
+    );
+}
+
+#[test]
 fn reverse_should_refuse_to_overwrite_without_force() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("source.jsx");

@@ -7,17 +7,17 @@ use docx_rs::{
     AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, CharacterSpacingValues,
     Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, DrawingPosition, FieldCharType,
     Footer, Footnote, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
-    InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelSuffixType, LevelText,
-    LineSpacing, LineSpacingType, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId,
-    PageMargin, PageNum, PageNumType, PageOrientationType, PageSize, Paragraph, ParagraphBorder,
-    ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic, PicAlign,
-    PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo, RelativeFromHType,
-    RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
-    Start, StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab, TabLeaderType, TabValueType,
-    Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
-    TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
-    TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
-    TextAlignmentType, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
+    InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelOverride, LevelSuffixType,
+    LevelText, LineSpacing, LineSpacingType, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering,
+    NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType, PageSize, Paragraph,
+    ParagraphBorder, ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic,
+    PicAlign, PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo,
+    RelativeFromHType, RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType,
+    SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab,
+    TabLeaderType, TabValueType, Table, TableAlignmentType, TableBorder, TableBorderPosition,
+    TableBorders, TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders,
+    TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty,
+    TableRow, TextAlignmentType, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
     VertAlignType, WebExtension, WidthType,
 };
 use image::ImageFormat;
@@ -1726,6 +1726,7 @@ fn normalize_word_xml(xml: &mut String, name: &str) -> Result<()> {
     if name == "word/numbering.xml" {
         remove_element_children(xml, "w:pPr", "w:rPr")?;
         reorder_element_children(xml, "w:lvl", numbering_level_rank)?;
+        reorder_element_children(xml, "w:lvlOverride", numbering_override_rank)?;
     }
     reorder_element_children(xml, "w:numPr", numbering_property_rank)?;
     reorder_element_children(xml, "w:pPr", paragraph_property_rank)?;
@@ -1812,6 +1813,10 @@ fn numbering_level_rank(fragment: &str) -> usize {
 
 fn numbering_property_rank(fragment: &str) -> usize {
     rank_in(child_name(fragment), &["w:ilvl", "w:numId"])
+}
+
+fn numbering_override_rank(fragment: &str) -> usize {
+    rank_in(child_name(fragment), &["w:startOverride", "w:lvl"])
 }
 
 fn section_property_rank(fragment: &str) -> usize {
@@ -5073,9 +5078,12 @@ fn compile_list(
     context.next_numbering_id += 1;
     let id = context.next_numbering_id;
     let mut abstract_numbering = AbstractNumbering::new(id);
+    if let Some(multi_level_type) = string_prop(&node.props, "multiLevelType", path)? {
+        abstract_numbering.multi_level_type = Some(multi_level_type.to_owned());
+    }
     let explicit = node.props.get("levels").and_then(Value::as_array);
-    let level_count = explicit.map_or(9, Vec::len);
-    for index in 0..level_count {
+    let definition_level_count = explicit.map_or(9, Vec::len);
+    for index in 0..definition_level_count {
         let spec = explicit.and_then(|levels| levels.get(index));
         abstract_numbering = abstract_numbering.add_level(compile_list_level(
             spec,
@@ -5085,9 +5093,9 @@ fn compile_list(
             &format!("{path}/levels[{index}]"),
         )?);
     }
-    context
-        .numberings
-        .push((abstract_numbering, Numbering::new(id, id)));
+    let (numbering, level_count) =
+        compile_list_overrides(node, id, list_type, start, definition_level_count, path)?;
+    context.numberings.push((abstract_numbering, numbering));
     let mut paragraphs = Vec::with_capacity(node.children.len());
     for (index, child) in node.children.iter().enumerate() {
         let Child::Node(item) = child else {
@@ -5124,6 +5132,52 @@ fn compile_list(
         paragraphs.push(paragraph);
     }
     Ok(paragraphs)
+}
+
+fn compile_list_overrides(
+    node: &Node,
+    id: usize,
+    list_type: &str,
+    default_start: usize,
+    definition_level_count: usize,
+    path: &str,
+) -> Result<(Numbering, usize)> {
+    let mut numbering = Numbering::new(id, id);
+    let mut level_count = definition_level_count;
+    if let Some(overrides) = node.props.get("overrides").and_then(Value::as_array) {
+        for (index, value) in overrides.iter().enumerate() {
+            let properties = value
+                .as_object()
+                .ok_or_else(|| validation(path, "list override must be an object"))?;
+            let level_index = properties
+                .get("level")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| {
+                    validation(path, "override `level` must be an integer from 0 to 8")
+                })?;
+            let mut override_level = LevelOverride::new(level_index);
+            if let Some(start) = properties.get("start").and_then(Value::as_u64) {
+                override_level = override_level.start(
+                    usize::try_from(start)
+                        .map_err(|_| validation(path, "override `start` is out of range"))?,
+                );
+            }
+            if let Some(definition) = properties.get("definition") {
+                let replacement = compile_list_level(
+                    Some(definition),
+                    level_index,
+                    list_type,
+                    default_start,
+                    &format!("{path}/overrides[{index}]/definition"),
+                )?;
+                override_level = override_level.level(replacement);
+                level_count = level_count.max(level_index + 1);
+            }
+            numbering = numbering.add_override(override_level);
+        }
+    }
+    Ok((numbering, level_count))
 }
 
 fn compile_list_level(
@@ -6334,7 +6388,7 @@ mod tests {
     #[test]
     fn compile_should_render_list_level_writer_properties() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"type":"ordered","levels":[{"format":"decimal","text":"%1.","suffix":"space","legal":true,"restart":0,"indentLeft":36,"hanging":18,"bold":true,"size":12},{"format":"lowerLetter","text":"%2)","align":"right","paragraphStyle":"ListParagraph"}]},"children":[{"type":"ListItem","props":{"style":"ListParagraph"},"children":["one"]},{"type":"ListItem","props":{"level":1},"children":["two"]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"type":"ordered","multiLevelType":"hybridMultilevel","levels":[{"format":"decimal","text":"%1.","suffix":"space","legal":true,"restart":0,"indentLeft":36,"hanging":18,"bold":true,"size":12},{"format":"lowerLetter","text":"%2)","align":"right","paragraphStyle":"ListParagraph"}]},"children":[{"type":"ListItem","props":{"style":"ListParagraph"},"children":["one"]},{"type":"ListItem","props":{"level":1},"children":["two"]}]}]}]}}"#,
         )
         .expect("fixture should parse");
         ir.validate().expect("fixture should validate");
@@ -6354,7 +6408,8 @@ mod tests {
                 && numbering.contains(r#"<w:lvlRestart w:val="0""#)
                 && numbering.contains(r#"w:val="ListParagraph""#)
                 && numbering.contains("<w:b")
-                && numbering.contains(r#"w:val="right""#),
+                && numbering.contains(r#"w:val="right""#)
+                && numbering.contains(r#"<w:multiLevelType w:val="hybridMultilevel" />"#),
             "{numbering}"
         );
         let mut document = String::new();
@@ -6367,6 +6422,51 @@ mod tests {
             document.contains("<w:numPr>") && document.contains(r#"w:val="ListParagraph""#),
             "{document}"
         );
+    }
+
+    #[test]
+    fn compile_should_render_list_instance_level_override_in_schema_order() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"type":"ordered","start":3,"overrides":[{"level":0,"start":4,"definition":{"format":"lowerLetter","text":"%1)"}}]},"children":[{"type":"ListItem","props":{},"children":["item"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX ZIP");
+        let mut numbering = String::new();
+        archive
+            .by_name("word/numbering.xml")
+            .expect("numbering part")
+            .read_to_string(&mut numbering)
+            .expect("numbering UTF-8");
+        assert!(
+            numbering.contains(
+                r#"<w:lvlOverride w:ilvl="0"><w:startOverride w:val="4" /><w:lvl w:ilvl="0">"#
+            ) && numbering.contains(r#"w:val="lowerLetter""#),
+            "{numbering}"
+        );
+        assert!(
+            numbering.contains(r#"<w:lvl w:ilvl="0"><w:start w:val="3" />"#),
+            "replacement level should inherit List.start when `start` is omitted: {numbering}"
+        );
+    }
+
+    #[test]
+    fn compile_should_allow_a_replacement_to_add_a_list_level() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"levels":[{"format":"decimal","text":"%1."}],"overrides":[{"level":8,"definition":{"format":"upperRoman","text":"%9."}}]},"children":[{"type":"ListItem","props":{"level":8},"children":["item"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document UTF-8");
+        assert!(document.contains(r#"<w:ilvl w:val="8" />"#), "{document}");
     }
 
     #[test]

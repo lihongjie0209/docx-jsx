@@ -527,8 +527,11 @@ error instead of a silent drop.
   non-empty `expression`, optional `numberFormat` without quote/control
   characters, `placeholder?`, and `dirty?`. They emit native `MERGEFIELD`,
   `DOCPROPERTY`, and formula (`=`) complex fields.
-- `List`: `type?: "bullet" | "ordered"` (default `bullet`) and optional
-  positive integer `start`. Optional `levels` is a non-empty array of level
+- `List`: `type?: "bullet" | "ordered"` (default `bullet`), optional
+  positive integer `start`, and optional `multiLevelType?: "singleLevel" |
+  "multilevel" | "hybridMultilevel"` (`w:multiLevelType`; omitted by default).
+  External reverse preserves an explicit `multiLevelType`. Optional `levels`
+  is a non-empty array of level
   objects, one per `w:lvl` in document order (`ilvl` is the array index,
   `0..8`). When `levels` is omitted the compiler emits nine default levels
   (`decimal` + `%N.` for `ordered`, `bullet` + `•` otherwise) with
@@ -547,8 +550,15 @@ error instead of a silent drop.
   `underline` as a Word underline style string, `hidden`,
   `characterSpacing`). Boolean run flags emit explicit on/off OOXML.
   Reverse of an external numbering definition that uses only `numStyleLink`
-  / `styleLink`, or a `lvlOverride` that replaces an entire level, errors
-  with a repair suggestion. Contiguous paragraphs that share a `w:numId`
+  / `styleLink` errors with a repair suggestion. `overrides?` is an array of
+  per-instance `w:lvlOverride` objects: each requires a unique `level: 0..8`,
+  may contain positive `start?` (`w:startOverride`) and/or `definition?` (a
+  list-level object emitted as replacement `w:lvl`; its `ilvl` is the enclosing
+  override's `level`, and omitted fields use the same defaults as `levels`). An
+  override must set `start` or `definition`;
+  duplicate levels are invalid. External reverse preserves start overrides
+  and full level replacements as `List.overrides`, independently of the
+  shared abstract list definition. Contiguous paragraphs that share a `w:numId`
   reverse as one `List`; a missing numbering definition is an error rather
   than a plain `Paragraph`.
 - `ListItem`: `level?: 0..8` (default `0`) and optional `style` for the

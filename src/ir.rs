@@ -925,7 +925,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         | NodeKind::BorderedText
         | NodeKind::ShadedText) => semantic_text_props(kind),
         NodeKind::TabStop => &["position", "align", "leader"],
-        NodeKind::List => &["type", "start", "levels"],
+        NodeKind::List => &["type", "start", "multiLevelType", "levels", "overrides"],
         NodeKind::ListItem => &[
             "level",
             "style",
@@ -1275,11 +1275,8 @@ fn validate_semantics(node: &Node, path: &str) -> Result<()> {
             ));
         }
     }
-    if node.kind == NodeKind::List && node.children.is_empty() {
-        return Err(validation(path, "List requires at least one ListItem"));
-    }
     if node.kind == NodeKind::List {
-        validate_list_levels(node, path)?;
+        validate_list_semantics(node, path)?;
     }
     validate_advanced_semantics(node, path)?;
     if let Some(value) = node.props.get("widthPercent") {
@@ -1432,6 +1429,19 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_list_semantics(node: &Node, path: &str) -> Result<()> {
+    if node.children.is_empty() {
+        return Err(validation(path, "List requires at least one ListItem"));
+    }
+    validate_optional_enum_prop(
+        node,
+        path,
+        "multiLevelType",
+        &["singleLevel", "multilevel", "hybridMultilevel"],
+    )?;
+    validate_list_levels(node, path)
 }
 
 fn is_xml_ncname(value: &str) -> bool {
@@ -2589,7 +2599,13 @@ fn validate_map_enum(
         .as_str()
         .ok_or_else(|| validation(path, format!("`{key}` must be a string")))?;
     if !allowed.contains(&value) {
-        return Err(validation(path, format!("invalid `{key}` value `{value}`")));
+        return Err(validation(
+            path,
+            format!(
+                "invalid `{key}` value `{value}`; choose one of: {}",
+                allowed.join(", ")
+            ),
+        ));
     }
     Ok(())
 }
@@ -3895,20 +3911,70 @@ fn validate_list_item_props(node: &Node, path: &str) -> Result<()> {
 }
 
 fn validate_list_levels(node: &Node, path: &str) -> Result<()> {
-    let Some(value) = node.props.get("levels") else {
+    if let Some(value) = node.props.get("levels") {
+        let levels = value
+            .as_array()
+            .ok_or_else(|| validation(path, "`levels` must be an array"))?;
+        if levels.is_empty() {
+            return Err(validation(path, "`levels` must not be empty"));
+        }
+        if levels.len() > 9 {
+            return Err(validation(path, "`levels` must contain at most 9 entries"));
+        }
+        for (index, level) in levels.iter().enumerate() {
+            validate_list_level(level, &format!("{path}/levels[{index}]"))?;
+        }
+    }
+    validate_list_overrides(node, path)
+}
+
+fn validate_list_overrides(node: &Node, path: &str) -> Result<()> {
+    let Some(value) = node.props.get("overrides") else {
         return Ok(());
     };
-    let levels = value
+    let overrides = value
         .as_array()
-        .ok_or_else(|| validation(path, "`levels` must be an array"))?;
-    if levels.is_empty() {
-        return Err(validation(path, "`levels` must not be empty"));
-    }
-    if levels.len() > 9 {
-        return Err(validation(path, "`levels` must contain at most 9 entries"));
-    }
-    for (index, level) in levels.iter().enumerate() {
-        validate_list_level(level, &format!("{path}/levels[{index}]"))?;
+        .ok_or_else(|| validation(path, "`overrides` must be an array"))?;
+    let mut levels = std::collections::BTreeSet::new();
+    for (index, value) in overrides.iter().enumerate() {
+        let item_path = format!("{path}/overrides[{index}]");
+        let item = value
+            .as_object()
+            .ok_or_else(|| validation(&item_path, "list override must be an object"))?;
+        validate_object_keys(item, &item_path, &["level", "start", "definition"])?;
+        let level = item
+            .get("level")
+            .and_then(Value::as_u64)
+            .filter(|level| *level <= 8)
+            .ok_or_else(|| {
+                validation(
+                    &item_path,
+                    "override `level` must be an integer from 0 to 8",
+                )
+            })?;
+        if !levels.insert(level) {
+            return Err(validation(
+                &item_path,
+                format!("duplicate list override for level {level}"),
+            ));
+        }
+        if !item.contains_key("start") && !item.contains_key("definition") {
+            return Err(validation(
+                &item_path,
+                "list override requires `start` or `definition`",
+            ));
+        }
+        if let Some(start) = item.get("start")
+            && start.as_u64().is_none_or(|start| start == 0)
+        {
+            return Err(validation(
+                &item_path,
+                "override `start` must be a positive integer",
+            ));
+        }
+        if let Some(definition) = item.get("definition") {
+            validate_list_level(definition, &format!("{item_path}/definition"))?;
+        }
     }
     Ok(())
 }
@@ -4039,7 +4105,13 @@ fn validate_optional_enum_prop(node: &Node, path: &str, key: &str, allowed: &[&s
         .as_str()
         .ok_or_else(|| validation(path, format!("`{key}` must be a string")))?;
     if !allowed.contains(&value) {
-        return Err(validation(path, format!("invalid `{key}` value `{value}`")));
+        return Err(validation(
+            path,
+            format!(
+                "invalid `{key}` value `{value}`; choose one of: {}",
+                allowed.join(", ")
+            ),
+        ));
     }
     Ok(())
 }
@@ -4163,6 +4235,52 @@ mod tests {
                 "expected {expected} in {error}"
             );
         }
+    }
+
+    #[test]
+    fn validate_should_accept_list_instance_overrides() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"type":"ordered","overrides":[{"level":0,"start":4},{"level":1,"definition":{"format":"lowerLetter","text":"%2)"}}]},"children":[{"type":"ListItem","props":{},"children":["item"]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_duplicate_or_empty_list_overrides() {
+        for (overrides, expected) in [
+            (r#"[{"level":0}]"#, "requires `start` or `definition`"),
+            (
+                r#"[{"level":0,"start":2},{"level":0,"start":3}]"#,
+                "duplicate list override",
+            ),
+            (r#"[{"level":9,"start":1}]"#, "0 to 8"),
+            (r#"[{"level":0,"start":0}]"#, "positive integer"),
+        ] {
+            let ir = parse(&format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{}},"children":[{{"type":"Section","props":{{}},"children":[{{"type":"List","props":{{"overrides":{overrides}}},"children":[{{"type":"ListItem","props":{{}},"children":["item"]}}]}}]}}]}}}}"#
+            ));
+            let error = ir.validate().expect_err("invalid overrides must fail");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?} for {overrides}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_should_reject_unknown_multi_level_type() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"multiLevelType":"multilevelPlus"},"children":[{"type":"ListItem","props":{},"children":["item"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("unknown multi-level type must fail");
+        assert!(
+            error.to_string().contains("multiLevelType")
+                && error.to_string().contains("singleLevel")
+                && error.to_string().contains("hybridMultilevel"),
+            "{error}"
+        );
     }
 
     #[test]
