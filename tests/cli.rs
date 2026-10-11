@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -268,6 +268,101 @@ export default <Document><Section><Paragraph align="center"><Run bold italic col
         .assert()
         .success();
     assert_eq!(embedded_ir(&docx), embedded_ir(&roundtrip));
+}
+
+#[test]
+fn cli_should_reverse_and_rebuild_external_simple_position_image() {
+    let directory = tempdir().expect("tempdir should work");
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .expect("PNG should encode");
+    let mut picture = docx_rs::Pic::new_with_dimensions(png.into_inner(), 1, 1).floating();
+    picture.simple_pos = true;
+    picture.simple_pos_x = 25_400;
+    picture.simple_pos_y = -12_700;
+    let mut package = std::io::Cursor::new(Vec::new());
+    docx_rs::Docx::new()
+        .add_paragraph(docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_image(picture)))
+        .build()
+        .pack(&mut package)
+        .expect("external DOCX should pack");
+    let package = package.into_inner();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(package))
+        .expect("external DOCX should be a ZIP archive");
+    let mut rewritten = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("DOCX part should read");
+        if entry.is_dir() {
+            rewritten
+                .raw_copy_file(entry)
+                .expect("directory should copy");
+            continue;
+        }
+        let name = entry.name().to_owned();
+        let options = entry.options();
+        let mut bytes = Vec::new();
+        entry
+            .read_to_end(&mut bytes)
+            .expect("DOCX part should read");
+        if name == "word/document.xml" {
+            let xml = String::from_utf8(bytes).expect("document XML should be UTF-8");
+            bytes = xml
+                .replacen("simplePos=\"0\"", "simplePos=\"1\"", 1)
+                .replacen("allowOverlap=\"1\"", "allowOverlap=\"0\"", 1)
+                .into_bytes();
+        }
+        rewritten
+            .start_file(name, options)
+            .expect("DOCX part should write");
+        rewritten.write_all(&bytes).expect("DOCX part should write");
+    }
+    let external_docx = directory.path().join("external.docx");
+    fs::write(
+        &external_docx,
+        rewritten
+            .finish()
+            .expect("DOCX should finalize")
+            .into_inner(),
+    )
+    .expect("external DOCX should write");
+    let reversed = directory.path().join("reversed.jsx");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external_docx)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let source = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        source.contains("simplePosition={{ x: 25400, y: -12700 }}"),
+        "{source}"
+    );
+    let rebuilt = directory.path().join("rebuilt.docx");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    let bytes = fs::read(&rebuilt).expect("rebuilt DOCX should exist");
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .expect("rebuilt DOCX should be valid ZIP");
+    let mut document = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part should exist")
+        .read_to_string(&mut document)
+        .expect("document XML should read");
+    assert!(
+        document.contains("simplePos=\"1\"")
+            && document.contains("allowOverlap=\"0\"")
+            && document.contains("<wp:simplePos x=\"25400\" y=\"-12700\" />"),
+        "{document}"
+    );
 }
 
 #[test]

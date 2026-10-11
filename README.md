@@ -88,11 +88,11 @@ Windows.
 | Fields and indexes | Supported | Generic and typed fields, TOC/figures/entries, captions, index fields and cross-references |
 | Lists and numbering | Supported | Bullet/ordered shorthand plus per-level format, text, suffix, restart, legal numbering, indent and run formatting; `ListItem` preserves character-unit indentation; external reverse rebuilds `w:numPr` runs as `List` |
 | Annotations and controls | Supported | Bookmarks, comments, footnotes, inline and document-level bound content controls, and hyperlinks with ContentControl/revision/bookmark/comment children |
-| Images | Supported | Raster embedding, dimensions, rotation, floating anchors, alignment/offsets, relative origins, distances, overlap, in-cell layout and layer height. External reverse extracts body, header, and footer media and rejects unsupported `simplePos` anchors with a repair suggestion |
+| Images | Supported | Raster embedding, dimensions, rotation, floating anchors, alignment/offsets, relative origins, distances, overlap, in-cell layout, layer height and signed-EMU `simplePosition` anchors. External reverse extracts body, header, and footer media and preserves simple-position coordinates |
 | DOCX to JSX | Supported | Component-level 1:1 reversal for generated DOCX; external paragraph and table styles/inheritance including table/cell properties and all paragraph/style character-unit indentation names, section margins/grids, point-based paragraph indentation and keep/outline, theme colors, row height/rule/cant-split and revisions, body/header/footer raster images, document settings/metadata, custom XML data-store items, task-pane web extensions, nested bookmark/comment ranges, hyperlink composite children and footer text-box fallback. Unrepresentable values are rejected with repair suggestions. Reverse→recompile omits empty comments/footnotes/numbering parts the backend would inject |
 | Validation and Agent spec | Supported | DSL validation, repair-oriented diagnostics, Agent contract, JSON Schema, and .NET Open XML conformance tests |
 | PDF export | Optional | Compile `-o file.pdf` or `docx-jsx pdf` auto-detects Microsoft Word, WPS, or LibreOffice; `--engine` pins one. Install/config diagnostics when none is present. Not shipped in the release binary |
-| Backend-limited APIs | Not emitted | Row before/after grids, image simple-position, theme parts and embedded fonts are dropped or hardcoded by docx-rs 0.4.22 |
+| Backend-limited APIs | Not emitted | Theme parts and embedded fonts are reader-only in docx-rs 0.4.22; see the coverage audit for missing setters and schema-invalid writer APIs |
 
 The detailed writer-API audit is maintained in
 [docs/docx-rs-coverage.md](docs/docx-rs-coverage.md).

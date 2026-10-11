@@ -110,7 +110,7 @@ export default (
         </TableRow>
       </Table>
       <Paragraph>
-        <Image src="pixel.ppm" width={24} height={24} floating layoutInCell />
+        <Image src="pixel.ppm" width={24} height={24} floating layoutInCell simplePosition={{ x: 25400, y: -12700 }} />
       </Paragraph>
     </Section>
   </Document>

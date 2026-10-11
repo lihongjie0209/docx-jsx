@@ -979,6 +979,7 @@ fn image_props() -> &'static [&'static str] {
         "floating",
         "allowOverlap",
         "layoutInCell",
+        "simplePosition",
         "positionH",
         "positionV",
         "relativeFromH",
@@ -1290,6 +1291,10 @@ fn validate_semantics(node: &Node, path: &str) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "image properties are validated together to keep the DSL contract explicit"
+)]
 fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
     node.props
         .get("src")
@@ -1305,6 +1310,41 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
             path,
             "`relationshipId` must be a non-empty string",
         ));
+    }
+    if let Some(value) = node.props.get("simplePosition") {
+        let position = value.as_object().ok_or_else(|| {
+            validation(path, "`simplePosition` must be an object with signed integer `x` and `y` EMU coordinates")
+        })?;
+        validate_object_keys(position, &format!("{path}.simplePosition"), &["x", "y"])?;
+        for axis in ["x", "y"] {
+            position
+                .get(axis)
+                .and_then(Value::as_i64)
+                .and_then(|value| i32::try_from(value).ok())
+                .ok_or_else(|| {
+                    validation(
+                        path,
+                        format!("`simplePosition.{axis}` must be a signed 32-bit integer in EMUs"),
+                    )
+                })?;
+        }
+        if node.props.get("floating").and_then(Value::as_bool) != Some(true) {
+            return Err(validation(
+                path,
+                "`simplePosition` requires `floating={true}`",
+            ));
+        }
+        if node
+            .props
+            .get("relationshipId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !is_xml_ncname(id) || id.starts_with("rIdDocxJsxSimplePosition_"))
+        {
+            return Err(validation(
+                path,
+                "`relationshipId` used with `simplePosition` must be an XML NCName and must not use the reserved `rIdDocxJsxSimplePosition_` prefix",
+            ));
+        }
     }
     if let Some(value) = node.props.get("rotate") {
         value
@@ -1372,6 +1412,7 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
     let anchor_props = [
         "allowOverlap",
         "layoutInCell",
+        "simplePosition",
         "positionH",
         "positionV",
         "relativeFromH",
@@ -1391,6 +1432,14 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn is_xml_ncname(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
 fn validate_image_position(node: &Node, path: &str, key: &str, alignments: &[&str]) -> Result<()> {
@@ -4304,7 +4353,7 @@ mod tests {
     #[test]
     fn validate_should_accept_advanced_image_properties() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Image","props":{"src":"figure.png","width":120,"height":80,"relationshipId":"rIdHero","rotate":45,"floating":true,"allowOverlap":true,"layoutInCell":true,"positionH":"right","positionV":18.5,"relativeFromH":"page","relativeFromV":"paragraph","distanceTop":2,"distanceBottom":3,"distanceLeft":4,"distanceRight":5,"relativeHeight":251658240},"children":[]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Image","props":{"src":"figure.png","width":120,"height":80,"relationshipId":"rIdHero","rotate":45,"floating":true,"allowOverlap":true,"layoutInCell":true,"positionH":"right","positionV":18.5,"relativeFromH":"page","relativeFromV":"paragraph","simplePosition":{"x":25400,"y":-12700},"distanceTop":2,"distanceBottom":3,"distanceLeft":4,"distanceRight":5,"relativeHeight":251658240},"children":[]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
     }
@@ -4335,6 +4384,14 @@ mod tests {
             (
                 r#"{"src":"x.png","width":1,"height":1,"floating":true,"layoutInCell":"yes"}"#,
                 "layoutInCell` must be a boolean",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"simplePosition":{"x":0,"y":0}}"#,
+                "`simplePosition` requires `floating={true}`",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"floating":true,"simplePosition":{"x":2147483648,"y":0}}"#,
+                "signed 32-bit integer",
             ),
         ] {
             let ir = parse(&format!(

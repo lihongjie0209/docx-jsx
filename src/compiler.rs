@@ -256,6 +256,7 @@ fn package_document(
     let bytes = patch_style_character_indentation(bytes, &ir.document.props)?;
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
+    let bytes = patch_simple_position_images(bytes)?;
     embed_ir_manifest(bytes, ir)
 }
 
@@ -4063,11 +4064,331 @@ fn compile_image(node: &Node, entry_dir: &Path, path: &str) -> Result<Pic> {
     let png = load_image_as_png(&source_path)?;
     let width = required_number(&node.props, "width", path)?;
     let height = required_number(&node.props, "height", path)?;
-    let picture = Pic::new_with_dimensions(png, 1, 1).size(
+    let mut picture = Pic::new_with_dimensions(png, 1, 1).size(
         to_emu(width, &format!("{path}/width"))?,
         to_emu(height, &format!("{path}/height"))?,
     );
+    if node.props.contains_key("simplePosition") {
+        let final_id = node
+            .props
+            .get("relationshipId")
+            .and_then(Value::as_str)
+            .unwrap_or(&picture.id);
+        let allow_overlap = node.props.get("allowOverlap").and_then(Value::as_bool) == Some(true);
+        picture.id = simple_position_marker(path, final_id, allow_overlap);
+    }
     compile_image_layout(picture, node, path)
+}
+
+fn simple_position_marker(path: &str, final_id: &str, allow_overlap: bool) -> String {
+    format!(
+        "rIdDocxJsxSimplePosition_{}_{}_{}",
+        u8::from(allow_overlap),
+        hex_encode(path.as_bytes()),
+        hex_encode(final_id.as_bytes())
+    )
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(encoded, "{byte:02X}");
+    }
+    encoded
+}
+
+struct SimplePositionNormalization {
+    final_relationship_id: String,
+    allow_overlap: bool,
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "normalizing a generated DOCX package requires keeping marker, drawing, and relationship checks together"
+)]
+fn patch_simple_position_images(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    const MARKER_PREFIX: &[u8] = b"rIdDocxJsxSimplePosition_";
+    if !bytes
+        .windows(MARKER_PREFIX.len())
+        .any(|window| window == MARKER_PREFIX)
+    {
+        return Ok(bytes);
+    }
+
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|error| {
+        Error::Compile(format!(
+            "cannot reopen DOCX for simple-position normalization: {error}"
+        ))
+    })?;
+    let mut targets = BTreeMap::new();
+    for index in 0..source.len() {
+        let mut file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        let name = file.name().to_owned();
+        if !name.starts_with("word/")
+            || name.contains("/_rels/")
+            || !Path::new(&name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            continue;
+        }
+        let mut xml = String::new();
+        file.read_to_string(&mut xml)
+            .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
+        for marker in find_simple_position_markers(&xml)? {
+            let normalization = parse_simple_position_marker(&marker)?;
+            if targets.insert(marker.clone(), normalization).is_some() {
+                return Err(Error::Compile(format!(
+                    "duplicate internal simple-position relationship marker `{marker}`; use distinct image component paths"
+                )));
+            }
+        }
+    }
+    if targets.is_empty() {
+        return Err(Error::Compile(
+            "simple-position image markers were expected but not found in the DOCX package"
+                .to_owned(),
+        ));
+    }
+
+    let mut drawing_markers = BTreeSet::new();
+    let mut relationship_markers = BTreeSet::new();
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..source.len() {
+        let mut file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        if file.is_dir() {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+            continue;
+        }
+        let name = file.name().to_owned();
+        if !name.starts_with("word/")
+            || !Path::new(&name).extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("xml") || extension.eq_ignore_ascii_case("rels")
+            })
+        {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+            continue;
+        }
+        let options = file.options();
+        let mut xml = String::new();
+        file.read_to_string(&mut xml)
+            .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
+        if name.contains("/_rels/") {
+            for (marker, target) in &targets {
+                let relationship = format!("Id=\"{marker}\"");
+                let occurrence_count = xml.match_indices(&relationship).count();
+                if occurrence_count > 1 {
+                    return Err(Error::Compile(format!(
+                        "simple-position relationship `{marker}` occurs more than once in `{name}`; use a unique relationshipId"
+                    )));
+                }
+                if occurrence_count == 1 {
+                    let replacement = format!("Id=\"{}\"", target.final_relationship_id);
+                    xml = xml.replace(&relationship, &replacement);
+                    relationship_markers.insert(marker.clone());
+                }
+            }
+        } else {
+            let (patched, found) = normalize_simple_position_anchors(&xml, &targets, &name)?;
+            xml = patched;
+            drawing_markers.extend(found);
+        }
+        writer
+            .start_file(&name, options)
+            .map_err(|error| Error::Compile(format!("cannot rewrite {name}: {error}")))?;
+        writer
+            .write_all(xml.as_bytes())
+            .map_err(|error| Error::Compile(format!("cannot write {name}: {error}")))?;
+    }
+    for marker in targets.keys() {
+        if !drawing_markers.contains(marker) || !relationship_markers.contains(marker) {
+            return Err(Error::Compile(format!(
+                "simple-position image relationship `{marker}` is missing its drawing or package relationship; restore the image relationship and try again"
+            )));
+        }
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize simple-position DOCX: {error}")))
+}
+
+fn find_simple_position_markers(xml: &str) -> Result<Vec<String>> {
+    const PREFIX: &str = "rIdDocxJsxSimplePosition_";
+    let mut markers = Vec::new();
+    let mut search_from = 0;
+    while let Some(relative_start) = xml[search_from..].find(PREFIX) {
+        let start = search_from + relative_start;
+        let value_start = start + PREFIX.len();
+        let value_end = xml[value_start..]
+            .find('"')
+            .map(|offset| value_start + offset)
+            .ok_or_else(|| {
+                Error::Compile(
+                    "unterminated simple-position relationship marker in generated XML".to_owned(),
+                )
+            })?;
+        markers.push(xml[start..value_end].to_owned());
+        search_from = value_end + 1;
+    }
+    Ok(markers)
+}
+
+fn parse_simple_position_marker(marker: &str) -> Result<SimplePositionNormalization> {
+    let mut parts = marker
+        .strip_prefix("rIdDocxJsxSimplePosition_")
+        .unwrap_or_default()
+        .split('_');
+    let allow_overlap = match parts.next() {
+        Some("0") => false,
+        Some("1") => true,
+        _ => {
+            return Err(Error::Compile(
+                "malformed internal simple-position marker; recompile the JSX source".to_owned(),
+            ));
+        }
+    };
+    let path = parts.next().unwrap_or_default();
+    let relationship_id = parts.next().unwrap_or_default();
+    if path.is_empty() || relationship_id.is_empty() || parts.next().is_some() {
+        return Err(Error::Compile(
+            "malformed internal simple-position marker; recompile the JSX source".to_owned(),
+        ));
+    }
+    let relationship_id = hex_decode(relationship_id)?;
+    if !is_xml_ncname(&relationship_id) {
+        return Err(Error::Compile("simple-position relationship id is not a valid XML NCName; use letters, numbers, `_`, `-`, or `.`".to_owned()));
+    }
+    Ok(SimplePositionNormalization {
+        final_relationship_id: relationship_id,
+        allow_overlap,
+    })
+}
+
+fn hex_decode(encoded: &str) -> Result<String> {
+    if !encoded.len().is_multiple_of(2) {
+        return Err(Error::Compile(
+            "malformed internal simple-position relationship id".to_owned(),
+        ));
+    }
+    let bytes = (0..encoded.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&encoded[index..index + 2], 16).map_err(|_| {
+                Error::Compile("malformed internal simple-position relationship id".to_owned())
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    String::from_utf8(bytes).map_err(|_| {
+        Error::Compile("internal simple-position relationship id is not UTF-8".to_owned())
+    })
+}
+
+fn normalize_simple_position_anchors(
+    xml: &str,
+    targets: &BTreeMap<String, SimplePositionNormalization>,
+    part: &str,
+) -> Result<(String, BTreeSet<String>)> {
+    let mut xml = xml.to_owned();
+    let mut found = BTreeSet::new();
+    for (marker, target) in targets {
+        let embed = format!("r:embed=\"{marker}\"");
+        if !xml.contains(&embed) {
+            continue;
+        }
+        let mut search_from = 0;
+        let mut occurrences = 0;
+        while let Some(relative_embed) = xml[search_from..].find(&embed) {
+            let embed_start = search_from + relative_embed;
+            let anchor_start = xml[..embed_start].rfind("<wp:anchor").ok_or_else(|| {
+                Error::Compile(format!(
+                    "image relationship `{marker}` in `{part}` is not inside a floating anchor"
+                ))
+            })?;
+            let tag_end = xml[anchor_start..]
+                .find('>')
+                .map(|offset| anchor_start + offset)
+                .ok_or_else(|| Error::Compile(format!("unterminated wp:anchor in `{part}`")))?;
+            let anchor_end = xml[embed_start..]
+                .find("</wp:anchor>")
+                .map(|offset| embed_start + offset + "</wp:anchor>".len())
+                .ok_or_else(|| {
+                    Error::Compile(format!(
+                        "unterminated wp:anchor for image `{marker}` in `{part}`"
+                    ))
+                })?;
+            if !xml[anchor_start..anchor_end].contains(&embed) {
+                return Err(Error::Compile(format!(
+                    "image relationship `{marker}` is not inside its expected wp:anchor in `{part}`"
+                )));
+            }
+            let start_tag = &xml[anchor_start..=tag_end];
+            let start_tag = set_xml_attribute(start_tag, "simplePos", "1")?;
+            let start_tag = set_xml_attribute(
+                &start_tag,
+                "allowOverlap",
+                if target.allow_overlap { "1" } else { "0" },
+            )?;
+            xml.replace_range(anchor_start..=tag_end, &start_tag);
+            let patched_embed = format!("r:embed=\"{}\"", target.final_relationship_id);
+            let embed_start = anchor_start + start_tag.len();
+            let Some(relative_embed) = xml[embed_start..].find(&embed) else {
+                return Err(Error::Compile(format!(
+                    "cannot locate simple-position image relationship `{marker}` after anchor normalization"
+                )));
+            };
+            let embed_start = embed_start + relative_embed;
+            xml.replace_range(embed_start..embed_start + embed.len(), &patched_embed);
+            search_from = embed_start + patched_embed.len();
+            occurrences += 1;
+        }
+        if occurrences != 1 {
+            return Err(Error::Compile(format!(
+                "expected one drawing reference for simple-position image `{marker}` in `{part}`, found {occurrences}"
+            )));
+        }
+        found.insert(marker.clone());
+    }
+    Ok((xml, found))
+}
+
+fn set_xml_attribute(tag: &str, name: &str, value: &str) -> Result<String> {
+    let attribute = format!("{name}=\"");
+    if let Some(start) = tag.find(&attribute) {
+        let value_start = start + attribute.len();
+        let value_end = tag[value_start..]
+            .find('"')
+            .map(|offset| value_start + offset)
+            .ok_or_else(|| {
+                Error::Compile(format!("unterminated `{name}` attribute in generated XML"))
+            })?;
+        let mut output = tag.to_owned();
+        output.replace_range(value_start..value_end, value);
+        return Ok(output);
+    }
+    let insert_at = tag
+        .rfind('>')
+        .ok_or_else(|| Error::Compile("unterminated generated XML start tag".to_owned()))?;
+    let mut output = tag.to_owned();
+    output.insert_str(insert_at, &format!(" {name}=\"{value}\""));
+    Ok(output)
+}
+
+fn is_xml_ncname(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
 fn load_image_as_png(source_path: &Path) -> Result<Vec<u8>> {
@@ -4091,7 +4412,9 @@ fn load_image_as_png(source_path: &Path) -> Result<Vec<u8>> {
 }
 
 fn compile_image_layout(mut picture: Pic, node: &Node, path: &str) -> Result<Pic> {
-    if let Some(id) = string_prop(&node.props, "relationshipId", path)? {
+    if let Some(id) = string_prop(&node.props, "relationshipId", path)?
+        && !node.props.contains_key("simplePosition")
+    {
         picture = picture.id(id);
     }
     if let Some(angle) = node.props.get("rotate") {
@@ -4114,6 +4437,31 @@ fn compile_image_layout(mut picture: Pic, node: &Node, path: &str) -> Result<Pic
         // docx-rs 0.4.22 reads `simple_pos` into the `allowOverlap` anchor
         // attribute. Set both fields so the attribute and wrapping agree.
         picture = picture.overlapping().simple_pos(true);
+    }
+    if let Some(position) = node.props.get("simplePosition") {
+        let position = position.as_object().ok_or_else(|| {
+            validation(
+                path,
+                "`simplePosition` must be an object with `x` and `y` coordinates",
+            )
+        })?;
+        let x = position
+            .get("x")
+            .and_then(Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| {
+                validation(path, "`simplePosition.x` must be a signed 32-bit integer")
+            })?;
+        let y = position
+            .get("y")
+            .and_then(Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| {
+                validation(path, "`simplePosition.y` must be a signed 32-bit integer")
+            })?;
+        picture = picture.simple_pos(true);
+        picture.simple_pos_x = x;
+        picture.simple_pos_y = y;
     }
     if let Some(position) = compile_image_position(&node.props, "positionH", path)? {
         picture = picture.position_h(position);
@@ -6485,6 +6833,7 @@ mod tests {
                                 "src": "pixel.png", "width": 12, "height": 12,
                                 "relationshipId": "rIdHero", "rotate": 45,
                                 "floating": true, "allowOverlap": true,
+                                "simplePosition": {"x": 25_400, "y": -12_700},
                                 "layoutInCell": true,
                                 "positionH": "right", "positionV": 18.5,
                                 "relativeFromH": "page", "relativeFromV": "paragraph",
@@ -6511,7 +6860,8 @@ mod tests {
             .read_to_string(&mut document)
             .expect("document XML");
         assert!(
-            document.contains(r#"<wp:anchor distT="25400" distB="38100" distL="50800" distR="63500" simplePos="0" allowOverlap="1""#)
+            document.contains(r#"<wp:anchor distT="25400" distB="38100" distL="50800" distR="63500" simplePos="1" allowOverlap="1""#)
+                && document.contains(r#"<wp:simplePos x="25400" y="-12700" />"#)
                 && document.contains(r#"relativeHeight="251658240""#)
                 && document.contains(r#"layoutInCell="1""#)
                 && document.contains(r#"<wp:positionH relativeFrom="page"><wp:align>right</wp:align>"#)

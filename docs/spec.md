@@ -365,19 +365,24 @@ error instead of a silent drop.
   `paragraph`, or `topMargin`), point-valued `distanceTop`, `distanceBottom`,
   `distanceLeft`, and `distanceRight`, integer `relativeHeight`, and
   `layoutInCell?: boolean` to control whether a floating drawing moves with its
-  containing table cell. Omitting `layoutInCell` keeps the backend default;
+  containing table cell. `simplePosition?: { x: integer, y: integer }` selects
+  the DrawingML simple-position anchor mode and supplies signed EMU coordinates
+  in the i32 range [-2,147,483,648, 2,147,483,647];
+  it is mutually independent from the positional offsets/alignments (which are
+  preserved even though simple positioning takes precedence in Word). All
+  anchor-only properties, including `simplePosition`, require `floating={true}`.
+  Omitting `layoutInCell` keeps the backend default;
   external reverse emits the reader's effective boolean so recompilation keeps
   the same layout behavior.
-  Anchor-only properties require `floating={true}`. Image
-  sources resolve from the entry module directory. External reverse
+  Image sources resolve from the entry module directory. External reverse
   extracts raster media from the package and points `src` at
   `media/<filename>` next to the emitted JSX, including pictures whose
   relationships live on a header or footer part. `docx-jsx reverse` writes
-  those sidecar files beside the JSX output. `simplePosition` is not exposed:
-  docx-rs 0.4.22 writes its `simple_pos` value into `allowOverlap` and hardcodes
-  `simplePos="0"`, so it cannot produce the requested semantics faithfully.
-  External reverse rejects drawings with `wp:anchor/@simplePos="1"` and advises
-  converting their placement to `positionH`/`positionV` or retaining the DOCX.
+  those sidecar files beside the JSX output. The pinned writer hardcodes
+  `simplePos="0"` and writes its `simple_pos` field into `allowOverlap`; the
+  compiler repairs both anchor attributes in the package. External reverse
+  preserves the exact `simplePos` flag and signed coordinates without relying
+  on the embedded IR manifest.
 - `Table`: `width?`, `widthPercent?`, `align?`, `layout?: "auto" | "fixed"`,
   `columnWidths?: number[]`, `border?: {style?,size?,color?}`. Point and percent
   widths are mutually exclusive. `indent?`, four-edge `margins?`, `style?`,

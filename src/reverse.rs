@@ -57,7 +57,6 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         });
     }
     validate_character_indent_xml(bytes)?;
-    validate_simple_positioned_images(bytes)?;
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
@@ -3254,47 +3253,6 @@ fn validate_raw_character_indent(values: &BTreeMap<String, i64>, owner: &str) ->
     Ok(())
 }
 
-fn validate_simple_positioned_images(bytes: &[u8]) -> Result<()> {
-    for part in zip_entry_names(bytes)?.into_iter().filter(|name| {
-        name.starts_with("word/")
-            && Path::new(name)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-            && !name.contains("/_rels/")
-    }) {
-        let Ok(xml) = read_zip_text(bytes, &part) else {
-            continue;
-        };
-        let mut reader = Reader::from_str(&xml);
-        let mut buffer = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buffer) {
-                Ok(Event::Start(element) | Event::Empty(element))
-                    if element.local_name().as_ref() == b"anchor" =>
-                {
-                    if xml_attribute(&reader, &element, b"simplePos")?
-                        .is_some_and(|value| !matches!(value.as_str(), "0" | "false" | "off"))
-                    {
-                        return Err(Error::Reverse(format!(
-                            "{part} contains `wp:anchor/@simplePos=1`, which the current JSX model cannot represent; convert the placement to `positionH`/`positionV` or retain the DOCX"
-                        )));
-                    }
-                }
-                Ok(Event::Eof) => break,
-                Err(error) => {
-                    return Err(Error::Reverse(format!(
-                        "cannot parse {part} drawing placement at byte {}: {error}",
-                        reader.error_position()
-                    )));
-                }
-                _ => {}
-            }
-            buffer.clear();
-        }
-    }
-    Ok(())
-}
-
 fn collect_section_columns(bytes: &[u8]) -> Result<Vec<usize>> {
     let xml = read_zip_text(bytes, "word/document.xml")?;
     let mut reader = Reader::from_str(&xml);
@@ -3779,6 +3737,13 @@ fn theme_color_from_element(
 
 fn reverse_image_anchor_attrs(picture: &Pic) -> String {
     let mut attrs = format!(" layoutInCell={{{}}}", picture.layout_in_cell);
+    if picture.simple_pos {
+        let _ = write!(
+            attrs,
+            " simplePosition={{{{ x: {}, y: {} }}}}",
+            picture.simple_pos_x, picture.simple_pos_y
+        );
+    }
     if picture.allow_overlap {
         attrs.push_str(" allowOverlap");
     }
@@ -6843,7 +6808,7 @@ mod tests {
     }
 
     #[test]
-    fn reverse_external_docx_should_reject_simple_positioned_images() {
+    fn reverse_external_docx_should_preserve_simple_positioned_images() {
         let picture = Pic::new_with_dimensions(test_png(2, 1, [0, 0, 0, 255]), 2, 1).floating();
         let packed = pack_docx(
             Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_image(picture))),
@@ -6866,14 +6831,11 @@ mod tests {
         let modified =
             rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
 
-        let error = reverse_document(&modified)
-            .expect_err("simple-position coordinates are not representable in JSX");
+        let jsx = reverse_document(&modified).expect("simple-position coordinates reverse");
 
         assert!(
-            error.to_string().contains("simplePos")
-                && error.to_string().contains("positionH")
-                && error.to_string().contains("retain the DOCX"),
-            "diagnostic should name the unsupported placement and repair: {error}"
+            jsx.contains("simplePosition={{ x: 25400, y: -12700 }}"),
+            "{jsx}"
         );
     }
 
