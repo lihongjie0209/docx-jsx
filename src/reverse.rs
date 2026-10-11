@@ -447,8 +447,11 @@ impl Writer {
     }
 
     fn body_structured_tag(&mut self, tag: &StructuredDataTag, depth: usize) -> Result<()> {
-        if let Some(index) = index_from_sdt(tag) {
+        if let Some(mut index) = index_from_sdt(tag)? {
             if self.apply_sdt {
+                if let Some(props) = self.sdt_plan.body_tags.get(self.body_sdt_index) {
+                    add_index_sdt_properties(&mut index, props);
+                }
                 self.body_sdt_index += 1;
             }
             self.advance_paragraphs_in_sdt(tag);
@@ -492,18 +495,40 @@ impl Writer {
 
     fn index_component(&mut self, index: &IndexField, depth: usize) {
         match index {
-            IndexField::Contents { start, end } => {
+            IndexField::Contents {
+                start,
+                end,
+                attributes,
+            } => {
                 self.empty(
                     "TableOfContents",
                     depth,
-                    &format!(" startLevel={{{start}}} endLevel={{{end}}}"),
+                    &format!(" startLevel={{{start}}} endLevel={{{end}}}{attributes}"),
                 );
             }
-            IndexField::Figures { label } => {
-                self.empty("TableOfFigures", depth, &attr("label", label));
+            IndexField::Figures {
+                label,
+                include_label_and_number,
+                separator,
+                attributes,
+            } => {
+                let mut properties = attr("label", label);
+                if !include_label_and_number {
+                    properties.push_str(" includeLabelAndNumber={false}");
+                }
+                if let Some(separator) = separator {
+                    properties.push_str(&attr("separator", separator));
+                }
+                properties.push_str(attributes);
+                self.empty("TableOfFigures", depth, &properties);
             }
-            IndexField::Entries { identifier } => {
-                self.empty("TableOfEntries", depth, &attr("identifier", identifier));
+            IndexField::Entries {
+                identifier,
+                attributes,
+            } => {
+                let mut properties = attr("identifier", identifier);
+                properties.push_str(attributes);
+                self.empty("TableOfEntries", depth, &properties);
             }
         }
     }
@@ -1449,7 +1474,13 @@ impl Writer {
                     index += 1;
                 }
                 TableCellContent::StructuredDataTag(tag) => {
-                    if let Some(kind) = index_from_sdt(tag) {
+                    if let Some(mut kind) = index_from_sdt(tag)? {
+                        if self.apply_sdt {
+                            if let Some(props) = self.sdt_plan.cell_tags.get(self.cell_sdt_index) {
+                                add_index_sdt_properties(&mut kind, props);
+                            }
+                            self.cell_sdt_index += 1;
+                        }
                         self.index_component(&kind, depth);
                     } else {
                         self.cell_content_control(tag, depth)?;
@@ -2055,14 +2086,74 @@ fn sdt_attrs(props: &SdtProps) -> String {
 }
 
 enum IndexField {
-    Contents { start: u64, end: u64 },
-    Figures { label: String },
-    Entries { identifier: String },
+    Contents {
+        start: u64,
+        end: u64,
+        attributes: String,
+    },
+    Figures {
+        label: String,
+        include_label_and_number: bool,
+        separator: Option<String>,
+        attributes: String,
+    },
+    Entries {
+        identifier: String,
+        attributes: String,
+    },
 }
 
-fn index_from_sdt(tag: &StructuredDataTag) -> Option<IndexField> {
+fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
     let instruction = collect_sdt_instruction(tag);
-    parse_toc_instruction(&instruction)
+    let Some(mut index) = parse_toc_instruction(&instruction)? else {
+        return Ok(None);
+    };
+    let attributes = match &mut index {
+        IndexField::Contents { attributes, .. }
+        | IndexField::Figures { attributes, .. }
+        | IndexField::Entries { attributes, .. } => attributes,
+    };
+    if let Some(alias) = &tag.property.alias {
+        attributes.push_str(&attr("alias", alias));
+    }
+    if let Some(dirty) = sdt_field_dirty(tag) {
+        if dirty {
+            attributes.push_str(" dirty");
+        } else {
+            attributes.push_str(" dirty={false}");
+        }
+    }
+    Ok(Some(index))
+}
+
+fn add_index_sdt_properties(index: &mut IndexField, props: &SdtProps) {
+    let (IndexField::Contents { attributes, .. }
+    | IndexField::Figures { attributes, .. }
+    | IndexField::Entries { attributes, .. }) = index;
+    if let Some(alias) = &props.alias
+        && !attributes.contains(" alias=")
+    {
+        attributes.push_str(&attr("alias", alias));
+    }
+}
+
+fn sdt_field_dirty(tag: &StructuredDataTag) -> Option<bool> {
+    tag.children.iter().find_map(|child| {
+        let StructuredDataTagChild::Paragraph(paragraph) = child else {
+            return None;
+        };
+        paragraph.children.iter().find_map(|child| {
+            let ParagraphChild::Run(run) = child else {
+                return None;
+            };
+            run.children.iter().find_map(|child| {
+                let RunChild::FieldChar(field) = child else {
+                    return None;
+                };
+                (field.field_char_type == docx_rs::FieldCharType::Begin).then_some(field.dirty)
+            })
+        })
+    })
 }
 
 fn collect_sdt_instruction(tag: &StructuredDataTag) -> String {
@@ -2085,45 +2176,320 @@ fn collect_sdt_instruction(tag: &StructuredDataTag) -> String {
     instruction
 }
 
-fn parse_toc_instruction(instruction: &str) -> Option<IndexField> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "TOC instruction decoding must validate switch compatibility before constructing one lossless JSX index component"
+)]
+fn parse_toc_instruction(instruction: &str) -> Result<Option<IndexField>> {
     let trimmed = instruction.trim();
-    if !trimmed.starts_with("TOC") {
-        return None;
+    if trimmed != "TOC" && !trimmed.starts_with("TOC ") {
+        return Ok(None);
     }
-    if let Some(label) = toc_switch(trimmed, 'c') {
-        return Some(IndexField::Figures { label });
+    let switches = parse_toc_switches(trimmed)?;
+    for flag in switches.keys() {
+        if !matches!(
+            flag,
+            'a' | 'b'
+                | 'c'
+                | 'd'
+                | 'f'
+                | 'h'
+                | 'l'
+                | 'n'
+                | 'o'
+                | 'p'
+                | 's'
+                | 't'
+                | 'u'
+                | 'w'
+                | 'x'
+                | 'z'
+        ) {
+            return Err(Error::Reverse(format!(
+                "TOC field contains unsupported `\\{flag}` switch; extend the index DSL or remove that switch"
+            )));
+        }
     }
-    if let Some(identifier) = toc_switch(trimmed, 'f') {
-        return Some(IndexField::Entries { identifier });
+    for flag in ['h', 'u', 'w', 'x', 'z'] {
+        if switches.get(&flag).is_some_and(Option::is_some) {
+            return Err(Error::Reverse(format!(
+                "TOC field `\\{flag}` does not take an argument; remove the following value"
+            )));
+        }
     }
-    let (start, end) = toc_switch(trimmed, 'o')
-        .as_deref()
-        .and_then(parse_level_range)
-        .unwrap_or((1, 3));
-    Some(IndexField::Contents { start, end })
+    for flag in ['a', 'c'] {
+        if switches.contains_key(&flag) && switches.get(&flag).is_some_and(Option::is_none) {
+            return Err(Error::Reverse(format!(
+                "TOC caption switch `\\{flag}` has no label; add a non-empty quoted caption name"
+            )));
+        }
+    }
+    let caption_number_label = switches.get(&'c').and_then(Option::as_ref);
+    let caption_label = switches.get(&'a').and_then(Option::as_ref);
+    if caption_number_label.is_some() && caption_label.is_some() {
+        return Err(Error::Reverse(
+            "TOC field cannot contain both caption switches `\\a` and `\\c`; retain only one"
+                .to_owned(),
+        ));
+    }
+    let is_figure_index = caption_number_label.is_some() || caption_label.is_some();
+    let attributes = index_instruction_attributes(&switches, is_figure_index)?;
+    if let Some(label) = caption_number_label.or(caption_label) {
+        if label.is_empty() {
+            return Err(Error::Reverse(
+                "TOC caption switch has an empty label; provide a non-empty caption label"
+                    .to_owned(),
+            ));
+        }
+        if switches.contains_key(&'f') {
+            return Err(Error::Reverse(
+                "TOC field mixes caption and custom-entry switches; keep either the figure field or the custom-entry field".to_owned(),
+            ));
+        }
+        return Ok(Some(IndexField::Figures {
+            label: label.clone(),
+            include_label_and_number: caption_number_label.is_some(),
+            separator: switches.get(&'d').and_then(Clone::clone),
+            attributes,
+        }));
+    }
+    if let Some(identifier) = switches.get(&'f') {
+        let Some(identifier) = identifier else {
+            return Err(Error::Reverse(
+                "TOC field uses `\\f` without an identifier; provide a non-empty `TableOfEntries identifier`".to_owned(),
+            ));
+        };
+        if identifier.is_empty() {
+            return Err(Error::Reverse(
+                "TOC field `\\f` has an empty identifier; provide a non-empty `TableOfEntries identifier`".to_owned(),
+            ));
+        }
+        return Ok(Some(IndexField::Entries {
+            identifier: identifier.clone(),
+            attributes,
+        }));
+    }
+    let (start, end) = match switches.get(&'o') {
+        Some(Some(value)) => parse_toc_range(value, "\\o")?,
+        Some(None) => {
+            return Err(Error::Reverse(
+                "TOC field uses `\\o` without a level range; provide a range such as 1-3"
+                    .to_owned(),
+            ));
+        }
+        None => (1, 3),
+    };
+    Ok(Some(IndexField::Contents {
+        start,
+        end,
+        attributes,
+    }))
 }
 
-fn toc_switch(instruction: &str, flag: char) -> Option<String> {
-    let marker = format!("\\{flag}");
-    let after = instruction.split_once(&marker)?.1.trim_start();
-    if after.starts_with('\\') || after.is_empty() {
-        return None;
+fn parse_toc_switches(instruction: &str) -> Result<HashMap<char, Option<String>>> {
+    let chars = instruction.chars().collect::<Vec<_>>();
+    let mut cursor = 3;
+    let mut switches = HashMap::new();
+    while cursor < chars.len() {
+        while chars.get(cursor).is_some_and(|value| value.is_whitespace()) {
+            cursor += 1;
+        }
+        if cursor == chars.len() {
+            break;
+        }
+        if chars[cursor] != '\\' {
+            return Err(Error::Reverse(format!(
+                "TOC field contains unexpected text after `TOC`; repair `{instruction}` so every option uses a supported switch"
+            )));
+        }
+        cursor += 1;
+        let Some(flag) = chars.get(cursor).copied() else {
+            return Err(Error::Reverse(
+                "TOC field ends with an incomplete switch; repair the field instruction".to_owned(),
+            ));
+        };
+        cursor += 1;
+        if switches.contains_key(&flag) {
+            return Err(Error::Reverse(format!(
+                "TOC field repeats `\\{flag}`; remove the duplicate switch"
+            )));
+        }
+        while chars.get(cursor).is_some_and(|value| value.is_whitespace()) {
+            cursor += 1;
+        }
+        let argument = match chars.get(cursor).copied() {
+            None | Some('\\') => None,
+            Some('"') => {
+                cursor += 1;
+                let mut value = String::new();
+                let mut closed = false;
+                while let Some(character) = chars.get(cursor).copied() {
+                    cursor += 1;
+                    if character == '"' {
+                        closed = true;
+                        break;
+                    }
+                    value.push(character);
+                }
+                if !closed {
+                    return Err(Error::Reverse(format!(
+                        "TOC field `\\{flag}` has an unterminated quoted argument; close the quote"
+                    )));
+                }
+                Some(value)
+            }
+            Some(_) => {
+                let mut value = String::new();
+                while let Some(character) = chars.get(cursor).copied() {
+                    if character.is_whitespace() || character == '\\' {
+                        break;
+                    }
+                    value.push(character);
+                    cursor += 1;
+                }
+                Some(value)
+            }
+        };
+        switches.insert(flag, argument);
     }
-    if let Some(rest) = after.strip_prefix('"') {
-        return rest.split_once('"').map(|(value, _)| value.to_owned());
-    }
-    Some(
-        after
-            .split(|character: char| character.is_whitespace() || character == '\\')
-            .next()
-            .unwrap_or_default()
-            .to_owned(),
-    )
+    Ok(switches)
 }
 
-fn parse_level_range(value: &str) -> Option<(u64, u64)> {
-    let (start, end) = value.split_once('-')?;
-    Some((start.parse().ok()?, end.parse().ok()?))
+fn parse_toc_range(value: &str, switch: &str) -> Result<(u64, u64)> {
+    let Some((start, end)) = value.split_once('-') else {
+        return Err(Error::Reverse(format!(
+            "TOC field `{switch}` range `{value}` is malformed; use a range such as 1-3"
+        )));
+    };
+    let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>()) else {
+        return Err(Error::Reverse(format!(
+            "TOC field `{switch}` range `{value}` is malformed; use integer levels from 1 to 9"
+        )));
+    };
+    if !(1..=9).contains(&start) || !(start..=9).contains(&end) {
+        return Err(Error::Reverse(format!(
+            "TOC field `{switch}` range `{value}` is invalid; use levels with 1 <= start <= end <= 9"
+        )));
+    }
+    Ok((start, end))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the supported OOXML field switches share one deterministic attribute encoder and validation path"
+)]
+fn index_instruction_attributes(
+    switches: &HashMap<char, Option<String>>,
+    is_figure_index: bool,
+) -> Result<String> {
+    let mut attributes = String::new();
+    for (flag, property) in [
+        ('l', "tcFieldLevelRange"),
+        ('n', "omitPageNumbersLevelRange"),
+    ] {
+        if let Some(value) = switches.get(&flag) {
+            let Some(value) = value else {
+                return Err(Error::Reverse(format!(
+                    "TOC field `\\{flag}` has no level range; provide a value such as 1-3"
+                )));
+            };
+            let (start, end) = parse_toc_range(value, &format!("\\{flag}"))?;
+            write!(
+                attributes,
+                " {property}={{{{\"start\":{start},\"end\":{end}}}}}"
+            )
+            .map_err(|error| Error::Reverse(error.to_string()))?;
+        }
+    }
+    for (flag, property) in [
+        ('b', "entryBookmarkName"),
+        ('p', "entryAndPageNumberSeparator"),
+        ('s', "seqFieldIdentifierForPrefix"),
+        (
+            'd',
+            if is_figure_index {
+                "separator"
+            } else {
+                "sequenceAndPageNumbersSeparator"
+            },
+        ),
+    ] {
+        if flag == 'd' && is_figure_index {
+            continue;
+        }
+        if let Some(value) = switches.get(&flag) {
+            let Some(value) = value else {
+                return Err(Error::Reverse(format!(
+                    "TOC field `\\{flag}` has no text argument; add a quoted non-empty value"
+                )));
+            };
+            if matches!(flag, 'b' | 's') && value.is_empty() {
+                return Err(Error::Reverse(format!(
+                    "TOC field `\\{flag}` has an empty value; provide a non-empty bookmark or sequence identifier"
+                )));
+            }
+            attributes.push(' ');
+            attributes.push_str(property);
+            attributes.push('=');
+            attributes.push_str(&serde_json::to_string(value).map_err(|error| {
+                Error::Reverse(format!("cannot serialize TOC switch value: {error}"))
+            })?);
+        }
+    }
+    if let Some(value) = switches.get(&'t') {
+        let Some(value) = value else {
+            return Err(Error::Reverse(
+                "TOC field `\\t` has no style mapping; provide quoted style,level pairs".to_owned(),
+            ));
+        };
+        let entries = value.split(',').collect::<Vec<_>>();
+        if entries.is_empty() || !entries.len().is_multiple_of(2) {
+            return Err(Error::Reverse(format!(
+                "TOC field `\\t` mapping `{value}` is malformed; use comma-separated style,level pairs"
+            )));
+        }
+        let mut mappings = Vec::new();
+        for pair in entries.chunks_exact(2) {
+            let level = pair[1]
+                .parse::<u64>()
+                .ok()
+                .filter(|level| (1..=9).contains(level));
+            let Some(level) = level else {
+                return Err(Error::Reverse(format!(
+                    "TOC field `\\t` mapping `{value}` has invalid level `{}`; use 1 to 9",
+                    pair[1]
+                )));
+            };
+            if pair[0].is_empty() {
+                return Err(Error::Reverse(
+                    "TOC field `\\t` contains an empty style name; provide a non-empty style name"
+                        .to_owned(),
+                ));
+            }
+            mappings.push(serde_json::json!({"style": pair[0], "level": level}));
+        }
+        write!(
+            attributes,
+            " stylesWithLevels={{{}}}",
+            serde_json::to_string(&mappings)
+                .map_err(|error| Error::Reverse(format!("cannot serialize TOC styles: {error}")))?
+        )
+        .map_err(|error| Error::Reverse(error.to_string()))?;
+    }
+    for (flag, property) in [
+        ('u', "useAppliedParagraphLineLevel"),
+        ('w', "preserveTab"),
+        ('x', "preserveNewLine"),
+        ('z', "hideTabAndPageNumbersInWebview"),
+    ] {
+        if switches.contains_key(&flag) {
+            write!(attributes, " {property}").map_err(|error| Error::Reverse(error.to_string()))?;
+        }
+    }
+    if !switches.contains_key(&'h') {
+        attributes.push_str(" hyperlinks={false}");
+    }
+    Ok(attributes)
 }
 
 fn is_body_level_sdt(stack: &[Vec<u8>]) -> bool {
@@ -7527,6 +7893,97 @@ mod tests {
         assert!(
             !toc_as_control,
             "TOC must not flatten to a nameless ContentControl: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_without_manifest_should_preserve_extended_toc_instructions() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"startLevel":1,"endLevel":3,"tcFieldLevelRange":{"start":2,"end":4},"omitPageNumbersLevelRange":{"start":5,"end":7},"entryBookmarkName":"contents","entryAndPageNumberSeparator":" — ","sequenceAndPageNumbersSeparator":" · ","seqFieldIdentifierForPrefix":"Figure","stylesWithLevels":[{"style":"Report Heading","level":2}],"preserveTab":true,"preserveNewLine":true,"useAppliedParagraphLineLevel":true,"hideTabAndPageNumbersInWebview":true,"hyperlinks":false,"dirty":false,"alias":"Contents"},"children":[]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, std::path::Path::new("."))
+            .expect("compile should work");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external TOC should reverse");
+        for expected in [
+            r#"tcFieldLevelRange={{"start":2,"end":4}}"#,
+            r#"omitPageNumbersLevelRange={{"start":5,"end":7}}"#,
+            r#"entryBookmarkName="contents""#,
+            r#"entryAndPageNumberSeparator=" — ""#,
+            r#"sequenceAndPageNumbersSeparator=" · ""#,
+            r#"seqFieldIdentifierForPrefix="Figure""#,
+            r#"stylesWithLevels={[{"style":"Report Heading","level":2}]}"#,
+            "preserveTab",
+            "preserveNewLine",
+            "useAppliedParagraphLineLevel",
+            "hideTabAndPageNumbersInWebview",
+            "hyperlinks={false}",
+            "dirty={false}",
+            r#"alias="Contents""#,
+        ] {
+            assert!(jsx.contains(expected), "missing `{expected}` in {jsx}");
+        }
+    }
+
+    #[test]
+    fn reverse_without_manifest_should_preserve_figure_and_entry_instructions() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfFigures","props":{"label":"Figure","includeLabelAndNumber":false,"separator":" — ","entryAndPageNumberSeparator":" / ","seqFieldIdentifierForPrefix":"Figure","stylesWithLevels":[{"style":"Caption Custom","level":2}],"preserveNewLine":true,"hyperlinks":false},"children":[]},{"type":"TableOfEntries","props":{"identifier":"legal","tcFieldLevelRange":{"start":1,"end":4},"omitPageNumbersLevelRange":{"start":3,"end":4},"entryBookmarkName":"terms","sequenceAndPageNumbersSeparator":" · ","preserveTab":true},"children":[]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, std::path::Path::new("."))
+            .expect("compile should work");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external indexes should reverse");
+        for expected in [
+            r#"label="Figure""#,
+            "includeLabelAndNumber={false}",
+            r#"separator=" — ""#,
+            r#"entryAndPageNumberSeparator=" / ""#,
+            r#"seqFieldIdentifierForPrefix="Figure""#,
+            r#"stylesWithLevels={[{"style":"Caption Custom","level":2}]}"#,
+            "preserveNewLine",
+            r#"identifier="legal""#,
+            r#"tcFieldLevelRange={{"start":1,"end":4}}"#,
+            r#"omitPageNumbersLevelRange={{"start":3,"end":4}}"#,
+            r#"entryBookmarkName="terms""#,
+            r#"sequenceAndPageNumbersSeparator=" · ""#,
+            "preserveTab",
+        ] {
+            assert!(jsx.contains(expected), "missing `{expected}` in {jsx}");
+        }
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unknown_toc_switches() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, std::path::Path::new("."))
+            .expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(compiled.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document.xml")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let changed = document.replace(
+            r"TOC \o &quot;1-3&quot; \h",
+            r"TOC \o &quot;1-3&quot; \h \q",
+        );
+        assert_ne!(changed, document, "fixture TOC instruction was not found");
+        let without_manifest = strip_ir_manifest(&compiled);
+        let external = rewrite_package_parts(
+            &without_manifest,
+            &[("word/document.xml", changed.as_bytes())],
+        );
+        let error = reverse_document(&external).expect_err("unknown TOC switches must fail");
+        assert!(
+            error.to_string().contains("unsupported `\\q` switch"),
+            "{error}"
         );
     }
 

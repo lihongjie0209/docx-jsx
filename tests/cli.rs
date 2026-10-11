@@ -45,6 +45,11 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("`creator?: string`"))
         .stdout(predicate::str::contains("`revision?: integer`"))
         .stdout(predicate::str::contains("`documentProtection?:"))
+        .stdout(predicate::str::contains("`tcFieldLevelRange?:"))
+        .stdout(predicate::str::contains("`stylesWithLevels?:"))
+        .stdout(predicate::str::contains(
+            "`hideTabAndPageNumbersInWebview?:",
+        ))
         .stdout(predicate::str::contains("type?: \"nextPage\""))
         .stdout(predicate::str::contains("lineNumbering?:"))
         .stdout(predicate::str::contains("docx-jsx pdf"))

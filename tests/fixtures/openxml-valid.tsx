@@ -13,6 +13,9 @@ import {
   Section,
   Table,
   TableCell,
+  TableOfContents,
+  TableOfFigures,
+  TableOfEntries,
   TableRow,
 } from "docx-jsx";
 
@@ -71,6 +74,21 @@ export default (
     ]}
   >
     <Section type="continuous" lineNumbering={{ countBy: 5, restart: "newSection", distance: 18 }} pageSize={{ width: 595.3, height: 841.9 }} margins={{ top: 72, right: 72, bottom: 72, left: 72 }} columns={2}>
+      <TableOfContents
+        startLevel={1}
+        endLevel={3}
+        tcFieldLevelRange={{ start: 2, end: 4 }}
+        omitPageNumbersLevelRange={{ start: 5, end: 7 }}
+        entryBookmarkName="validation-index"
+        entryAndPageNumberSeparator=" — "
+        stylesWithLevels={[{ style: "Validation Heading", level: 2 }]}
+        preserveTab
+        preserveNewLine
+        useAppliedParagraphLineLevel
+        hideTabAndPageNumbersInWebview
+      />
+      <TableOfFigures label="Figure" separator="-" dirty={false} />
+      <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} />
       <Heading level={1}>Open XML validation fixture</Heading>
       <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.

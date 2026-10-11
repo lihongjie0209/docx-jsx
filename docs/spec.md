@@ -618,17 +618,49 @@ error instead of a silent drop.
   Reverse reconstructs the element by matching start/end IDs around the
   enclosed paragraphs and tables; orphan or overlapping markers are errors.
 - `TableOfContents`: `startLevel?: 1..9`, `endLevel?: 1..9`,
-  `hyperlinks?: boolean`, `dirty?: boolean`, `alias?: string`. Defaults to
+  `tcFieldLevelRange?: {start:1..9,end:1..9}`,
+  `omitPageNumbersLevelRange?: {start:1..9,end:1..9}`,
+  `entryBookmarkName?: string`, `entryAndPageNumberSeparator?: string`,
+  `sequenceAndPageNumbersSeparator?: string`,
+  `seqFieldIdentifierForPrefix?: string`,
+  `stylesWithLevels?: [{style:string,level:1..9}]`,
+  `preserveTab?: boolean`, `preserveNewLine?: boolean`,
+  `useAppliedParagraphLineLevel?: boolean`,
+  `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
+  `dirty?: boolean`, and `alias?: string`. Defaults to
   levels 1–3, hyperlinks enabled, and automatic refresh requested. A section
   accepts at most one TOC, placed before its body content (headers and footers
   may precede it).
 - `TableOfFigures`: required non-empty `label` (for example `Figure`),
   `includeLabelAndNumber?: boolean`, `separator?: string`,
-  `hyperlinks?: boolean`, `dirty?: boolean`, and `alias?: string`. It emits a
-  native TOC field filtered by caption/SEQ label.
+  `entryBookmarkName?: string`, `entryAndPageNumberSeparator?: string`,
+  `sequenceAndPageNumbersSeparator?: string`,
+  `seqFieldIdentifierForPrefix?: string`,
+  `stylesWithLevels?: [{style:string,level:1..9}]`,
+  `preserveTab?: boolean`, `preserveNewLine?: boolean`,
+  `useAppliedParagraphLineLevel?: boolean`,
+  `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
+  `dirty?: boolean`, and `alias?: string`. It emits a native TOC field filtered
+  by caption/SEQ label.
 - `TableOfEntries`: required non-empty `identifier`, plus `hyperlinks?`,
-  `dirty?`, and `alias?`. It emits a native custom TOC containing `TocEntry`
-  fields with the same `identifier`.
+  `tcFieldLevelRange?: {start:1..9,end:1..9}`,
+  `omitPageNumbersLevelRange?: {start:1..9,end:1..9}`,
+  `entryBookmarkName?: string`, `entryAndPageNumberSeparator?: string`,
+  `sequenceAndPageNumbersSeparator?: string`,
+  `seqFieldIdentifierForPrefix?: string`,
+  `stylesWithLevels?: [{style:string,level:1..9}]`,
+  `preserveTab?: boolean`, `preserveNewLine?: boolean`,
+  `useAppliedParagraphLineLevel?: boolean`,
+  `hideTabAndPageNumbersInWebview?: boolean`, `dirty?`, and `alias?`. It emits
+  a native custom TOC containing `TocEntry` fields with the same `identifier`.
+  Range starts must be no greater than ends; levels are integers from 1 to 9.
+  Style names are non-empty and cannot contain commas or quotes, matching the
+  OOXML `\\t` field-argument syntax. The Boolean switches default to false at
+  the field level except component defaults already stated above. Reverse
+  preserves supported `TOC` instruction switches without the IR manifest and
+  errors on malformed or unsupported switch arguments. Text passed as an OOXML
+  quoted field argument cannot contain a quote; validation rejects such values
+  rather than emitting an ambiguous field instruction.
 
 Each section accepts at most one of each index component. All index components
 must precede body content; headers and footers may appear before them.

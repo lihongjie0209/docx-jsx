@@ -946,16 +946,58 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "hangingChars",
         ],
         NodeKind::Bookmark | NodeKind::InlineBookmark => &["name"],
-        NodeKind::TableOfContents => &["startLevel", "endLevel", "hyperlinks", "dirty", "alias"],
-        NodeKind::TableOfFigures => &[
-            "label",
-            "includeLabelAndNumber",
-            "separator",
+        NodeKind::TableOfContents => &[
+            "startLevel",
+            "endLevel",
+            "tcFieldLevelRange",
+            "omitPageNumbersLevelRange",
+            "entryBookmarkName",
+            "entryAndPageNumberSeparator",
+            "sequenceAndPageNumbersSeparator",
+            "seqFieldIdentifierForPrefix",
+            "stylesWithLevels",
+            "preserveTab",
+            "preserveNewLine",
+            "useAppliedParagraphLineLevel",
+            "hideTabAndPageNumbersInWebview",
             "hyperlinks",
             "dirty",
             "alias",
         ],
-        NodeKind::TableOfEntries => &["identifier", "hyperlinks", "dirty", "alias"],
+        NodeKind::TableOfFigures => &[
+            "label",
+            "includeLabelAndNumber",
+            "separator",
+            "entryBookmarkName",
+            "entryAndPageNumberSeparator",
+            "sequenceAndPageNumbersSeparator",
+            "seqFieldIdentifierForPrefix",
+            "stylesWithLevels",
+            "preserveTab",
+            "preserveNewLine",
+            "useAppliedParagraphLineLevel",
+            "hideTabAndPageNumbersInWebview",
+            "hyperlinks",
+            "dirty",
+            "alias",
+        ],
+        NodeKind::TableOfEntries => &[
+            "identifier",
+            "tcFieldLevelRange",
+            "omitPageNumbersLevelRange",
+            "entryBookmarkName",
+            "entryAndPageNumberSeparator",
+            "sequenceAndPageNumbersSeparator",
+            "seqFieldIdentifierForPrefix",
+            "stylesWithLevels",
+            "preserveTab",
+            "preserveNewLine",
+            "useAppliedParagraphLineLevel",
+            "hideTabAndPageNumbersInWebview",
+            "hyperlinks",
+            "dirty",
+            "alias",
+        ],
         NodeKind::TocEntry => &["text", "level", "omitPageNumber", "identifier"],
         NodeKind::Index => index_props(),
         NodeKind::IndexEntry => index_entry_props(),
@@ -3881,7 +3923,145 @@ fn has_text_content(node: &Node) -> bool {
     })
 }
 
+fn validate_index_instruction_options(node: &Node, path: &str) -> Result<()> {
+    for key in ["tcFieldLevelRange", "omitPageNumbersLevelRange"] {
+        if let Some(range) = node.props.get(key) {
+            validate_index_level_range(range, path, key)?;
+        }
+    }
+    for key in [
+        "preserveTab",
+        "preserveNewLine",
+        "useAppliedParagraphLineLevel",
+        "hideTabAndPageNumbersInWebview",
+    ] {
+        if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(path, format!("`{key}` must be a boolean")));
+        }
+    }
+    if matches!(
+        node.kind,
+        NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
+    ) {
+        for key in ["hyperlinks", "dirty"] {
+            if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
+                return Err(validation(path, format!("`{key}` must be a boolean")));
+            }
+        }
+        if let Some(alias) = node.props.get("alias")
+            && alias.as_str().is_none_or(str::is_empty)
+        {
+            return Err(validation(path, "`alias` must be a non-empty string"));
+        }
+    }
+    for key in ["entryBookmarkName", "seqFieldIdentifierForPrefix"] {
+        if node
+            .props
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` must be a non-empty string"),
+            ));
+        }
+        if node
+            .props
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.contains('"'))
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` cannot contain a quote because OOXML field arguments are quoted"),
+            ));
+        }
+    }
+    for key in [
+        "entryAndPageNumberSeparator",
+        "sequenceAndPageNumbersSeparator",
+    ] {
+        if node.props.get(key).is_some_and(|value| !value.is_string()) {
+            return Err(validation(path, format!("`{key}` must be a string")));
+        }
+        if node
+            .props
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.contains('"'))
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` cannot contain a quote because OOXML field arguments are quoted"),
+            ));
+        }
+    }
+    for key in ["separator", "label", "identifier"] {
+        if node
+            .props
+            .get(key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.contains('"'))
+        {
+            return Err(validation(
+                path,
+                format!("`{key}` cannot contain a quote because OOXML field arguments are quoted"),
+            ));
+        }
+    }
+    if node.props.contains_key("separator")
+        && node.props.contains_key("sequenceAndPageNumbersSeparator")
+    {
+        return Err(validation(
+            path,
+            "`separator` and `sequenceAndPageNumbersSeparator` both set the same TOC switch; keep only one",
+        ));
+    }
+    if let Some(styles) = node.props.get("stylesWithLevels") {
+        validate_styles_with_levels(styles, path)?;
+    }
+    Ok(())
+}
+
+fn validate_styles_with_levels(value: &Value, path: &str) -> Result<()> {
+    let styles = value
+        .as_array()
+        .filter(|styles| !styles.is_empty())
+        .ok_or_else(|| validation(path, "`stylesWithLevels` must be a non-empty array"))?;
+    for (index, style) in styles.iter().enumerate() {
+        let style_path = format!("{path}.stylesWithLevels[{index}]");
+        let style = style
+            .as_object()
+            .ok_or_else(|| validation(&style_path, "must be an object"))?;
+        validate_object_keys(style, &style_path, &["style", "level"])?;
+        let valid_name = style
+            .get("style")
+            .and_then(Value::as_str)
+            .is_some_and(|name| {
+                !name.is_empty() && !name.chars().any(|c| matches!(c, ',' | '"' | '\\'))
+            });
+        if !valid_name {
+            return Err(validation(
+                &style_path,
+                "`style` must be non-empty and cannot contain commas, quotes, or backslashes",
+            ));
+        }
+        if style
+            .get("level")
+            .and_then(Value::as_u64)
+            .is_none_or(|level| !(1..=9).contains(&level))
+        {
+            return Err(validation(
+                &style_path,
+                "`level` must be an integer from 1 to 9",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_index_semantics(node: &Node, path: &str) -> Result<()> {
+    validate_index_instruction_options(node, path)?;
     if node.kind == NodeKind::Index {
         validate_optional_field_argument(node, path, "identifier")?;
         if let Some(columns) = node.props.get("columns")
@@ -3950,6 +4130,31 @@ fn validate_index_semantics(node: &Node, path: &str) -> Result<()> {
                 return Err(validation(path, format!("`{key}` must be a string")));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_index_level_range(value: &Value, path: &str, key: &str) -> Result<()> {
+    let range_path = format!("{path}.{key}");
+    let range = value
+        .as_object()
+        .ok_or_else(|| validation(&range_path, "must be an object with `start` and `end`"))?;
+    validate_object_keys(range, &range_path, &["start", "end"])?;
+    let start = range
+        .get("start")
+        .and_then(Value::as_u64)
+        .filter(|value| (1..=9).contains(value))
+        .ok_or_else(|| validation(&range_path, "`start` must be an integer from 1 to 9"))?;
+    let end = range
+        .get("end")
+        .and_then(Value::as_u64)
+        .filter(|value| (1..=9).contains(value))
+        .ok_or_else(|| validation(&range_path, "`end` must be an integer from 1 to 9"))?;
+    if start > end {
+        return Err(validation(
+            &range_path,
+            "`start` must be less than or equal to `end`",
+        ));
     }
     Ok(())
 }
@@ -5589,6 +5794,58 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfFigures","props":{"label":"Figure","includeLabelAndNumber":true,"separator":" — "},"children":[]},{"type":"TableOfEntries","props":{"identifier":"legal","hyperlinks":true},"children":[]},{"type":"Paragraph","props":{},"children":[{"type":"TocEntry","props":{"text":"Terms","identifier":"legal"},"children":[]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_extended_toc_instruction_options() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"tcFieldLevelRange":{"start":2,"end":4},"omitPageNumbersLevelRange":{"start":5,"end":7},"entryBookmarkName":"contents","entryAndPageNumberSeparator":" — ","stylesWithLevels":[{"style":"Report Heading","level":2}],"preserveTab":true,"preserveNewLine":true,"useAppliedParagraphLineLevel":true,"hideTabAndPageNumbersInWebview":true},"children":[]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_toc_instruction_options() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"tcFieldLevelRange":{"start":5,"end":2},"preserveTab":"yes","stylesWithLevels":[{"style":"Bad,Name","level":0}]},"children":[]}]}]}}"#,
+        );
+        let error = ir.validate().expect_err("invalid TOC options must fail");
+        assert!(
+            error.to_string().contains("tcFieldLevelRange")
+                && error.to_string().contains("start")
+                && error.to_string().contains("end"),
+            "{error}"
+        );
+
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"preserveTab":"yes"},"children":[]}]}]}}"#,
+        );
+        assert!(
+            ir.validate()
+                .expect_err("TOC switches must be booleans")
+                .to_string()
+                .contains("`preserveTab` must be a boolean")
+        );
+
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"stylesWithLevels":[{"style":"Bad,Name","level":2}]},"children":[]}]}]}}"#,
+        );
+        assert!(
+            ir.validate()
+                .expect_err("unrepresentable style names must fail")
+                .to_string()
+                .contains("cannot contain commas")
+        );
+
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfEntries","props":{"identifier":"bad\"id"},"children":[]}]}]}}"#,
+        );
+        assert!(
+            ir.validate()
+                .expect_err("quoted switch values must be rejected")
+                .to_string()
+                .contains("cannot contain a quote")
+        );
     }
 
     #[test]

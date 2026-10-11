@@ -13,12 +13,12 @@ use docx_rs::{
     ParagraphBorder, ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic,
     PicAlign, PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo,
     RelativeFromHType, RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType,
-    SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Sym, Tab as DocxTab,
-    TabLeaderType, TabValueType, Table, TableAlignmentType, TableBorder, TableBorderPosition,
-    TableBorders, TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders,
-    TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty,
-    TableRow, TextAlignmentType, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
-    VertAlignType, WebExtension, WidthType,
+    SpecialIndentType, Start, StructuredDataTag, Style, StyleType, StyleWithLevel, Sym,
+    Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType, TableBorder,
+    TableBorderPosition, TableBorders, TableCell, TableCellBorder, TableCellBorderPosition,
+    TableCellBorders, TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents,
+    TablePositionProperty, TableRow, TextAlignmentType, TextBorder, TextDirectionType, ThemeColor,
+    VAlignType, VMergeType, VertAlignType, WebExtension, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -321,9 +321,95 @@ fn package_document(
     let bytes = patch_style_character_indentation(bytes, &ir.document.props)?;
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
+    let bytes = patch_index_dirty_values(bytes, &ir.document)?;
     let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_simple_position_images(bytes)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn patch_index_dirty_values(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> {
+    let mut dirty_values = Vec::new();
+    collect_index_dirty_values(document, &mut dirty_values);
+    if !dirty_values.iter().any(|dirty| !dirty) {
+        return Ok(bytes);
+    }
+
+    let mut xml = read_zip_text_entry(&bytes, "word/document.xml")?;
+    let mut search_from = 0;
+    let mut index_number = 0;
+    while let Some(relative_start) = xml[search_from..].find("<w:sdt>") {
+        let start = search_from + relative_start;
+        let Some(relative_end) = xml[start..].find("</w:sdt>") else {
+            return Err(Error::Compile(
+                "word/document.xml contains an unclosed `w:sdt` while applying TOC dirty settings"
+                    .to_owned(),
+            ));
+        };
+        let end = start + relative_end + "</w:sdt>".len();
+        let control = &xml[start..end];
+        if control.contains("<w:instrText>TOC ") {
+            let Some(dirty) = dirty_values.get(index_number) else {
+                return Err(Error::Compile(
+                    "more serialized TOC controls exist than index components in the DSL; keep the DOCX structure aligned with the document tree".to_owned(),
+                ));
+            };
+            if !dirty {
+                let Some(begin) = control.find("<w:fldChar w:fldCharType=\"begin\"") else {
+                    return Err(Error::Compile(
+                        "TOC control has no begin field character; repair the generated field structure".to_owned(),
+                    ));
+                };
+                let tag_end = control[begin..]
+                    .find('>')
+                    .map(|offset| begin + offset + 1)
+                    .ok_or_else(|| {
+                        Error::Compile(
+                            "TOC begin field character is malformed; repair the generated field structure".to_owned(),
+                        )
+                    })?;
+                let tag = &control[begin..tag_end];
+                if !tag.contains("w:dirty=\"true\"") {
+                    return Err(Error::Compile(
+                        "TOC begin field character does not contain its expected dirty flag; report this docx-rs serialization change".to_owned(),
+                    ));
+                }
+                let patched = tag.replace("w:dirty=\"true\"", "w:dirty=\"false\"");
+                let absolute_begin = start + begin;
+                let absolute_end = start + tag_end;
+                xml.replace_range(absolute_begin..absolute_end, &patched);
+            }
+            index_number += 1;
+        }
+        search_from = end;
+    }
+    if index_number != dirty_values.len() {
+        return Err(Error::Compile(format!(
+            "DSL defines {} TOC components, but only {index_number} were serialized; repair index placement before compiling",
+            dirty_values.len()
+        )));
+    }
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
+}
+
+fn collect_index_dirty_values(node: &Node, values: &mut Vec<bool>) {
+    if matches!(
+        node.kind,
+        NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
+    ) {
+        values.push(
+            node.props
+                .get("dirty")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        );
+    }
+    for child in &node.children {
+        if let Child::Node(child) = child {
+            collect_index_dirty_values(child, values);
+        }
+    }
 }
 
 fn patch_document_protection(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
@@ -5617,19 +5703,10 @@ fn compile_table_of_contents(node: &Node, path: &str) -> Result<TableOfContents>
             .unwrap_or(3),
     )
     .map_err(|_| validation(path, "`endLevel` is out of range"))?;
-    let mut toc = TableOfContents::new()
+    let toc = TableOfContents::new()
         .heading_styles_range(start, end)
         .auto();
-    if bool_prop(&node.props, "hyperlinks", path)?.unwrap_or(true) {
-        toc = toc.hyperlink();
-    }
-    if bool_prop(&node.props, "dirty", path)?.unwrap_or(true) {
-        toc = toc.dirty();
-    }
-    if let Some(alias) = string_prop(&node.props, "alias", path)? {
-        toc = toc.alias(alias);
-    }
-    Ok(toc)
+    configure_index(toc, node, path)
 }
 
 fn compile_table_of_figures(node: &Node, path: &str) -> Result<TableOfContents> {
@@ -5658,6 +5735,76 @@ fn compile_table_of_entries(node: &Node, path: &str) -> Result<TableOfContents> 
 
 fn configure_index(mut toc: TableOfContents, node: &Node, path: &str) -> Result<TableOfContents> {
     toc = toc.auto();
+    if let Some(range) = node
+        .props
+        .get("tcFieldLevelRange")
+        .and_then(Value::as_object)
+    {
+        let start = usize::try_from(range["start"].as_u64().unwrap_or_default())
+            .map_err(|_| validation(path, "`tcFieldLevelRange.start` is out of range"))?;
+        let end = usize::try_from(range["end"].as_u64().unwrap_or_default())
+            .map_err(|_| validation(path, "`tcFieldLevelRange.end` is out of range"))?;
+        toc.instr = toc.instr.tc_field_level_range(start, end);
+    }
+    if let Some(range) = node
+        .props
+        .get("omitPageNumbersLevelRange")
+        .and_then(Value::as_object)
+    {
+        let start = usize::try_from(range["start"].as_u64().unwrap_or_default())
+            .map_err(|_| validation(path, "`omitPageNumbersLevelRange.start` is out of range"))?;
+        let end = usize::try_from(range["end"].as_u64().unwrap_or_default())
+            .map_err(|_| validation(path, "`omitPageNumbersLevelRange.end` is out of range"))?;
+        toc.instr = toc.instr.omit_page_numbers_level_range(start, end);
+    }
+    if let Some(bookmark) = string_prop(&node.props, "entryBookmarkName", path)? {
+        toc.instr = toc.instr.entry_bookmark_name(bookmark);
+    }
+    if let Some(separator) = string_prop(&node.props, "entryAndPageNumberSeparator", path)? {
+        toc.instr = toc.instr.entry_and_page_number_separator(separator);
+    }
+    if let Some(separator) = string_prop(&node.props, "sequenceAndPageNumbersSeparator", path)? {
+        toc.instr = toc.instr.sequence_and_page_numbers_separator(separator);
+    }
+    if let Some(identifier) = string_prop(&node.props, "seqFieldIdentifierForPrefix", path)? {
+        toc.instr = toc.instr.seq_field_identifier_for_prefix(identifier);
+    }
+    if let Some(styles) = node.props.get("stylesWithLevels").and_then(Value::as_array) {
+        for style in styles {
+            let style_name = style
+                .get("style")
+                .and_then(Value::as_str)
+                .ok_or_else(|| validation(path, "invalid stylesWithLevels style"))?;
+            let level = style
+                .get("level")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| validation(path, "invalid stylesWithLevels level"))?;
+            let level = usize::try_from(level)
+                .map_err(|_| validation(path, "stylesWithLevels level is out of range"))?;
+            toc.instr = toc
+                .instr
+                .add_style_with_level(StyleWithLevel::new(style_name, level));
+        }
+    }
+    for (property, apply) in [
+        (
+            "preserveTab",
+            InstrToC::preserve_tab as fn(InstrToC) -> InstrToC,
+        ),
+        ("preserveNewLine", InstrToC::preserve_new_line),
+        (
+            "useAppliedParagraphLineLevel",
+            InstrToC::use_applied_paragraph_line_level,
+        ),
+        (
+            "hideTabAndPageNumbersInWebview",
+            InstrToC::hide_tab_and_page_numbers_in_webview,
+        ),
+    ] {
+        if bool_prop(&node.props, property, path)?.unwrap_or(false) {
+            toc.instr = apply(toc.instr);
+        }
+    }
     if bool_prop(&node.props, "hyperlinks", path)?.unwrap_or(true) {
         toc = toc.hyperlink();
     }
@@ -8103,9 +8250,20 @@ mod tests {
             "version": 1,
             "document": {"type": "Document", "props": {}, "children": [{
                 "type": "Section", "props": {}, "children": [
+                    {"type": "TableOfContents", "props": {
+                        "startLevel": 1, "endLevel": 3,
+                        "tcFieldLevelRange": {"start": 2, "end": 4},
+                        "omitPageNumbersLevelRange": {"start": 5, "end": 7},
+                        "entryBookmarkName": "contents",
+                        "entryAndPageNumberSeparator": " — ",
+                        "stylesWithLevels": [{"style": "Report Heading", "level": 2}],
+                        "preserveTab": true, "preserveNewLine": true,
+                        "useAppliedParagraphLineLevel": true,
+                        "hideTabAndPageNumbersInWebview": true
+                    }, "children": []},
                     {"type": "TableOfFigures", "props": {
                         "label": "Figure", "includeLabelAndNumber": true,
-                        "separator": " — ", "hyperlinks": true, "dirty": true,
+                        "separator": " — ", "hyperlinks": true, "dirty": false,
                         "alias": "Figures"
                     }, "children": []},
                     {"type": "TableOfEntries", "props": {
@@ -8127,9 +8285,11 @@ mod tests {
             .expect("UTF-8 XML");
         assert!(
             document.contains("TOC \\c &quot;Figure&quot; \\d &quot; — &quot; \\h")
+                && document.contains("TOC \\b &quot;contents&quot; \\l &quot;2-4&quot; \\n &quot;5-7&quot; \\o &quot;1-3&quot; \\p &quot; — &quot; \\t &quot;Report Heading,2&quot; \\h \\u \\w \\x \\z")
                 && document.contains("<w:alias w:val=\"Figures\"")
                 && document.contains("TOC \\f &quot;legal&quot; \\h")
                 && document.contains("<w:alias w:val=\"Legal entries\"")
+                && document.contains("<w:fldChar w:fldCharType=\"begin\" w:dirty=\"false\" />")
                 && document.matches("w:dirty=\"true\"").count() >= 2,
             "{document}"
         );
