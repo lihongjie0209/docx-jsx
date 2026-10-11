@@ -1009,6 +1009,7 @@ fn section_props() -> &'static [&'static str] {
         "textDirection",
         "documentGrid",
         "pageNumbering",
+        "lineNumbering",
         "columns",
         "type",
     ]
@@ -2744,6 +2745,9 @@ fn validate_section_semantics(node: &Node, path: &str) -> Result<()> {
     if let Some(value) = node.props.get("pageNumbering") {
         validate_page_numbering(value, path)?;
     }
+    if let Some(value) = node.props.get("lineNumbering") {
+        validate_line_numbering(value, path)?;
+    }
     if node.props.get("columns").is_some_and(|value| {
         value
             .as_u64()
@@ -2829,6 +2833,48 @@ fn validate_page_numbering(value: &Value, path: &str) -> Result<()> {
             path,
             "`pageNumbering.chapterStyle` must be a non-empty string",
         ));
+    }
+    Ok(())
+}
+
+fn validate_line_numbering(value: &Value, path: &str) -> Result<()> {
+    let numbering = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`lineNumbering` must be an object"))?;
+    for key in numbering.keys() {
+        if !["countBy", "start", "distance", "restart"].contains(&key.as_str()) {
+            return Err(validation(
+                path,
+                format!("unknown lineNumbering property `{key}`"),
+            ));
+        }
+    }
+    for key in ["countBy", "start"] {
+        if numbering
+            .get(key)
+            .is_some_and(|value| value.as_u64().is_none_or(|value| value == 0))
+        {
+            return Err(validation(
+                path,
+                format!("`lineNumbering.{key}` must be a positive integer"),
+            ));
+        }
+    }
+    if let Some(value) = numbering.get("distance") {
+        require_number(value, path, "lineNumbering.distance", false)?;
+    }
+    if let Some(restart) = numbering.get("restart") {
+        let restart = restart
+            .as_str()
+            .ok_or_else(|| validation(path, "`lineNumbering.restart` must be a string"))?;
+        if !["newPage", "newSection", "continuous"].contains(&restart) {
+            return Err(validation(
+                path,
+                format!(
+                    "invalid `lineNumbering.restart` value `{restart}`; use newPage, newSection, or continuous"
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -4349,6 +4395,33 @@ mod tests {
         let error = ir.validate().expect_err("unknown section type must fail");
         assert!(
             error.to_string().contains("type") && error.to_string().contains("nextPage"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_section_line_numbering() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"lineNumbering":{"countBy":0,"restart":"eachPage"}},"children":[]}]}}"#,
+        );
+        let error = ir.validate().expect_err("invalid line numbering must fail");
+        assert!(
+            error.to_string().contains("lineNumbering.countBy")
+                || error.to_string().contains("lineNumbering.restart"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_unknown_section_line_number_restart() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"lineNumbering":{"restart":"eachPage"}},"children":[]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("unknown line-number restart must fail");
+        assert!(
+            error.to_string().contains("eachPage") && error.to_string().contains("newSection"),
             "{error}"
         );
     }

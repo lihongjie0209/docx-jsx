@@ -253,6 +253,21 @@ fn package_document(
         })
         .collect::<Vec<_>>();
     let bytes = patch_section_types(bytes, &section_types)?;
+    let section_line_numbering = ir
+        .document
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            Child::Node(node) if node.kind == NodeKind::Section => Some(
+                node.props
+                    .get("lineNumbering")
+                    .and_then(Value::as_object)
+                    .cloned(),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let bytes = patch_section_line_numbering(bytes, &section_line_numbering)?;
     let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
     let row_grid = collect_row_grid_properties(&ir.document);
     let mut bytes = bytes;
@@ -754,6 +769,99 @@ fn patch_section_types(bytes: Vec<u8>, section_types: &[Option<String>]) -> Resu
         return Err(Error::Compile(format!(
             "docx-rs emitted {section_index} section properties for {} JSX Sections",
             section_types.len()
+        )));
+    }
+    replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
+}
+
+fn patch_section_line_numbering(
+    bytes: Vec<u8>,
+    line_numbering: &[Option<Map<String, Value>>],
+) -> Result<Vec<u8>> {
+    if line_numbering.iter().all(Option::is_none) {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .map_err(|error| Error::Compile(format!("missing word/document.xml: {error}")))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot read word/document.xml: {error}")))?;
+    let mut search_from = 0;
+    let mut section_index = 0;
+    while let Some(relative_start) = xml[search_from..].find("<w:sectPr") {
+        let start = search_from + relative_start;
+        let after_name = start + "<w:sectPr".len();
+        if xml
+            .as_bytes()
+            .get(after_name)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'>')
+        {
+            search_from = after_name;
+            continue;
+        }
+        let close = xml[start..]
+            .find("</w:sectPr>")
+            .map(|offset| start + offset)
+            .ok_or_else(|| Error::Compile("invalid `w:sectPr` in word/document.xml".to_owned()))?;
+        let Some(properties) = line_numbering.get(section_index).and_then(Option::as_ref) else {
+            section_index += 1;
+            search_from = close + "</w:sectPr>".len();
+            continue;
+        };
+        if xml[start..close].contains("<w:lnNumType") {
+            return Err(Error::Compile(format!(
+                "docx-rs unexpectedly emitted `w:lnNumType` for Section[{section_index}]"
+            )));
+        }
+        let mut element = String::from("<w:lnNumType");
+        for key in ["countBy", "start"] {
+            if let Some(value) = properties.get(key).and_then(Value::as_u64) {
+                let _ = write!(element, r#" w:{key}="{value}""#);
+            }
+        }
+        if let Some(distance) = properties.get("distance").and_then(Value::as_f64) {
+            let distance = to_twips_i32(
+                distance,
+                &format!("Section[{section_index}]/lineNumbering/distance"),
+            )?;
+            let _ = write!(element, r#" w:distance="{distance}""#);
+        }
+        if let Some(restart) = properties.get("restart").and_then(Value::as_str) {
+            let _ = write!(element, r#" w:restart="{}""#, xml_escape(restart));
+        }
+        element.push_str(" />");
+        let insertion = [
+            "<w:lnNumType",
+            "<w:pgNumType",
+            "<w:cols",
+            "<w:formProt",
+            "<w:vAlign",
+            "<w:noEndnote",
+            "<w:titlePg",
+            "<w:textDirection",
+            "<w:bidi",
+            "<w:rtlGutter",
+            "<w:docGrid",
+        ]
+        .iter()
+        .filter_map(|tag| xml[start..close].find(tag).map(|offset| start + offset))
+        .min()
+        .ok_or_else(|| {
+            Error::Compile(format!(
+                "cannot locate schema position for `w:lnNumType` in Section[{section_index}]"
+            ))
+        })?;
+        xml.insert_str(insertion, &element);
+        search_from = insertion + element.len();
+        section_index += 1;
+    }
+    if section_index < line_numbering.len() {
+        return Err(Error::Compile(format!(
+            "docx-rs emitted {section_index} section properties for {} JSX Sections",
+            line_numbering.len()
         )));
     }
     replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
@@ -6329,6 +6437,40 @@ mod tests {
             document.contains(r#"<w:sectPr><w:type w:val="continuous" /><w:pgSz"#),
             "{document}"
         );
+    }
+
+    #[test]
+    fn compile_should_render_section_line_numbering() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"lineNumbering":{"countBy":5,"start":3,"distance":18,"restart":"newSection"}},"children":[{"type":"Paragraph","props":{},"children":["body"]}]}]}}"#,
+        ).expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        assert!(document.contains(r#"<w:lnNumType w:countBy="5" w:start="3" w:distance="360" w:restart="newSection" />"#), "{document}");
+    }
+
+    #[test]
+    fn compile_should_enable_default_section_line_numbering_for_empty_object() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"lineNumbering":{}},"children":[]}]}}"#,
+        ).expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        assert!(document.contains("<w:lnNumType />"), "{document}");
     }
 
     #[test]

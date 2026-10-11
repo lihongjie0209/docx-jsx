@@ -274,7 +274,8 @@ error instead of a silent drop.
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
   `documentGrid?: {type,linePitch?,charSpace?}`, and
-  `pageNumbering?: {start?,chapterStyle?}`, and `columns?: 1..45` (default 1).
+  `pageNumbering?: {start?,chapterStyle?}`, `lineNumbering?: {countBy?,start?,distance?,restart?}`,
+  and `columns?: 1..45` (default 1).
   Columns are equal-width with the backend's default 425-twip spacing. External
   reverse preserves `type` and the column count; layouts with custom column widths,
   spacing, or separators are rejected with a repair suggestion because this
@@ -282,8 +283,14 @@ error instead of a silent drop.
   `lines`, `linesAndChars`, or `snapToChars`; `linePitch` is a positive point
   measurement, while `charSpace` is a signed integer in OOXML 1/4096-em units.
   `pageNumbering.start` is a non-negative integer and `chapterStyle` is a
-  non-empty Word chapter-style value. Both configuration objects must be
-  non-empty.
+  non-empty Word chapter-style value. `documentGrid` and `pageNumbering`
+  objects must be non-empty. `lineNumbering` enables section line numbering; its `countBy?`
+  and `start?` are positive integers (defaults 1), `distance?` is a
+  non-negative point measurement converted to OOXML twips (20 twips per point;
+  omitted for Word's automatic placement),
+  and `restart?` is `newPage` (default), `newSection`, or `continuous`.
+  An empty object enables default line numbering. External reverse preserves
+  the presence of `w:lnNumType` and every explicitly present attribute.
 - `Paragraph`: `align?: "left" | "center" | "right" | "both" | "distribute" | "start" | "end" | "justified"`,
   `spacingBefore?`, `spacingAfter?`, `lineSpacing?`, signed
   `indentLeft?` / `indentRight?`, `firstLine?`, `hanging?`, `keepNext?`, `keepLines?`,

@@ -61,6 +61,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
     let section_types = collect_section_types(bytes)?;
+    let section_line_numbering = collect_section_line_numbering(bytes)?;
     let numbering_multi_level_types = collect_numbering_multi_level_types(bytes)?;
     let table_row_xml = collect_table_row_xml_metadata(bytes)?;
     let table_xml = collect_table_xml_metadata(bytes)?;
@@ -82,6 +83,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         numbering_multi_level_types,
         section_columns,
         section_types,
+        section_line_numbering,
         table_row_xml,
         table_xml,
         paragraph_indent_xml,
@@ -238,6 +240,7 @@ struct Writer {
     numbering_multi_level_types: HashMap<usize, String>,
     section_columns: Vec<usize>,
     section_types: Vec<Option<String>>,
+    section_line_numbering: Vec<Option<Map<String, Value>>>,
     table_row_xml: HashMap<String, Vec<TableRowXmlMetadata>>,
     table_row_indices: HashMap<String, usize>,
     table_xml: HashMap<String, Vec<TableXmlMetadata>>,
@@ -328,15 +331,28 @@ impl Writer {
                 groups.len()
             )));
         }
+        if !self.section_line_numbering.is_empty()
+            && self.section_line_numbering.len() != groups.len()
+        {
+            return Err(Error::Reverse(format!(
+                "word/document.xml contains {} line-numbering entries for {} reconstructed sections; repair the section-break structure so each section is unambiguous",
+                self.section_line_numbering.len(),
+                groups.len()
+            )));
+        }
         for (index, (children, break_property)) in groups.into_iter().enumerate() {
             let property = break_property.unwrap_or(&docx.document.section_property);
             let columns = self.section_columns.get(index).copied().unwrap_or(1);
             let section_type = self.section_types.get(index).and_then(Option::as_deref);
+            let line_numbering = self
+                .section_line_numbering
+                .get(index)
+                .and_then(Option::as_ref);
             self.line(
                 1,
                 &format!(
                     "<Section{}>",
-                    section_jsx_attrs(property, columns, section_type)?
+                    section_jsx_attrs(property, columns, section_type, line_numbering)?
                 ),
             );
             self.apply_sdt = false;
@@ -3533,6 +3549,118 @@ fn collect_section_types(bytes: &[u8]) -> Result<Vec<Option<String>>> {
     Ok(sections)
 }
 
+fn collect_section_line_numbering(bytes: &[u8]) -> Result<Vec<Option<Map<String, Value>>>> {
+    let xml = read_zip_text(bytes, "word/document.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut in_section = false;
+    let mut saw_line_numbering = false;
+    let mut current = None;
+    let mut sections = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"sectPr" => {
+                if in_section {
+                    return Err(Error::Reverse(
+                        "word/document.xml contains nested section properties; repair the malformed `w:sectPr` structure".to_owned(),
+                    ));
+                }
+                in_section = true;
+                saw_line_numbering = false;
+                current = None;
+            }
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"sectPr" => {
+                sections.push(None);
+            }
+            Ok(Event::Start(element) | Event::Empty(element))
+                if in_section && element.local_name().as_ref() == b"lnNumType" =>
+            {
+                if saw_line_numbering {
+                    return Err(Error::Reverse(
+                        "section contains multiple `w:lnNumType` elements; keep one line-numbering definition".to_owned(),
+                    ));
+                }
+                saw_line_numbering = true;
+                current = Some(parse_section_line_numbering(&reader, &element)?);
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"sectPr" => {
+                sections.push(current.take());
+                in_section = false;
+                saw_line_numbering = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/document.xml line numbering at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(sections)
+}
+
+fn parse_section_line_numbering(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+) -> Result<Map<String, Value>> {
+    let mut properties = Map::new();
+    for attribute in element.attributes() {
+        let attribute = attribute
+            .map_err(|error| Error::Reverse(format!("invalid `w:lnNumType` attribute: {error}")))?;
+        let name = attribute.key.local_name();
+        if ![b"countBy".as_slice(), b"start", b"distance", b"restart"].contains(&name.as_ref()) {
+            return Err(Error::Reverse(format!(
+                "`w:lnNumType` has unsupported attribute `{}`; remove it or extend the `lineNumbering` spec",
+                String::from_utf8_lossy(name.as_ref())
+            )));
+        }
+    }
+    for (xml_name, property_name) in [
+        (b"countBy".as_slice(), "countBy"),
+        (b"start".as_slice(), "start"),
+    ] {
+        if let Some(value) = xml_attribute(reader, element, xml_name)? {
+            let number = value.parse::<u64>().ok().filter(|number| *number > 0).ok_or_else(|| {
+                Error::Reverse(format!(
+                    "`w:lnNumType/@w:{property_name}` must be a positive integer; fix it to a value greater than zero"
+                ))
+            })?;
+            properties.insert(property_name.to_owned(), Value::from(number));
+        }
+    }
+    if let Some(value) = xml_attribute(reader, element, b"distance")? {
+        let twips = value.parse::<u64>().map_err(|_| {
+            Error::Reverse("`w:lnNumType/@w:distance` must be a non-negative twips measure; use a non-negative distance or remove the attribute".to_owned())
+        })?;
+        let points = if twips % 20 == 0 {
+            Value::from(twips / 20)
+        } else {
+            let points = format_points(twips).parse::<f64>().map_err(|error| {
+                Error::Reverse(format!("cannot convert line-number distance: {error}"))
+            })?;
+            let number = Number::from_f64(points).ok_or_else(|| {
+                Error::Reverse(
+                    "line-number distance is outside the supported numeric range".to_owned(),
+                )
+            })?;
+            Value::Number(number)
+        };
+        properties.insert("distance".to_owned(), points);
+    }
+    if let Some(value) = xml_attribute(reader, element, b"restart")? {
+        if !["newPage", "newSection", "continuous"].contains(&value.as_str()) {
+            return Err(Error::Reverse(format!(
+                "`w:lnNumType/@w:restart` uses unsupported value `{value}`; use newPage, newSection, or continuous"
+            )));
+        }
+        properties.insert("restart".to_owned(), Value::String(value));
+    }
+    Ok(properties)
+}
+
 fn parse_section_columns(reader: &Reader<&[u8]>, element: &BytesStart<'_>) -> Result<usize> {
     let columns = xml_attribute(reader, element, b"num")?
         .map(|value| value.parse::<usize>())
@@ -3582,11 +3710,30 @@ fn section_jsx_attrs(
     property: &docx_rs::SectionProperty,
     columns: usize,
     section_type: Option<&str>,
+    line_numbering: Option<&Map<String, Value>>,
 ) -> Result<String> {
     let data = json(property)?;
     let mut attrs = String::new();
     if let Some(section_type) = section_type {
         attrs.push_str(&attr("type", section_type));
+    }
+    if let Some(line_numbering) = line_numbering {
+        let mut fields = Vec::new();
+        for key in ["countBy", "start", "distance", "restart"] {
+            if let Some(value) = line_numbering.get(key) {
+                let encoded = match value {
+                    Value::String(value) => format!("{value:?}"),
+                    Value::Number(value) => value.to_string(),
+                    _ => {
+                        return Err(Error::Reverse(format!(
+                            "cannot render invalid `lineNumbering.{key}` metadata"
+                        )));
+                    }
+                };
+                fields.push(format!("{key}:{encoded}"));
+            }
+        }
+        let _ = write!(attrs, " lineNumbering={{{{{}}}}}", fields.join(","));
     }
     if columns != 1 {
         let _ = write!(attrs, " columns={{{columns}}}");
@@ -4251,7 +4398,8 @@ fn format_points(twips: u64) -> String {
     if remainder == 0 {
         whole.to_string()
     } else {
-        format!("{}.{}", whole, remainder * 5)
+        let fraction = format!("{:02}", remainder * 5);
+        format!("{whole}.{}", fraction.trim_end_matches('0'))
     }
 }
 
@@ -5274,16 +5422,13 @@ fn xml_attribute(
     name: &[u8],
 ) -> Result<Option<String>> {
     for attribute in element.attributes() {
-        let attribute = attribute.map_err(|error| {
-            Error::Reverse(format!("invalid attribute in word/styles.xml: {error}"))
-        })?;
+        let attribute =
+            attribute.map_err(|error| Error::Reverse(format!("invalid XML attribute: {error}")))?;
         if attribute.key.local_name().as_ref() == name {
             return attribute
                 .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                 .map(|value| Some(value.into_owned()))
-                .map_err(|error| {
-                    Error::Reverse(format!("invalid text in word/styles.xml: {error}"))
-                });
+                .map_err(|error| Error::Reverse(format!("invalid XML attribute value: {error}")));
         }
     }
     Ok(None)
@@ -6924,6 +7069,69 @@ mod tests {
             .expect_err("unsupported section type must not be collapsed");
         assert!(
             error.to_string().contains("customBreak") && error.to_string().contains("nextPage"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_line_numbering_without_manifest() {
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        document = document.replace("<w:cols", r#"<w:lnNumType w:countBy="5" w:start="3" w:distance="361" w:restart="newSection" /><w:cols"#);
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(
+            jsx.contains(
+                r#"lineNumbering={{countBy:5,start:3,distance:18.05,restart:"newSection"}}"#
+            ),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_keep_default_line_numbering_enabled() {
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        document = document.replace("<w:cols", "<w:lnNumType /><w:cols");
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(jsx.contains("lineNumbering={{}}"), "{jsx}");
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unknown_line_number_restart() {
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        document = document.replace("<w:cols", r#"<w:lnNumType w:restart="everyLine" /><w:cols"#);
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let error =
+            reverse_document(&external).expect_err("unsupported line-number restart must fail");
+        assert!(
+            error.to_string().contains("everyLine") && error.to_string().contains("newPage"),
             "{error}"
         );
     }
