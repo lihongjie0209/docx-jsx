@@ -67,6 +67,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let table_xml = collect_table_xml_metadata(bytes)?;
     let paragraph_indent_xml = collect_paragraph_indent_metadata(bytes)?;
     let style_character_indents = collect_style_character_indent_metadata(bytes)?;
+    let style_suppress_line_numbers = collect_style_line_number_suppression_metadata(bytes)?;
     let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
@@ -88,6 +89,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         table_xml,
         paragraph_indent_xml,
         style_character_indents,
+        style_suppress_line_numbers,
         ..Writer::default()
     };
     writer.components.insert("Document");
@@ -248,6 +250,7 @@ struct Writer {
     paragraph_indent_xml: HashMap<String, Vec<ParagraphIndentMetadata>>,
     paragraph_indent_indices: HashMap<String, usize>,
     style_character_indents: HashMap<String, BTreeMap<String, i64>>,
+    style_suppress_line_numbers: HashMap<String, bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3092,14 +3095,6 @@ fn validate_character_indent_xml(bytes: &[u8]) -> Result<()> {
                         }
                     }
                 }
-                Ok(Event::Start(element) | Event::Empty(element))
-                    if element.local_name().as_ref() == b"suppressLineNumbers"
-                        && part == "word/styles.xml" =>
-                {
-                    return Err(Error::Reverse(
-                        "word/styles.xml contains style-level `w:suppressLineNumbers`, which the JSX style schema cannot preserve; move the property to each affected Paragraph, Heading, or ListItem, or extend style paragraph-property support before reversing".to_owned(),
-                    ));
-                }
                 Ok(Event::Eof) => break,
                 Err(error) => {
                     return Err(Error::Reverse(format!(
@@ -3329,6 +3324,65 @@ fn collect_style_character_indent_metadata(
             Err(error) => {
                 return Err(Error::Reverse(format!(
                     "cannot parse word/styles.xml character indentation at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(result)
+}
+
+fn collect_style_line_number_suppression_metadata(bytes: &[u8]) -> Result<HashMap<String, bool>> {
+    let xml = read_zip_text(bytes, "word/styles.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut current_style: Option<String> = None;
+    let mut result = HashMap::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"style" => {
+                current_style = xml_attribute(&reader, &element, b"styleId")?;
+            }
+            Ok(Event::Start(element) | Event::Empty(element))
+                if element.local_name().as_ref() == b"suppressLineNumbers" =>
+            {
+                let Some(style_id) = current_style.as_deref() else {
+                    buffer.clear();
+                    continue;
+                };
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|error| {
+                        Error::Reverse(format!(
+                            "invalid w:suppressLineNumbers attribute in style `{style_id}`: {error}"
+                        ))
+                    })?;
+                    if attribute.key.local_name().as_ref() != b"val" {
+                        return Err(Error::Reverse(format!(
+                            "style `{style_id}` has unsupported attribute `{}` on w:suppressLineNumbers; remove it or extend the style line-number suppression spec",
+                            String::from_utf8_lossy(attribute.key.local_name().as_ref())
+                        )));
+                    }
+                }
+                let value = xml_attribute(&reader, &element, b"val")?
+                    .as_deref()
+                    .map(parse_on_off)
+                    .transpose()?
+                    .unwrap_or(true);
+                if result.insert(style_id.to_owned(), value).is_some() {
+                    return Err(Error::Reverse(format!(
+                        "style `{style_id}` contains duplicate w:suppressLineNumbers elements"
+                    )));
+                }
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"style" => {
+                current_style = None;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/styles.xml line-number suppression at byte {}: {error}",
                     reader.error_position()
                 )));
             }
@@ -4699,6 +4753,7 @@ fn reverse_styles_attribute(
                 metadata.get(&style.style_id),
                 writer.style_theme_colors.get(&style.style_id),
                 writer.style_character_indents.get(&style.style_id),
+                writer.style_suppress_line_numbers.get(&style.style_id),
             )
         })
         .collect::<Result<Vec<_>>>()?
@@ -5223,6 +5278,7 @@ fn reverse_style_definition(
     metadata: Option<&StyleMetadata>,
     theme: Option<&ThemeColorInfo>,
     raw_character_indentation: Option<&BTreeMap<String, i64>>,
+    raw_suppress_line_numbers: Option<&bool>,
 ) -> Result<Option<Value>> {
     let source = json(style)?;
     let mut definition = Map::new();
@@ -5294,6 +5350,9 @@ fn reverse_style_definition(
         for (name, value) in raw_character_indentation {
             paragraph.insert(name.clone(), Value::Number((*value).into()));
         }
+    }
+    if let Some(value) = raw_suppress_line_numbers {
+        paragraph.insert("suppressLineNumbers".to_owned(), Value::Bool(*value));
     }
     if !paragraph.is_empty() {
         definition.insert("paragraph".to_owned(), Value::Object(paragraph));
@@ -7204,29 +7263,16 @@ mod tests {
     }
 
     #[test]
-    fn reverse_external_docx_should_reject_unrepresented_style_line_number_suppression() {
-        let bytes =
-            external_docx(Paragraph::new().add_run(Run::new().add_text("style suppression")));
-        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
-        let mut styles = String::new();
-        archive
-            .by_name("word/styles.xml")
-            .expect("styles part")
-            .read_to_string(&mut styles)
-            .expect("styles XML");
-        let insertion = styles
-            .find("</w:style>")
-            .expect("at least one style should exist");
-        styles.insert_str(insertion, "<w:pPr><w:suppressLineNumbers /></w:pPr>");
-        let external = rewrite_package_parts(&bytes, &[("word/styles.xml", styles.as_bytes())]);
-        let error = reverse_document(&external).expect_err("style-level behavior must not drop");
-        assert!(
-            error
-                .to_string()
-                .contains("style-level `w:suppressLineNumbers`")
-                && error.to_string().contains("move the property"),
-            "{error}"
-        );
+    fn reverse_external_docx_should_preserve_style_line_number_suppression_without_manifest() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"NoLineNumbers","name":"No Line Numbers","type":"paragraph","paragraph":{"suppressLineNumbers":true}},{"id":"KeepLineNumbers","name":"Keep Line Numbers","type":"paragraph","paragraph":{"suppressLineNumbers":false}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        ).expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("valid document should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(jsx.contains("\"suppressLineNumbers\":true"), "{jsx}");
+        assert!(jsx.contains("\"suppressLineNumbers\":false"), "{jsx}");
     }
 
     #[test]

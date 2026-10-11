@@ -2379,6 +2379,7 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             "align",
             "textAlign",
             "snapToGrid",
+            "suppressLineNumbers",
             "keepNext",
             "keepLines",
             "spacingBefore",
@@ -2502,7 +2503,7 @@ fn validate_style_paragraph_layout(paragraph: &Map<String, Value>, path: &str) -
             "style paragraph `snapToGrid` must be a boolean",
         ));
     }
-    for key in ["keepNext", "keepLines"] {
+    for key in ["keepNext", "keepLines", "suppressLineNumbers"] {
         if paragraph.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(validation(
                 path,
@@ -4533,6 +4534,23 @@ mod tests {
                 .to_string()
                 .contains("suppressLineNumbers` must be a boolean")
         );
+    }
+
+    #[test]
+    fn validate_should_accept_style_line_number_suppression() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"NoLineNumbers","name":"No Line Numbers","type":"paragraph","paragraph":{"suppressLineNumbers":true}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_non_boolean_style_line_number_suppression() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"NoLineNumbers","name":"No Line Numbers","type":"paragraph","paragraph":{"suppressLineNumbers":"yes"}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        let error = ir.validate().expect_err("style property must be boolean");
+        assert!(error.to_string().contains("suppressLineNumbers"), "{error}");
     }
 
     #[test]

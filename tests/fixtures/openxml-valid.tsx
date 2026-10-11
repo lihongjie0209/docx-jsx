@@ -58,6 +58,7 @@ export default (
       { id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: { spacingAfter: 6, hangingChars: 20 } },
       { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: { fonts: { ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC", hint: "eastAsia" }, size: 11 }, paragraph: { keepNext: false, keepLines: false } },
       { id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: { italic: true } },
+      { id: "NoLineNumbers", name: "No Line Numbers", type: "paragraph", paragraph: { suppressLineNumbers: true } },
       { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center", indent: 6 }, cell: { verticalAlign: "center", shading: "EAF2F8", margins: { top: 1, right: 1, bottom: 1, left: 1 } } },
     ]}
   >
@@ -71,6 +72,9 @@ export default (
       </Paragraph>
       <Paragraph suppressLineNumbers={false}>
         This paragraph explicitly keeps section line numbering.
+      </Paragraph>
+      <Paragraph style="NoLineNumbers">
+        This style inherits line-number suppression.
       </Paragraph>
       <Paragraph fonts={{ ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC" }}>
         <Run style="BodyChar" fonts={{ asciiTheme: "minorHAnsi", eastAsiaTheme: "minorEastAsia", hint: "eastAsia" }}>Linked character style</Run>

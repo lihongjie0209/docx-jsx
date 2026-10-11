@@ -17,6 +17,21 @@ fn embedded_ir(path: &std::path::Path) -> serde_json::Value {
     serde_json::from_str(&json).expect("IR should be JSON")
 }
 
+fn strip_ir_manifest(bytes: &[u8]) -> Vec<u8> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid ZIP");
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).expect("ZIP entry should exist");
+        if entry.name() != "docx-jsx/ir-v1.json" {
+            writer.raw_copy_file(entry).expect("entry should copy");
+        }
+    }
+    writer
+        .finish()
+        .expect("DOCX archive should finish")
+        .into_inner()
+}
+
 #[test]
 fn spec_should_output_agent_readable_markdown() {
     Command::cargo_bin("docx-jsx")
@@ -275,6 +290,69 @@ export default <Document><Section type="continuous" lineNumbering={{countBy:5,re
         .assert()
         .success();
     assert_eq!(embedded_ir(&docx), embedded_ir(&roundtrip));
+}
+
+#[test]
+fn cli_should_reverse_style_line_number_suppression_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("style.tsx");
+    let docx = directory.path().join("style.docx");
+    let external = directory.path().join("external.docx");
+    let jsx = directory.path().join("reverse.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document styles={[{id:"NoLines",name:"No Lines",type:"paragraph",paragraph:{suppressLineNumbers:true}},{id:"KeepLines",name:"Keep Lines",type:"paragraph",paragraph:{suppressLineNumbers:false}}]}><Section><Paragraph style="NoLines">excluded</Paragraph><Paragraph style="KeepLines">included</Paragraph></Section></Document>;"#,
+    )
+    .expect("input should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&docx)
+        .assert()
+        .success();
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&docx).expect("DOCX should exist")),
+    )
+    .expect("external DOCX should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&jsx)
+        .assert()
+        .success();
+    let source = fs::read_to_string(&jsx).expect("reverse JSX should exist");
+    assert!(source.contains("\"suppressLineNumbers\":true"), "{source}");
+    assert!(source.contains("\"suppressLineNumbers\":false"), "{source}");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&jsx)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+        fs::read(&rebuilt).expect("rebuilt DOCX should exist"),
+    ))
+    .expect("rebuilt DOCX should be ZIP");
+    let mut styles = String::new();
+    archive
+        .by_name("word/styles.xml")
+        .expect("styles part should exist")
+        .read_to_string(&mut styles)
+        .expect("styles XML should read");
+    assert!(styles.contains("<w:suppressLineNumbers />"), "{styles}");
+    assert!(
+        styles.contains("<w:suppressLineNumbers w:val=\"0\" />"),
+        "{styles}"
+    );
 }
 
 #[test]

@@ -303,8 +303,8 @@ error instead of a silent drop.
   `suppressLineNumbers?: boolean` suppresses active section line numbers for this
   paragraph; it is independent of section `lineNumbering` and preserves explicit
   `false` when reversing external DOCX. It is supported on `Paragraph`, `Heading`,
-  and `ListItem`. Style-level `suppressLineNumbers` is not in the style DSL; reverse
-  reports an actionable error rather than flattening inherited style behavior.
+  and `ListItem`. `Document.styles[].paragraph.suppressLineNumbers?: boolean`
+  provides the inherited style form.
   `textAlign?: "auto" | "baseline" | "bottom" | "center" | "top"`, signed
   integer `adjustRightIndent?`, six-digit RGB `shading?`, and integer
   `outlineLevel?: 0..9`. `frame?` has the same shape, units, enumerations, and

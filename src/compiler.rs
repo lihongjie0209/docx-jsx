@@ -1569,6 +1569,10 @@ fn patch_duplicate_normal_style(bytes: Vec<u8>, props: &Map<String, Value>) -> R
     replace_zip_text_entry(source, "word/styles.xml", styles.as_bytes())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "style indentation and suppression share one package-part rewrite"
+)]
 fn patch_style_character_indentation(
     bytes: Vec<u8>,
     props: &Map<String, Value>,
@@ -1597,7 +1601,14 @@ fn patch_style_character_indentation(
                     .map(|value| (target, value))
             })
             .collect::<Vec<_>>();
-            (!attrs.is_empty()).then_some((id.to_owned(), attrs))
+            let suppress_line_numbers = paragraph
+                .get("suppressLineNumbers")
+                .and_then(Value::as_bool);
+            (!attrs.is_empty() || suppress_line_numbers.is_some()).then_some((
+                id.to_owned(),
+                attrs,
+                suppress_line_numbers,
+            ))
         })
         .collect::<Vec<_>>();
     if style_patches.is_empty() {
@@ -1611,7 +1622,7 @@ fn patch_style_character_indentation(
         .map_err(|error| Error::Compile(format!("missing styles: {error}")))?
         .read_to_string(&mut xml)
         .map_err(|error| Error::Compile(format!("cannot read styles: {error}")))?;
-    for (id, properties) in style_patches {
+    for (id, properties, suppress_line_numbers) in style_patches {
         let marker = format!(r#"w:styleId="{}""#, xml_escape(&id));
         let marker_start = xml.find(&marker).ok_or_else(|| {
             Error::Compile(format!("docx-rs omitted custom paragraph style `{id}`"))
@@ -1627,35 +1638,54 @@ fn patch_style_character_indentation(
         for (name, value) in properties {
             write!(attrs, " w:{name}=\"{value}\"").expect("String write");
         }
+        let suppress_xml = suppress_line_numbers
+            .map(|value| {
+                if value {
+                    "<w:suppressLineNumbers />"
+                } else {
+                    "<w:suppressLineNumbers w:val=\"0\" />"
+                }
+            })
+            .unwrap_or_default();
         let segment = &xml[style_start..style_end];
         if let Some(ppr_relative) = segment.find("<w:pPr") {
             let ppr_start = style_start + ppr_relative;
-            let ppr_end = xml[ppr_start..style_end].find("</w:pPr>").map_or_else(
-                || {
-                    xml[ppr_start..style_end]
-                        .find(" />")
-                        .map_or(ppr_start, |at| ppr_start + at)
-                },
-                |at| ppr_start + at,
-            );
-            if let Some(ind_relative) = xml[ppr_start..style_end].find("<w:ind") {
-                let ind_start = ppr_start + ind_relative;
-                let mut ind_end = xml[ind_start..style_end]
-                    .find('>')
-                    .map(|at| ind_start + at)
-                    .ok_or_else(|| Error::Compile(format!("invalid w:ind in style `{id}`")))?;
-                if xml[ind_end.saturating_sub(1)..=ind_end].ends_with("/>") {
-                    ind_end -= 1;
-                }
-                xml.insert_str(ind_end, &attrs);
-            } else if xml[ppr_start..style_end].starts_with("<w:pPr />") {
-                let ppr_end = ppr_start + "<w:pPr />".len();
-                xml.replace_range(
-                    ppr_start..ppr_end,
-                    &format!("<w:pPr><w:ind{attrs} /></w:pPr>"),
-                );
+            let ppr_open_end = xml[ppr_start..style_end]
+                .find('>')
+                .map(|offset| ppr_start + offset + 1)
+                .ok_or_else(|| Error::Compile(format!("invalid w:pPr in style `{id}`")))?;
+            if xml[ppr_start..ppr_open_end].ends_with("/>") {
+                let indentation = if attrs.is_empty() {
+                    String::new()
+                } else {
+                    format!("<w:ind{attrs} />")
+                };
+                let replacement = format!("<w:pPr>{indentation}{suppress_xml}</w:pPr>");
+                xml.replace_range(ppr_start..ppr_open_end, &replacement);
             } else {
-                xml.insert_str(ppr_end, &format!("<w:ind{attrs} />"));
+                let ppr_end = xml[ppr_open_end..style_end]
+                    .find("</w:pPr>")
+                    .map(|offset| ppr_open_end + offset)
+                    .ok_or_else(|| Error::Compile(format!("invalid w:pPr in style `{id}`")))?;
+                if let Some(ind_relative) = xml[ppr_open_end..ppr_end].find("<w:ind") {
+                    let ind_start = ppr_open_end + ind_relative;
+                    let mut ind_end = xml[ind_start..style_end]
+                        .find('>')
+                        .map(|at| ind_start + at)
+                        .ok_or_else(|| Error::Compile(format!("invalid w:ind in style `{id}`")))?;
+                    if xml[ind_end.saturating_sub(1)..=ind_end].ends_with("/>") {
+                        ind_end -= 1;
+                    }
+                    xml.insert_str(ind_end, &attrs);
+                    xml.insert_str(ppr_end, suppress_xml);
+                } else {
+                    let indentation = if attrs.is_empty() {
+                        String::new()
+                    } else {
+                        format!("<w:ind{attrs} />")
+                    };
+                    xml.insert_str(ppr_end, &format!("{indentation}{suppress_xml}"));
+                }
             }
         } else {
             let insertion = ["<w:rPr", "<w:tblPr", "<w:trPr", "<w:tcPr", "</w:style>"]
@@ -1663,7 +1693,15 @@ fn patch_style_character_indentation(
                 .filter_map(|tag| segment.find(tag).map(|offset| style_start + offset))
                 .min()
                 .ok_or_else(|| Error::Compile(format!("invalid style body for `{id}`")))?;
-            xml.insert_str(insertion, &format!("<w:pPr><w:ind{attrs} /></w:pPr>"));
+            let indentation = if attrs.is_empty() {
+                String::new()
+            } else {
+                format!("<w:ind{attrs} />")
+            };
+            xml.insert_str(
+                insertion,
+                &format!("<w:pPr>{indentation}{suppress_xml}</w:pPr>"),
+            );
         }
     }
     replace_zip_text_entry(archive, "word/styles.xml", xml.as_bytes())
@@ -6745,6 +6783,27 @@ mod tests {
         assert!(styles.contains(r#"<w:gridSpan w:val="2" />"#));
         assert!(styles.contains(r#"<w:textDirection w:val="tbRl" />"#));
         assert!(styles.contains(r#"<w:shd w:val="clear" w:color="auto" w:fill="FFF2CC" />"#));
+    }
+
+    #[test]
+    fn compile_should_render_style_line_number_suppression() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"NoLineNumbers","name":"No Line Numbers","type":"paragraph","paragraph":{"suppressLineNumbers":true}},{"id":"KeepLineNumbers","name":"Keep Line Numbers","type":"paragraph","paragraph":{"suppressLineNumbers":false}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        ).expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles")
+            .read_to_string(&mut styles)
+            .expect("UTF-8");
+        assert!(styles.contains("<w:suppressLineNumbers />"), "{styles}");
+        assert!(
+            styles.contains("<w:suppressLineNumbers w:val=\"0\" />"),
+            "{styles}"
+        );
     }
 
     #[test]
