@@ -1248,6 +1248,7 @@ fn normalize_word_xml(xml: &mut String, name: &str) -> Result<()> {
     reorder_element_children(xml, "w:pPr", paragraph_property_rank)?;
     reorder_element_children(xml, "w:rPr", run_property_rank)?;
     reorder_element_children(xml, "w:tblPr", table_property_rank)?;
+    reorder_element_children(xml, "w:tcPr", table_cell_property_rank)?;
     reorder_element_children(xml, "w:sectPr", section_property_rank)?;
     reorder_element_children(xml, "w:style", style_child_rank)?;
     reorder_element_children(xml, "w:settings", settings_child_rank)
@@ -1594,6 +1595,32 @@ fn table_property_rank(fragment: &str) -> usize {
             "w:tblCaption",
             "w:tblDescription",
             "w:tblPrChange",
+        ],
+    )
+}
+
+fn table_cell_property_rank(fragment: &str) -> usize {
+    rank_in(
+        child_name(fragment),
+        &[
+            "w:cnfStyle",
+            "w:tcW",
+            "w:gridSpan",
+            "w:hMerge",
+            "w:vMerge",
+            "w:tcBorders",
+            "w:shd",
+            "w:noWrap",
+            "w:tcMar",
+            "w:textDirection",
+            "w:tcFitText",
+            "w:vAlign",
+            "w:hideMark",
+            "w:headers",
+            "w:cellIns",
+            "w:cellDel",
+            "w:cellMerge",
+            "w:tcPrChange",
         ],
     )
 }
@@ -4987,6 +5014,21 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{"defaultFont":"Arial"},"children":[{"type":"Section","props":{"pageSize":"A4"},"children":[{"type":"Paragraph","props":{"align":"center"},"children":[{"type":"Run","props":{"bold":true,"size":18},"children":["Hello"]}]}]}]}}"#,
         )
         .expect("fixture should parse")
+    }
+
+    #[test]
+    fn normalize_should_order_table_cell_properties_for_openxml() {
+        let mut xml =
+            r"<w:tcPr><w:tcW/><w:vAlign/><w:shd/><w:tcMar/><w:tcBorders/><w:vMerge/></w:tcPr>"
+                .to_owned();
+
+        normalize_word_xml(&mut xml, "word/document.xml")
+            .expect("table cell properties should normalize");
+
+        assert_eq!(
+            xml,
+            r"<w:tcPr><w:tcW/><w:vMerge/><w:tcBorders/><w:shd/><w:tcMar/><w:vAlign/></w:tcPr>"
+        );
     }
 
     #[test]

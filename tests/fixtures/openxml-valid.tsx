@@ -95,7 +95,7 @@ export default (
       </List>
       <Table style="ValidationTable" widthPercent={100} border={{ style: "single", size: 0.5, color: "808080" }}>
         <TableRow height={30} heightRule="exact" cantSplit>
-          <TableCell widthPercent={50} margins={{ top: 2, right: 2, bottom: 2, left: 2 }} shading="D9EAF7"><Paragraph>Component</Paragraph></TableCell>
+          <TableCell widthPercent={50} verticalAlign="center" margins={{ top: 2, right: 2, bottom: 2, left: 2 }} shading="D9EAF7"><Paragraph>Component</Paragraph></TableCell>
           <TableCell widthPercent={50}><Paragraph>Status</Paragraph></TableCell>
         </TableRow>
         <TableRow>

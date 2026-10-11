@@ -385,7 +385,8 @@ error instead of a silent drop.
   restores these properties from DOCX cells without the IR manifest. A cell
   width that uses an unsupported unit, margins with missing edges or non-`dxa`
   units, nonzero border spacing, and patterned shading are reported instead of
-  silently dropped.
+  silently dropped. The compiler emits cell properties in OOXML `CT_TcPr` order,
+  including when `verticalAlign` and `shading` are both present.
 - Table, TableCell, and their custom-style equivalents also accept an advanced
   border object. Table positions are `top`, `right`, `bottom`, `left`,
   `insideHorizontal`, and `insideVertical`; cells additionally accept
