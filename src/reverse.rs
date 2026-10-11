@@ -1422,12 +1422,12 @@ impl Writer {
                     instance.abstract_num_id
                 ))
             })?;
-        if definition.style_link.is_some()
-            || definition.num_style_link.is_some()
-            || definition.levels.is_empty()
+        if definition.levels.is_empty()
+            && definition.style_link.is_none()
+            && definition.num_style_link.is_none()
         {
             return Err(Error::Reverse(
-                "numbering is a style-linked or empty abstract definition; expand `numStyleLink`/`styleLink` to explicit `w:lvl` entries before reversing"
+                "numbering has no `w:lvl`, `w:styleLink`, or `w:numStyleLink` definition; restore a numbering definition in word/numbering.xml"
                     .to_owned(),
             ));
         }
@@ -3969,7 +3969,11 @@ fn reverse_list_definition(
     definition: &AbstractNumbering,
     multi_level_type: Option<&str>,
 ) -> Result<String> {
-    let mut attrs = if let Some(attrs) = collapse_list_shorthand(definition) {
+    let mut attrs = if definition.levels.is_empty()
+        && (definition.style_link.is_some() || definition.num_style_link.is_some())
+    {
+        String::new()
+    } else if let Some(attrs) = collapse_list_shorthand(definition) {
         attrs
     } else {
         let mut levels = Vec::new();
@@ -3987,6 +3991,12 @@ fn reverse_list_definition(
             )));
         }
         attrs.push_str(&attr("multiLevelType", multi_level_type));
+    }
+    if let Some(style_link) = &definition.style_link {
+        attrs.push_str(&attr("styleLink", style_link));
+    }
+    if let Some(num_style_link) = &definition.num_style_link {
+        attrs.push_str(&attr("numStyleLink", num_style_link));
     }
     Ok(attrs)
 }
@@ -7433,19 +7443,28 @@ mod tests {
     }
 
     #[test]
-    fn reverse_external_docx_should_reject_style_linked_numbering() {
+    fn reverse_external_docx_should_preserve_numbering_style_links() {
         let bytes = pack_docx(
             Docx::new()
-                .add_abstract_numbering(AbstractNumbering::new(5).num_style_link("ListNumber"))
+                .add_abstract_numbering(AbstractNumbering::new(5))
                 .add_numbering(Numbering::new(5, 5))
                 .add_paragraph(numbered(5, 0, "item")),
         );
-        let error = reverse_document(&bytes).expect_err("style-linked numbering must fail");
-        assert!(
-            error.to_string().contains("style-linked")
-                && error.to_string().contains("explicit `w:lvl`"),
-            "{error}"
-        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut numbering = String::new();
+        archive
+            .by_name("word/numbering.xml")
+            .expect("numbering")
+            .read_to_string(&mut numbering)
+            .expect("UTF-8");
+        let marker = r#"<w:abstractNum w:abstractNumId="5" />"#;
+        assert!(numbering.contains(marker), "{numbering}");
+        numbering = numbering.replace(marker, r#"<w:abstractNum w:abstractNumId="5"><w:styleLink w:val="ParagraphList" /><w:numStyleLink w:val="ListNumber" /></w:abstractNum>"#);
+        let external =
+            rewrite_package_parts(&bytes, &[("word/numbering.xml", numbering.as_bytes())]);
+        let jsx = reverse_document(&external).expect("linked numbering should reverse");
+        assert!(jsx.contains(r#"styleLink="ParagraphList""#), "{jsx}");
+        assert!(jsx.contains(r#"numStyleLink="ListNumber""#), "{jsx}");
     }
 
     fn strip_package_parts(bytes: &[u8], omit: &[&str]) -> Vec<u8> {

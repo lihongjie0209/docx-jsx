@@ -925,7 +925,15 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         | NodeKind::BorderedText
         | NodeKind::ShadedText) => semantic_text_props(kind),
         NodeKind::TabStop => &["position", "align", "leader"],
-        NodeKind::List => &["type", "start", "multiLevelType", "levels", "overrides"],
+        NodeKind::List => &[
+            "type",
+            "start",
+            "multiLevelType",
+            "levels",
+            "overrides",
+            "styleLink",
+            "numStyleLink",
+        ],
         NodeKind::ListItem => &[
             "level",
             "style",
@@ -1441,6 +1449,29 @@ fn validate_list_semantics(node: &Node, path: &str) -> Result<()> {
         "multiLevelType",
         &["singleLevel", "multilevel", "hybridMultilevel"],
     )?;
+    for key in ["styleLink", "numStyleLink"] {
+        if let Some(value) = node.props.get(key) {
+            value
+                .as_str()
+                .filter(|value| is_xml_ncname(value))
+                .ok_or_else(|| {
+                    validation(
+                        path,
+                        format!("`{key}` must be a non-empty XML style identifier"),
+                    )
+                })?;
+        }
+    }
+    if node.props.contains_key("numStyleLink")
+        && ["type", "start", "levels"]
+            .iter()
+            .any(|key| node.props.contains_key(*key))
+    {
+        return Err(validation(
+            path,
+            "`numStyleLink` supplies the numbering definition; remove local `type`, `start`, and `levels`, or use `styleLink` for a base definition",
+        ));
+    }
     validate_list_levels(node, path)
 }
 
@@ -4279,6 +4310,20 @@ mod tests {
             error.to_string().contains("multiLevelType")
                 && error.to_string().contains("singleLevel")
                 && error.to_string().contains("hybridMultilevel"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_local_levels_with_num_style_link() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"numStyleLink":"ListNumber","type":"ordered"},"children":[{"type":"ListItem","props":{},"children":["item"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("numStyleLink cannot define local list properties");
+        assert!(
+            error.to_string().contains("numStyleLink") && error.to_string().contains("type"),
             "{error}"
         );
     }

@@ -37,6 +37,7 @@ struct CompileContext {
     next_comment_id: usize,
     numberings: Vec<(AbstractNumbering, Numbering)>,
     character_indent_patches: Vec<(String, BTreeMap<String, i64>, bool)>,
+    numbering_style_links: Vec<(usize, Option<String>, Option<String>)>,
     used_paragraph_ids: BTreeSet<String>,
     next_generated_paragraph_id: u32,
 }
@@ -50,6 +51,7 @@ impl Default for CompileContext {
             next_comment_id: 0,
             numberings: Vec::new(),
             character_indent_patches: Vec::new(),
+            numbering_style_links: Vec::new(),
             used_paragraph_ids: BTreeSet::new(),
             next_generated_paragraph_id: 0xf000_0000,
         }
@@ -127,7 +129,12 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
             .add_abstract_numbering(abstract_numbering)
             .add_numbering(numbering);
     }
-    package_document(docx, ir, &context.character_indent_patches)
+    package_document(
+        docx,
+        ir,
+        &context.character_indent_patches,
+        &context.numbering_style_links,
+    )
 }
 
 fn compile_section_into_docx(
@@ -206,6 +213,7 @@ fn package_document(
     docx: Docx,
     ir: &IrEnvelope,
     paragraph_character_indents: &[(String, BTreeMap<String, i64>, bool)],
+    numbering_style_links: &[(usize, Option<String>, Option<String>)],
 ) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     docx.pack(&mut cursor)
@@ -256,6 +264,7 @@ fn package_document(
     let bytes = patch_style_character_indentation(bytes, &ir.document.props)?;
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
+    let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_simple_position_images(bytes)?;
     embed_ir_manifest(bytes, ir)
 }
@@ -1441,6 +1450,65 @@ fn replace_zip_text_entry(
         .finish()
         .map(Cursor::into_inner)
         .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
+fn patch_numbering_style_links(
+    bytes: Vec<u8>,
+    patches: &[(usize, Option<String>, Option<String>)],
+) -> Result<Vec<u8>> {
+    if patches.is_empty() {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name("word/numbering.xml")
+        .map_err(|error| Error::Compile(format!("missing word/numbering.xml: {error}")))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot read word/numbering.xml: {error}")))?;
+    for (id, style_link, num_style_link) in patches {
+        let marker = format!(r#"<w:abstractNum w:abstractNumId="{id}""#);
+        let start = xml
+            .find(&marker)
+            .ok_or_else(|| Error::Compile(format!("docx-rs omitted abstract numbering `{id}`")))?;
+        let tag_end = xml[start..]
+            .find('>')
+            .map(|offset| start + offset + 1)
+            .ok_or_else(|| Error::Compile(format!("invalid abstract numbering `{id}`")))?;
+        let self_closing = xml[start..tag_end].trim_end().ends_with("/>");
+        let close = if self_closing {
+            tag_end
+        } else {
+            xml[start..]
+                .find("</w:abstractNum>")
+                .map(|offset| start + offset)
+                .ok_or_else(|| Error::Compile(format!("invalid abstract numbering `{id}`")))?
+        };
+        let mut links = String::new();
+        if let Some(value) = style_link {
+            let _ = write!(links, r#"<w:styleLink w:val="{}" />"#, xml_escape(value));
+        }
+        if let Some(value) = num_style_link {
+            let _ = write!(links, r#"<w:numStyleLink w:val="{}" />"#, xml_escape(value));
+        }
+        if links.is_empty() {
+            continue;
+        }
+        if self_closing {
+            let opening = xml[start..tag_end].trim_end().trim_end_matches("/>");
+            xml.replace_range(
+                start..tag_end,
+                &format!("{opening}>{links}</w:abstractNum>"),
+            );
+        } else {
+            let insertion = xml[start..close]
+                .find("<w:lvl ")
+                .map_or(close, |offset| start + offset);
+            xml.insert_str(insertion, &links);
+        }
+    }
+    replace_zip_text_entry(archive, "word/numbering.xml", xml.as_bytes())
 }
 
 fn omit_unused_default_parts(bytes: Vec<u8>, root: &Node) -> Result<Vec<u8>> {
@@ -5078,11 +5146,24 @@ fn compile_list(
     context.next_numbering_id += 1;
     let id = context.next_numbering_id;
     let mut abstract_numbering = AbstractNumbering::new(id);
+    let style_link = string_prop(&node.props, "styleLink", path)?.map(ToOwned::to_owned);
+    let num_style_link = string_prop(&node.props, "numStyleLink", path)?.map(ToOwned::to_owned);
+    abstract_numbering.style_link.clone_from(&style_link);
+    abstract_numbering
+        .num_style_link
+        .clone_from(&num_style_link);
+    let linked_definition = style_link.is_some() || num_style_link.is_some();
+    if linked_definition {
+        context
+            .numbering_style_links
+            .push((id, style_link, num_style_link));
+    }
     if let Some(multi_level_type) = string_prop(&node.props, "multiLevelType", path)? {
         abstract_numbering.multi_level_type = Some(multi_level_type.to_owned());
     }
     let explicit = node.props.get("levels").and_then(Value::as_array);
-    let definition_level_count = explicit.map_or(9, Vec::len);
+    let definition_level_count =
+        explicit.map_or_else(|| if linked_definition { 0 } else { 9 }, Vec::len);
     for index in 0..definition_level_count {
         let spec = explicit.and_then(|levels| levels.get(index));
         abstract_numbering = abstract_numbering.add_level(compile_list_level(
@@ -5093,8 +5174,11 @@ fn compile_list(
             &format!("{path}/levels[{index}]"),
         )?);
     }
-    let (numbering, level_count) =
+    let (numbering, mut level_count) =
         compile_list_overrides(node, id, list_type, start, definition_level_count, path)?;
+    if linked_definition && level_count == 0 {
+        level_count = 9;
+    }
     context.numberings.push((abstract_numbering, numbering));
     let mut paragraphs = Vec::with_capacity(node.children.len());
     for (index, child) in node.children.iter().enumerate() {
@@ -6421,6 +6505,39 @@ mod tests {
         assert!(
             document.contains("<w:numPr>") && document.contains(r#"w:val="ListParagraph""#),
             "{document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_preserve_numbering_style_links_without_default_levels() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"List","props":{"styleLink":"ParagraphList","numStyleLink":"ListNumber","multiLevelType":"multilevel"},"children":[{"type":"ListItem","props":{},"children":["item"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut numbering = String::new();
+        archive
+            .by_name("word/numbering.xml")
+            .expect("numbering part")
+            .read_to_string(&mut numbering)
+            .expect("numbering UTF-8");
+        let linked = numbering
+            .split(r#"<w:abstractNum w:abstractNumId="2">"#)
+            .nth(1)
+            .expect("linked definition should be present");
+        assert!(
+            linked.contains(r#"<w:numStyleLink w:val="ListNumber" />"#),
+            "{linked}"
+        );
+        assert!(
+            linked.contains(r#"<w:styleLink w:val="ParagraphList" /><w:numStyleLink"#),
+            "link children must be in schema order: {linked}"
+        );
+        assert!(
+            !linked.contains("<w:lvl "),
+            "linked definition must not synthesize levels: {linked}"
         );
     }
 

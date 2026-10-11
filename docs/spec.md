@@ -530,10 +530,19 @@ error instead of a silent drop.
 - `List`: `type?: "bullet" | "ordered"` (default `bullet`), optional
   positive integer `start`, and optional `multiLevelType?: "singleLevel" |
   "multilevel" | "hybridMultilevel"` (`w:multiLevelType`; omitted by default).
-  External reverse preserves an explicit `multiLevelType`. Optional `levels`
-  is a non-empty array of level
+  Optional non-empty `styleLink?` (`w:styleLink`) declares that this abstract
+  numbering is the base definition for the named numbering style;
+  `numStyleLink?` (`w:numStyleLink`) references a numbering style supplying the
+  actual numbering properties. When either link is present and `levels` is
+  omitted, no default `w:lvl` children are generated. `numStyleLink` is
+  mutually exclusive with `type`, `start`, and explicit `levels`, because its
+  abstract numbering definition must not carry the referenced style's actual
+  level properties. `multiLevelType` and per-instance `overrides` may still be
+  used. External reverse preserves both link values and their level structure.
+  External reverse also preserves an explicit `multiLevelType`. Optional
+  `levels` is a non-empty array of level
   objects, one per `w:lvl` in document order (`ilvl` is the array index,
-  `0..8`). When `levels` is omitted the compiler emits nine default levels
+  `0..8`). When `levels` is omitted and neither style link is present, the compiler emits nine default levels
   (`decimal` + `%N.` for `ordered`, `bullet` + `•` otherwise) with
   `(level+1)*36` pt left indent and `18` pt hanging indent. `levels` and the
   `type`/`start` shorthand may be combined: omitted level fields inherit the
@@ -549,8 +558,7 @@ error instead of a silent drop.
   `color`, `highlight`, `bold`, `italic`, `strike`, `doubleStrike`,
   `underline` as a Word underline style string, `hidden`,
   `characterSpacing`). Boolean run flags emit explicit on/off OOXML.
-  Reverse of an external numbering definition that uses only `numStyleLink`
-  / `styleLink` errors with a repair suggestion. `overrides?` is an array of
+  `overrides?` is an array of
   per-instance `w:lvlOverride` objects: each requires a unique `level: 0..8`,
   may contain positive `start?` (`w:startOverride`) and/or `definition?` (a
   list-level object emitted as replacement `w:lvl`; its `ilvl` is the enclosing
