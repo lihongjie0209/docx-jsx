@@ -5,17 +5,17 @@ use std::path::Path;
 
 use docx_rs::{
     AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, CharacterSpacingValues,
-    Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, DrawingPosition, FieldCharType,
-    Footer, FooterChild, Footnote, Header, HeaderChild, HeightRule, Hyperlink, HyperlinkType,
-    IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelOverride,
-    LevelSuffixType, LevelText, LineSpacing, LineSpacingType, MoveFrom, MoveTo, NumPages,
-    NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType,
-    PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition, ParagraphBorders,
-    ParagraphPropertyChange, Pic, PicAlign, PositionalTab, PositionalTabAlignmentType,
-    PositionalTabRelativeTo, RelativeFromHType, RelativeFromVType, Run, RunFonts, Section,
-    Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag, Style, StyleType,
-    StyleWithLevel, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType,
-    TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
+    Comment, DataBinding, Delete, DeleteInstrText, DocGrid, DocGridType, Docx, DrawingPosition,
+    FieldCharType, Footer, FooterChild, Footnote, Header, HeaderChild, HeightRule, Hyperlink,
+    HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc,
+    LevelOverride, LevelSuffixType, LevelText, LineSpacing, LineSpacingType, MoveFrom, MoveTo,
+    NumPages, NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType,
+    PageOrientationType, PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition,
+    ParagraphBorders, ParagraphPropertyChange, Pic, PicAlign, PositionalTab,
+    PositionalTabAlignmentType, PositionalTabRelativeTo, RelativeFromHType, RelativeFromVType, Run,
+    RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag,
+    Style, StyleType, StyleWithLevel, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table,
+    TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
     TableCellBorderPosition, TableCellBorders, TableCellMargins, TableCellProperty,
     TableLayoutType, TableOfContents, TablePositionProperty, TableRow, TextAlignmentType,
     TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType, VertAlignType, WebExtension,
@@ -4065,6 +4065,33 @@ fn compile_deleted(node: &Node, path: &str, context: &mut CompileContext) -> Res
     }
     for (index, child) in node.children.iter().enumerate() {
         let child_path = format!("{path}/child[{index}]");
+        if let Child::Node(field) = child
+            && field.kind == NodeKind::Field
+        {
+            let instruction = field_instruction(field, &child_path)?;
+            let mut run = if let Some(Child::Node(result_run)) = field.children.first()
+                && result_run.kind == NodeKind::Run
+            {
+                compile_run_properties(&result_run.props, &child_path)?
+            } else {
+                Run::new()
+            }
+            .add_delete_instr_text(DeleteInstrText::Unsupported(instruction));
+            if let Some(Child::Node(result_run)) = field.children.first()
+                && result_run.kind == NodeKind::Run
+            {
+                for result in &result_run.children {
+                    run = add_deleted_text(run, result, &child_path)?;
+                }
+            } else if let Some(result) = field.children.first() {
+                run = add_deleted_text(run, result, &child_path)?;
+            } else if let Some(placeholder) = string_prop(&field.props, "placeholder", &child_path)?
+            {
+                run = run.add_delete_text(placeholder);
+            }
+            deleted = deleted.add_run(run);
+            continue;
+        }
         if let Child::Node(comment_node) = child
             && comment_node.kind == NodeKind::Comment
         {
@@ -7816,6 +7843,33 @@ mod tests {
                 && deleted.contains("<w:commentRangeEnd w:id=\"1\" />")
                 && deleted.contains("<w:commentReference w:id=\"1\" />"),
             "comment range should enclose deleted text: {deleted}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_deleted_field_instruction_and_result_in_one_run() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{"author":"Ada"},"children":[{"type":"Field","props":{"instruction":" DATE "},"children":["yesterday"]}]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        let deleted = document
+            .split_once("<w:del ")
+            .and_then(|(_, rest)| rest.split_once("</w:del>"))
+            .map(|(content, _)| content)
+            .expect("deleted revision should exist");
+        assert!(
+            deleted.contains("<w:delInstrText> DATE </w:delInstrText>")
+                && deleted.contains("<w:delText xml:space=\"preserve\">yesterday</w:delText>"),
+            "deleted field instruction and result should share a run: {deleted}"
         );
     }
 

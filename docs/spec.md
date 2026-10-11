@@ -88,7 +88,7 @@ children are text. Pure whitespace between structural elements is ignored.
 | `InlineBookmark` | same inline children as `Paragraph` |
 | `Footnote` | `Run`, `Text`, `Break`, `Image`, `Tab`, `Symbol`, string, number |
 | `Inserted` | run-level inline content |
-| `Deleted` | `Run`, `Text`, `Comment`, string, number |
+| `Deleted` | `Run`, `Text`, generic `Field`, `Comment`, string, number |
 | `MovedFrom`, `MovedTo` | run-level inline content |
 | `Hyperlink` | `Run`, `Text`, `Break`, `Image`, `ContentControl`, `Inserted`, `Deleted`, `InlineBookmark`, `Comment`, string, number |
 | `ContentControl` | inline: `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Footnote`, `Tab`, `PositionalTab`, `Symbol`, `PageReference`, string, number. block (`Section`, `Header`, or `Footer` child): `Paragraph`, `Heading`, `Caption`, `Table`, `List` |
@@ -516,6 +516,9 @@ error instead of a silent drop.
   is serialized as `w:delText`, preserving optional `Run` formatting. A
   `Comment` inside `Deleted` creates a matching comment range inside `w:del`,
   wraps the selected deleted text, and preserves its annotation in `comments.xml`.
+  A generic `Field` inside `Deleted` serializes its instruction as
+  `w:delInstrText` and its optional result as deleted text; reverse restores the
+  field instruction and result without relying on the IR manifest.
 - `MovedFrom`, `MovedTo`: `author?: string`, `date?: string`; both require
   content and emit native move revision containers (`w:moveFrom`/`w:moveTo`).
 - `TocEntry`: required non-empty `text`, optional `level?: 1..9`,

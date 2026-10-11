@@ -606,6 +606,33 @@ fn validate_deleted_children(node: &Node, path: &str) -> Result<()> {
         let Child::Node(comment) = child else {
             continue;
         };
+        if comment.kind == NodeKind::Field {
+            if comment.props.contains_key("dirty") {
+                return Err(validation(
+                    path,
+                    "Field inside Deleted cannot use `dirty`; `w:delInstrText` has no field-character dirty state, so remove the property",
+                ));
+            }
+            let has_unsupported_result = comment.children.len() > 1
+                || comment.children.iter().any(|selected| match selected {
+                    Child::String(_) | Child::Number(_) => false,
+                    Child::Node(text) if text.kind == NodeKind::Text => false,
+                    Child::Node(run) if run.kind == NodeKind::Run => {
+                        run.children.iter().any(|child| match child {
+                            Child::String(_) | Child::Number(_) => false,
+                            Child::Node(node) => node.kind != NodeKind::Text,
+                        })
+                    }
+                    Child::Node(_) => true,
+                });
+            if has_unsupported_result {
+                return Err(validation(
+                    path,
+                    "Field inside Deleted supports one text result (`Text`, `Run`, string, or number); simplify the result so `w:delInstrText` and `w:delText` stay in one run",
+                ));
+            }
+            continue;
+        }
         if comment.kind != NodeKind::Comment {
             continue;
         }
@@ -737,7 +764,10 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         NodeKind::Footnote => {
             child == NodeKind::Run || (allows_run_child(child) && child != NodeKind::Footnote)
         }
-        NodeKind::Deleted => matches!(child, NodeKind::Run | NodeKind::Text | NodeKind::Comment),
+        NodeKind::Deleted => matches!(
+            child,
+            NodeKind::Run | NodeKind::Text | NodeKind::Field | NodeKind::Comment
+        ),
     }
 }
 
@@ -5684,6 +5714,45 @@ mod tests {
         );
         ir.validate()
             .expect("a comment range over deleted text should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_generic_field_inside_deleted_text() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{},"children":[{"type":"Field","props":{"instruction":" DATE "},"children":["yesterday"]}]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("a generic field instruction inside Deleted should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_dirty_generic_field_inside_deleted_text() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{},"children":[{"type":"Field","props":{"instruction":" PAGE ","dirty":false},"children":["3"]}]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("deleted field instructions have no field-char dirty state");
+        assert!(
+            error.to_string().contains("cannot use `dirty`")
+                && error.to_string().contains("remove the property"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_multiple_deleted_field_result_nodes() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{},"children":[{"type":"Field","props":{"instruction":" DATE "},"children":["old","text"]}]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("a deleted field result must remain in the instruction run");
+        assert!(
+            error.to_string().contains("supports one text result")
+                && error.to_string().contains("simplify the result"),
+            "{error}"
+        );
     }
 
     #[test]

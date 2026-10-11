@@ -69,6 +69,8 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_character_indents = collect_style_character_indent_metadata(bytes)?;
     let style_suppress_line_numbers = collect_style_line_number_suppression_metadata(bytes)?;
     let hyperlink_histories = collect_hyperlink_histories(bytes)?;
+    let header_footer_parts = collect_header_footer_parts(bytes)?;
+    let deleted_instruction_plans = collect_deleted_instruction_plans(bytes, &header_footer_parts)?;
     let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
@@ -77,7 +79,8 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let mut writer = Writer {
         images,
         image_scope: Some("word/document.xml".to_owned()),
-        header_footer_parts: collect_header_footer_parts(bytes)?,
+        header_footer_parts,
+        deleted_instruction_plans,
         style_theme_colors: theme_colors.styles,
         run_theme_colors: theme_colors.runs,
         abstract_nums: docx.numberings.abstract_nums.clone(),
@@ -229,6 +232,8 @@ struct Writer {
     comments: HashMap<usize, Comment>,
     hyperlink_targets: HashMap<String, String>,
     hyperlink_histories: HashMap<String, VecDeque<Option<usize>>>,
+    deleted_instruction_plans: HashMap<String, Vec<Vec<Option<String>>>>,
+    deleted_instruction_indices: HashMap<String, usize>,
     sdt_plan: SdtPlan,
     paragraph_index: usize,
     hyperlink_index: usize,
@@ -1001,7 +1006,23 @@ impl Writer {
                 attr("date", &value.date)
             ),
         );
-        for child in nest_deleted_ranges(&value.children, &self.comments)? {
+        let part = self
+            .image_scope
+            .as_deref()
+            .unwrap_or("word/document.xml")
+            .to_owned();
+        let index = self
+            .deleted_instruction_indices
+            .entry(part.clone())
+            .or_default();
+        let instructions = self
+            .deleted_instruction_plans
+            .get(&part)
+            .and_then(|deletions| deletions.get(*index))
+            .cloned()
+            .unwrap_or_default();
+        *index += 1;
+        for child in nest_deleted_ranges(&value.children, &instructions, &self.comments)? {
             self.emit_deleted_inline(&child, depth + 1)?;
         }
         self.line(depth, "</Deleted>");
@@ -1011,6 +1032,19 @@ impl Writer {
     fn emit_deleted_inline(&mut self, child: &DeletedInline<'_>, depth: usize) -> Result<()> {
         match child {
             DeletedInline::Run(run) => self.run(run, depth),
+            DeletedInline::Field {
+                instruction,
+                result,
+            } => {
+                self.components.insert("Field");
+                let attrs = jsx_prop("instruction", &Value::String(instruction.clone()))?;
+                self.line(depth, &format!("<Field{attrs}>"));
+                if let Some(run) = result.filter(|run| !run.children.is_empty()) {
+                    self.run(run, depth + 1)?;
+                }
+                self.line(depth, "</Field>");
+                Ok(())
+            }
             DeletedInline::Comment { comment, children } => {
                 self.components.insert("Comment");
                 let text = comment_text(comment)?;
@@ -1722,6 +1756,10 @@ enum NestedInline<'a> {
 
 enum DeletedInline<'a> {
     Run(&'a docx_rs::Run),
+    Field {
+        instruction: String,
+        result: Option<&'a docx_rs::Run>,
+    },
     Comment {
         comment: Comment,
         children: Vec<DeletedInline<'a>>,
@@ -2040,14 +2078,28 @@ fn comment_end_id(value: &docx_rs::CommentRangeEnd) -> Result<usize> {
 
 fn nest_deleted_ranges<'a>(
     children: &'a [DeleteChild],
+    instructions: &[Option<String>],
     comments: &HashMap<usize, Comment>,
 ) -> Result<Vec<DeletedInline<'a>>> {
     let mut root = Vec::new();
     let mut stack: Vec<(usize, Comment, Vec<DeletedInline<'a>>)> = Vec::new();
+    let mut run_index = 0;
     for child in children {
         match child {
             DeleteChild::Run(run) => {
-                push_deleted_child(&mut stack, &mut root, DeletedInline::Run(run.as_ref()));
+                if let Some(Some(instruction)) = instructions.get(run_index) {
+                    push_deleted_child(
+                        &mut stack,
+                        &mut root,
+                        DeletedInline::Field {
+                            instruction: instruction.clone(),
+                            result: Some(run.as_ref()),
+                        },
+                    );
+                } else {
+                    push_deleted_child(&mut stack, &mut root, DeletedInline::Run(run.as_ref()));
+                }
+                run_index += 1;
             }
             DeleteChild::CommentStart(start) => stack.push((
                 start.id,
@@ -2716,6 +2768,122 @@ fn parse_header_footer_sdt_props(
         output.insert(part.clone(), props);
     }
     Ok(output)
+}
+
+fn collect_deleted_instruction_plans(
+    bytes: &[u8],
+    header_footer_parts: &HashMap<String, String>,
+) -> Result<HashMap<String, Vec<Vec<Option<String>>>>> {
+    let mut parts = vec!["word/document.xml".to_owned()];
+    parts.extend(header_footer_parts.values().cloned());
+    parts.sort();
+    parts.dedup();
+    let mut output = HashMap::new();
+    for part in parts {
+        let Ok(xml) = read_zip_text(bytes, &part) else {
+            continue;
+        };
+        let mut reader = Reader::from_str(&xml);
+        reader.config_mut().trim_text(false);
+        let mut deletions = Vec::new();
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(element)) if element.local_name().as_ref() == b"del" => {
+                    deletions.push(parse_deleted_revision_instructions(&mut reader, &part)?);
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "invalid {part} while reading deleted field instructions: {error}"
+                    )));
+                }
+                _ => {}
+            }
+            buf.clear();
+        }
+        output.insert(part, deletions);
+    }
+    Ok(output)
+}
+
+fn parse_deleted_revision_instructions(
+    reader: &mut Reader<&[u8]>,
+    part: &str,
+) -> Result<Vec<Option<String>>> {
+    let mut runs = Vec::new();
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"r" => {
+                runs.push(parse_deleted_run_instruction(reader, part)?);
+            }
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"r" => {
+                runs.push(None);
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"del" => return Ok(runs),
+            Ok(Event::Eof) => {
+                return Err(Error::Reverse(format!(
+                    "unterminated `w:del` while reading deleted field instructions in {part}"
+                )));
+            }
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "invalid {part} while reading deleted field instructions: {error}"
+                )));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+fn parse_deleted_run_instruction(reader: &mut Reader<&[u8]>, part: &str) -> Result<Option<String>> {
+    let mut instruction = None;
+    let mut in_instruction = false;
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"delInstrText" => {
+                in_instruction = true;
+                instruction.get_or_insert_with(String::new);
+            }
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"delInstrText" => {
+                instruction.get_or_insert_with(String::new);
+            }
+            Ok(Event::Text(text)) if in_instruction => {
+                let decoded = text.decode().map_err(|error| {
+                    Error::Reverse(format!(
+                        "cannot decode deleted field instruction in {part}: {error}"
+                    ))
+                })?;
+                let value = quick_xml::escape::unescape(&decoded).map_err(|error| {
+                    Error::Reverse(format!(
+                        "cannot unescape deleted field instruction in {part}: {error}"
+                    ))
+                })?;
+                instruction.get_or_insert_with(String::new).push_str(&value);
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"delInstrText" => {
+                in_instruction = false;
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"r" => {
+                return Ok(instruction);
+            }
+            Ok(Event::Eof) => {
+                return Err(Error::Reverse(format!(
+                    "unterminated `w:r` while reading deleted field instructions in {part}"
+                )));
+            }
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "invalid {part} while reading deleted field instructions: {error}"
+                )));
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
 }
 
 fn parse_container_events(
@@ -7664,6 +7832,27 @@ mod tests {
                 && jsx.contains("</Comment>")
                 && jsx.contains("</Deleted>"),
             "comment range should remain nested inside deleted text: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_deleted_field_instruction() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{"author":"Ada"},"children":[{"type":"Field","props":{"instruction":" DATE "},"children":["yesterday"]}]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled =
+            crate::compiler::compile_document(&ir, Path::new(".")).expect("fixture should compile");
+        let without_manifest = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&without_manifest)
+            .expect("manifest-free DOCX should preserve deleted field instructions");
+        assert!(
+            jsx.contains(r#"<Deleted author="Ada""#)
+                && jsx.contains(r#"<Field instruction=" DATE ">"#)
+                && jsx.contains(r#"{"yesterday"}"#)
+                && jsx.contains("</Field>")
+                && jsx.contains("</Deleted>"),
+            "deleted field instruction and result should reverse: {jsx}"
         );
     }
 
