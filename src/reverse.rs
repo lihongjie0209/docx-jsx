@@ -56,7 +56,6 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
             assets: BTreeMap::new(),
         });
     }
-    let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     validate_character_indent_xml(bytes)?;
     validate_simple_positioned_images(bytes)?;
     let style_metadata = read_style_metadata(bytes)?;
@@ -64,6 +63,9 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let section_columns = collect_section_columns(bytes)?;
     let table_row_xml = collect_table_row_xml_metadata(bytes)?;
     let table_xml = collect_table_xml_metadata(bytes)?;
+    let paragraph_indent_xml = collect_paragraph_indent_metadata(bytes)?;
+    let style_character_indents = collect_style_character_indent_metadata(bytes)?;
+    let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
         images.by_id.entry(id).or_insert(asset);
@@ -79,6 +81,8 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         section_columns,
         table_row_xml,
         table_xml,
+        paragraph_indent_xml,
+        style_character_indents,
         ..Writer::default()
     };
     writer.components.insert("Document");
@@ -233,6 +237,14 @@ struct Writer {
     table_row_indices: HashMap<String, usize>,
     table_xml: HashMap<String, Vec<TableXmlMetadata>>,
     table_indices: HashMap<String, usize>,
+    paragraph_indent_xml: HashMap<String, Vec<ParagraphIndentMetadata>>,
+    paragraph_indent_indices: HashMap<String, usize>,
+    style_character_indents: HashMap<String, BTreeMap<String, i64>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ParagraphIndentMetadata {
+    values: BTreeMap<String, i64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -535,6 +547,7 @@ impl Writer {
 
     fn paragraph(&mut self, paragraph: &docx_rs::Paragraph, depth: usize) -> Result<()> {
         self.components.insert("Paragraph");
+        let raw_indent = self.next_paragraph_indent_metadata()?;
         let property = json(&paragraph.property)?;
         let mut attrs = Vec::new();
         if let Some(value) = property.get("alignment").and_then(scalar_string) {
@@ -589,6 +602,9 @@ impl Writer {
                 };
                 attrs.push(point_attr(target, value));
             }
+        }
+        for (name, value) in &raw_indent.values {
+            attrs.push(jsx_prop(name, &Value::from(*value))?);
         }
         if let Some((name, value)) = reverse_fonts_property(
             property.get("runProperty").unwrap_or(&Value::Null),
@@ -1124,6 +1140,28 @@ impl Writer {
         Ok(metadata)
     }
 
+    fn next_paragraph_indent_metadata(&mut self) -> Result<ParagraphIndentMetadata> {
+        let part = self
+            .image_scope
+            .as_deref()
+            .unwrap_or("word/document.xml")
+            .to_owned();
+        let index = self
+            .paragraph_indent_indices
+            .entry(part.clone())
+            .or_default();
+        let metadata = self
+            .paragraph_indent_xml
+            .get(&part)
+            .and_then(|paragraphs| paragraphs.get(*index))
+            .cloned()
+            .ok_or_else(|| Error::Reverse(format!(
+                "docx-rs exposed a paragraph missing from `{part}` XML metadata; retain the original DOCX or repair the paragraph tree"
+            )))?;
+        *index += 1;
+        Ok(metadata)
+    }
+
     fn next_table_xml_metadata(&mut self) -> Result<TableXmlMetadata> {
         let part = self
             .image_scope
@@ -1410,6 +1448,7 @@ impl Writer {
     }
 
     fn list_item(&mut self, paragraph: &docx_rs::Paragraph, depth: usize) -> Result<()> {
+        let raw_indent = self.next_paragraph_indent_metadata()?;
         let property = json(&paragraph.property)?;
         let mut attrs = String::new();
         if let Some(level) =
@@ -1425,6 +1464,9 @@ impl Writer {
             .or_else(|| nested_string(&property, &["style", "styleId"]))
         {
             attrs.push_str(&attr("style", value));
+        }
+        for (name, value) in &raw_indent.values {
+            attrs.push_str(&jsx_prop(name, &Value::from(*value))?);
         }
         self.line(depth, &format!("<ListItem{attrs}>"));
         if self.apply_sdt {
@@ -2977,8 +3019,9 @@ fn validate_character_indent_xml(bytes: &[u8]) -> Result<()> {
                         let local_name = attribute.key.local_name();
                         if UNSUPPORTED.contains(&local_name.as_ref()) {
                             if part == "word/styles.xml"
-                                && [b"hangingChars".as_slice(), b"firstLineChars".as_slice()]
-                                    .contains(&local_name.as_ref())
+                                || part == "word/document.xml"
+                                || part.starts_with("word/header")
+                                || part.starts_with("word/footer")
                             {
                                 continue;
                             }
@@ -3004,6 +3047,208 @@ fn validate_character_indent_xml(bytes: &[u8]) -> Result<()> {
                 _ => {}
             }
             buffer.clear();
+        }
+    }
+    Ok(())
+}
+
+fn collect_paragraph_indent_metadata(
+    bytes: &[u8],
+) -> Result<HashMap<String, Vec<ParagraphIndentMetadata>>> {
+    const ATTRIBUTES: &[(&[u8], &str)] = &[
+        (b"leftChars", "indentLeftChars"),
+        (b"startChars", "indentStartChars"),
+        (b"rightChars", "indentRightChars"),
+        (b"endChars", "indentEndChars"),
+        (b"firstLineChars", "firstLineChars"),
+        (b"hangingChars", "hangingChars"),
+    ];
+    let parts = zip_entry_names(bytes)?.into_iter().filter(|name| {
+        name == "word/document.xml"
+            || (name.starts_with("word/header") || name.starts_with("word/footer"))
+                && Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                && !name.contains("/_rels/")
+    });
+    let mut result = HashMap::new();
+    for part in parts {
+        let xml = read_zip_text(bytes, &part)?;
+        let mut reader = Reader::from_str(&xml);
+        let mut buffer = Vec::new();
+        let mut paragraphs = Vec::new();
+        let mut active_paragraphs = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(element)) if element.local_name().as_ref() == b"p" => {
+                    paragraphs.push(ParagraphIndentMetadata::default());
+                    active_paragraphs.push(paragraphs.len() - 1);
+                }
+                Ok(Event::Empty(element)) if element.local_name().as_ref() == b"p" => {
+                    paragraphs.push(ParagraphIndentMetadata::default());
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"ind" =>
+                {
+                    if let Some(index) = active_paragraphs.last().copied() {
+                        for attribute in element.attributes() {
+                            let attribute = attribute.map_err(|error| {
+                                Error::Reverse(format!(
+                                    "invalid indentation attribute in {part}: {error}"
+                                ))
+                            })?;
+                            let local_name = attribute.key.local_name();
+                            let Some((_, target)) = ATTRIBUTES
+                                .iter()
+                                .find(|(name, _)| *name == local_name.as_ref())
+                            else {
+                                continue;
+                            };
+                            let value = attribute
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
+                                .map_err(|error| {
+                                    Error::Reverse(format!(
+                                        "invalid w:{} value in {part}: {error}",
+                                        String::from_utf8_lossy(local_name.as_ref())
+                                    ))
+                                })?;
+                            let value = value.parse::<i64>().map_err(|_| Error::Reverse(format!("{part} has non-integer w:{} value `{value}`; repair the character-unit indentation", String::from_utf8_lossy(local_name.as_ref()))))?;
+                            if paragraphs[index]
+                                .values
+                                .insert((*target).to_owned(), value)
+                                .is_some()
+                            {
+                                return Err(Error::Reverse(format!(
+                                    "{part} contains duplicate w:{} attributes in one paragraph",
+                                    String::from_utf8_lossy(local_name.as_ref())
+                                )));
+                            }
+                        }
+                    }
+                }
+                Ok(Event::End(element)) if element.local_name().as_ref() == b"p" => {
+                    if let Some(index) = active_paragraphs.pop() {
+                        validate_raw_character_indent(&paragraphs[index].values, "paragraph")?;
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "cannot parse {part} paragraph indentation at byte {}: {error}",
+                        reader.error_position()
+                    )));
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+        result.insert(part, paragraphs);
+    }
+    Ok(result)
+}
+
+fn collect_style_character_indent_metadata(
+    bytes: &[u8],
+) -> Result<HashMap<String, BTreeMap<String, i64>>> {
+    const ATTRIBUTES: &[(&[u8], &str)] = &[
+        (b"leftChars", "indentLeftChars"),
+        (b"startChars", "indentStartChars"),
+        (b"rightChars", "indentRightChars"),
+        (b"endChars", "indentEndChars"),
+        (b"firstLineChars", "firstLineChars"),
+        (b"hangingChars", "hangingChars"),
+    ];
+    let xml = read_zip_text(bytes, "word/styles.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut current_style: Option<String> = None;
+    let mut result = HashMap::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"style" => {
+                current_style = xml_attribute(&reader, &element, b"styleId")?;
+                if let Some(style_id) = &current_style {
+                    result.entry(style_id.clone()).or_insert_with(BTreeMap::new);
+                }
+            }
+            Ok(Event::Start(element) | Event::Empty(element))
+                if element.local_name().as_ref() == b"ind" =>
+            {
+                let Some(style_id) = current_style.as_deref() else {
+                    buffer.clear();
+                    continue;
+                };
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|error| {
+                        Error::Reverse(format!("invalid style indentation attribute: {error}"))
+                    })?;
+                    let local_name = attribute.key.local_name();
+                    let Some((_, target)) = ATTRIBUTES
+                        .iter()
+                        .find(|(name, _)| *name == local_name.as_ref())
+                    else {
+                        continue;
+                    };
+                    let raw_value = attribute
+                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                        .map_err(|error| {
+                            Error::Reverse(format!(
+                                "invalid w:{} in style `{style_id}`: {error}",
+                                String::from_utf8_lossy(local_name.as_ref())
+                            ))
+                        })?;
+                    let value = raw_value.parse::<i64>().map_err(|_| {
+                        Error::Reverse(format!(
+                            "style `{style_id}` has non-integer w:{} value `{raw_value}`; repair its character-unit indentation",
+                            String::from_utf8_lossy(local_name.as_ref())
+                        ))
+                    })?;
+                    let properties = result
+                        .entry(style_id.to_owned())
+                        .or_insert_with(BTreeMap::new);
+                    if properties.insert((*target).to_owned(), value).is_some() {
+                        return Err(Error::Reverse(format!(
+                            "style `{style_id}` contains duplicate w:{} indentation attributes",
+                            String::from_utf8_lossy(local_name.as_ref())
+                        )));
+                    }
+                }
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"style" => {
+                if let Some(style_id) = current_style.as_deref()
+                    && let Some(properties) = result.get(style_id)
+                {
+                    validate_raw_character_indent(properties, &format!("style `{style_id}`"))?;
+                }
+                current_style = None;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/styles.xml character indentation at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(result)
+}
+
+fn validate_raw_character_indent(values: &BTreeMap<String, i64>, owner: &str) -> Result<()> {
+    for (left, right) in [
+        ("indentLeftChars", "indentStartChars"),
+        ("indentRightChars", "indentEndChars"),
+        ("firstLineChars", "hangingChars"),
+    ] {
+        if values.contains_key(left) && values.contains_key(right) {
+            return Err(Error::Reverse(format!(
+                "{owner} has conflicting `{left}` and `{right}` values; retain only one character-unit indentation attribute"
+            )));
         }
     }
     Ok(())
@@ -4073,6 +4318,7 @@ fn reverse_styles_attribute(
                 style,
                 metadata.get(&style.style_id),
                 writer.style_theme_colors.get(&style.style_id),
+                writer.style_character_indents.get(&style.style_id),
             )
         })
         .collect::<Result<Vec<_>>>()?
@@ -4586,6 +4832,7 @@ fn reverse_style_definition(
     style: &docx_rs::Style,
     metadata: Option<&StyleMetadata>,
     theme: Option<&ThemeColorInfo>,
+    raw_character_indentation: Option<&BTreeMap<String, i64>>,
 ) -> Result<Option<Value>> {
     let source = json(style)?;
     let mut definition = Map::new();
@@ -4651,7 +4898,14 @@ fn reverse_style_definition(
             definition.insert("run".to_owned(), Value::Object(run));
         }
     }
-    if let Some(paragraph) = reverse_paragraph_properties(&source["paragraphProperty"])? {
+    let mut paragraph =
+        reverse_paragraph_properties(&source["paragraphProperty"])?.unwrap_or_default();
+    if let Some(raw_character_indentation) = raw_character_indentation {
+        for (name, value) in raw_character_indentation {
+            paragraph.insert(name.clone(), Value::Number((*value).into()));
+        }
+    }
+    if !paragraph.is_empty() {
         definition.insert("paragraph".to_owned(), Value::Object(paragraph));
     }
     if style.style_type == docx_rs::StyleType::Table {
@@ -5271,7 +5525,7 @@ mod tests {
     }
 
     #[test]
-    fn reverse_external_docx_should_reject_character_unit_indentation() {
+    fn reverse_external_docx_should_reject_conflicting_character_unit_indentation() {
         let packed =
             external_docx(Paragraph::new().add_run(Run::new().add_text("character indent")));
         let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
@@ -5283,26 +5537,101 @@ mod tests {
             .expect("document XML");
         let document = document.replace(
             "<w:pPr><w:rPr /></w:pPr>",
-            r#"<w:pPr><w:ind w:firstLineChars="200" /></w:pPr>"#,
+            r#"<w:pPr><w:ind w:firstLineChars="200" w:hangingChars="100" /></w:pPr>"#,
         );
         assert!(document.contains("w:firstLineChars"), "{document}");
         let modified =
             rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
         let error = reverse_document(&modified)
-            .expect_err("character-unit indentation is not representable by JSX points");
+            .expect_err("conflicting character-unit indentation must be rejected");
         assert!(
             error.to_string().contains("firstLineChars")
-                && error.to_string().contains("points")
-                && error.to_string().contains("replace it"),
-            "diagnostic should identify the unsupported unit and a repair: {error}"
+                && error.to_string().contains("hangingChars")
+                && error.to_string().contains("retain only one"),
+            "diagnostic should identify the conflicting values and fix: {error}"
         );
     }
 
     #[test]
+    fn reverse_external_docx_should_explain_malformed_character_unit_value() {
+        let packed = external_docx(Paragraph::new().add_run(Run::new().add_text("malformed")));
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document.replace(
+            "<w:pPr><w:rPr /></w:pPr>",
+            r#"<w:pPr><w:ind w:firstLineChars="oops" /><w:rPr /></w:pPr>"#,
+        );
+        let modified =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let error = reverse_document(&modified).expect_err("malformed indentation must fail");
+        assert!(
+            error.to_string().contains("non-integer")
+                && error
+                    .to_string()
+                    .contains("repair the character-unit indentation"),
+            "diagnostic should explain the malformed value and fix: {error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_paragraph_character_indentation() {
+        let packed = pack_docx(
+            Docx::new()
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("first")))
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("second"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        document = document.replacen(
+            "<w:pPr><w:rPr /></w:pPr>",
+            r#"<w:pPr><w:ind w:left="120" w:leftChars="-100" w:rightChars="200" w:firstLineChars="640" /><w:rPr /></w:pPr>"#,
+            1,
+        );
+        document = document.replacen(
+            "<w:pPr><w:rPr /></w:pPr>",
+            r#"<w:pPr><w:ind w:startChars="120" w:endChars="80" w:hangingChars="20" /><w:rPr /></w:pPr>"#,
+            1,
+        );
+        let modified =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let jsx = reverse_document(&modified).expect("character indentation should reverse");
+        for attr in [
+            "indentLeftChars={-100}",
+            "indentLeft={6}",
+            "indentRightChars={200}",
+            "firstLineChars={640}",
+            "indentStartChars={120}",
+            "indentEndChars={80}",
+            "hangingChars={20}",
+        ] {
+            assert!(jsx.contains(attr), "missing {attr}: {jsx}");
+        }
+    }
+
+    #[test]
     fn reverse_external_docx_should_preserve_style_character_indentation() {
-        let packed = pack_docx(Docx::new().add_style(
-            Style::new("CharacterIndent", StyleType::Paragraph).name("Character Indent"),
-        ));
+        let packed = pack_docx(
+            Docx::new()
+                .add_style(
+                    Style::new("CharacterIndent", StyleType::Paragraph).name("Character Indent"),
+                )
+                .add_style(
+                    Style::new("StartEndIndent", StyleType::Paragraph).name("Start End Indent"),
+                )
+                .add_style(
+                    Style::new("FirstLineIndent", StyleType::Paragraph).name("First Line Indent"),
+                ),
+        );
         let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
         let mut styles = String::new();
         archive
@@ -5310,17 +5639,38 @@ mod tests {
             .expect("styles part")
             .read_to_string(&mut styles)
             .expect("styles XML");
-        let style_marker = styles
-            .find(r#"w:styleId="CharacterIndent""#)
-            .expect("custom style should be present");
-        let style_end = styles[style_marker..]
-            .find("</w:style>")
-            .map(|offset| style_marker + offset)
-            .expect("style end should be present");
-        styles.insert_str(style_end, r#"<w:pPr><w:ind w:hangingChars="20" /></w:pPr>"#);
+        for (style_id, indent) in [
+            ("CharacterIndent", r#"<w:ind w:hangingChars="20" />"#),
+            (
+                "StartEndIndent",
+                r#"<w:ind w:startChars="120" w:endChars="80" />"#,
+            ),
+            (
+                "FirstLineIndent",
+                r#"<w:ind w:leftChars="-100" w:rightChars="200" w:firstLineChars="640" />"#,
+            ),
+        ] {
+            let style_marker = styles
+                .find(&format!(r#"w:styleId="{style_id}""#))
+                .expect("custom style should be present");
+            let style_end = styles[style_marker..]
+                .find("</w:style>")
+                .map(|offset| style_marker + offset)
+                .expect("style end should be present");
+            styles.insert_str(style_end, &format!("<w:pPr>{indent}</w:pPr>"));
+        }
         let modified = rewrite_package_parts(&packed, &[("word/styles.xml", styles.as_bytes())]);
         let jsx = reverse_document(&modified).expect("style character indentation should reverse");
-        assert!(jsx.contains(r#""hangingChars":20"#), "{jsx}");
+        for property in [
+            r#""hangingChars":20"#,
+            r#""indentStartChars":120"#,
+            r#""indentEndChars":80"#,
+            r#""indentLeftChars":-100"#,
+            r#""indentRightChars":200"#,
+            r#""firstLineChars":640"#,
+        ] {
+            assert!(jsx.contains(property), "missing {property}: {jsx}");
+        }
     }
 
     #[test]
@@ -6901,17 +7251,33 @@ mod tests {
 
     #[test]
     fn reverse_external_docx_should_preserve_simple_ordered_list() {
-        let bytes = pack_docx(
+        let packed = pack_docx(
             Docx::new()
                 .add_abstract_numbering(default_list_abstract(2, true))
                 .add_numbering(Numbering::new(2, 2))
                 .add_paragraph(numbered(2, 0, "one"))
                 .add_paragraph(numbered(2, 1, "two")),
         );
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        document = document.replacen(
+            "<w:pPr>",
+            r#"<w:pPr><w:ind w:startChars="120" w:endChars="80" w:hangingChars="20" />"#,
+            1,
+        );
+        let bytes = rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
         let jsx = reverse_document(&bytes).expect("external list should reverse");
         assert!(
             jsx.contains(r#"<List type="ordered">"#)
-                && jsx.contains("<ListItem>")
+                && jsx.contains("<ListItem ")
+                && jsx.contains("indentStartChars={120}")
+                && jsx.contains("indentEndChars={80}")
+                && jsx.contains("hangingChars={20}")
                 && jsx.contains("level={1}")
                 && jsx.contains(r#"{"one"}"#)
                 && jsx.contains(r#"{"two"}"#)

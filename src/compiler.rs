@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
@@ -35,6 +36,9 @@ struct CompileContext {
     next_bookmark_id: usize,
     next_comment_id: usize,
     numberings: Vec<(AbstractNumbering, Numbering)>,
+    character_indent_patches: Vec<(String, BTreeMap<String, i64>, bool)>,
+    used_paragraph_ids: BTreeSet<String>,
+    next_generated_paragraph_id: u32,
 }
 
 impl Default for CompileContext {
@@ -45,6 +49,9 @@ impl Default for CompileContext {
             next_bookmark_id: 0,
             next_comment_id: 0,
             numberings: Vec::new(),
+            character_indent_patches: Vec::new(),
+            used_paragraph_ids: BTreeSet::new(),
+            next_generated_paragraph_id: 0xf000_0000,
         }
     }
 }
@@ -100,6 +107,7 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
     }
     docx = compile_package_parts(docx, &ir.document.props)?;
     let mut context = CompileContext::default();
+    collect_existing_paragraph_ids(&ir.document, &mut context.used_paragraph_ids);
     let section_count = ir.document.children.len();
     for (index, child) in ir.document.children.iter().enumerate() {
         let Child::Node(section_node) = child else {
@@ -114,12 +122,12 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
             &mut context,
         )?;
     }
-    for (abstract_numbering, numbering) in context.numberings {
+    for (abstract_numbering, numbering) in std::mem::take(&mut context.numberings) {
         docx = docx
             .add_abstract_numbering(abstract_numbering)
             .add_numbering(numbering);
     }
-    package_document(docx, ir)
+    package_document(docx, ir, &context.character_indent_patches)
 }
 
 fn compile_section_into_docx(
@@ -194,7 +202,11 @@ fn compile_section_into_docx(
     }
 }
 
-fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
+fn package_document(
+    docx: Docx,
+    ir: &IrEnvelope,
+    paragraph_character_indents: &[(String, BTreeMap<String, i64>, bool)],
+) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     docx.pack(&mut cursor)
         .map_err(|error| Error::Compile(error.to_string()))?;
@@ -218,6 +230,7 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
         })
         .collect::<Result<Vec<_>>>()?;
     let bytes = patch_section_columns(cursor.into_inner(), &columns)?;
+    let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
     let row_grid = collect_row_grid_properties(&ir.document);
     let mut bytes = bytes;
     for (part, rows) in row_grid {
@@ -244,6 +257,213 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn collect_existing_paragraph_ids(node: &Node, ids: &mut BTreeSet<String>) {
+    if let Some(id) = node.props.get("paragraphId").and_then(Value::as_str) {
+        ids.insert(id.to_ascii_uppercase());
+    }
+    for child in &node.children {
+        if let Child::Node(child) = child {
+            collect_existing_paragraph_ids(child, ids);
+        }
+    }
+}
+
+fn paragraph_character_indent_attributes(props: &Map<String, Value>) -> BTreeMap<String, i64> {
+    [
+        ("indentLeftChars", "leftChars"),
+        ("indentStartChars", "startChars"),
+        ("indentRightChars", "rightChars"),
+        ("indentEndChars", "endChars"),
+        ("firstLineChars", "firstLineChars"),
+        ("hangingChars", "hangingChars"),
+    ]
+    .into_iter()
+    .filter_map(|(source, target)| {
+        props
+            .get(source)
+            .and_then(Value::as_i64)
+            .map(|value| (target.to_owned(), value))
+    })
+    .collect()
+}
+
+fn register_paragraph_character_indentation(
+    mut paragraph: Paragraph,
+    node: &Node,
+    context: &mut CompileContext,
+) -> (Paragraph, bool) {
+    let attributes = paragraph_character_indent_attributes(&node.props);
+    if attributes.is_empty() {
+        return (paragraph, false);
+    }
+    let (id, is_temporary) = if let Some(id) = node.props.get("paragraphId").and_then(Value::as_str)
+    {
+        (id.to_ascii_uppercase(), false)
+    } else {
+        loop {
+            let id = format!("{:08X}", context.next_generated_paragraph_id);
+            context.next_generated_paragraph_id =
+                context.next_generated_paragraph_id.wrapping_sub(1);
+            if context.used_paragraph_ids.insert(id.clone()) {
+                break (id, true);
+            }
+        }
+    };
+    paragraph = paragraph.id(id.clone());
+    context
+        .character_indent_patches
+        .push((id, attributes, is_temporary));
+    (paragraph, true)
+}
+
+fn patch_paragraph_character_indentation(
+    bytes: Vec<u8>,
+    patches: &[(String, BTreeMap<String, i64>, bool)],
+) -> Result<Vec<u8>> {
+    if patches.is_empty() {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut replacements = Vec::new();
+    let mut matched = BTreeSet::new();
+    for index in 0..archive.len() {
+        let name = archive
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?
+            .name()
+            .to_owned();
+        if !(name == "word/document.xml"
+            || (name.starts_with("word/header") || name.starts_with("word/footer"))
+                && Path::new(&name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                && !name.contains("/_rels/"))
+        {
+            continue;
+        }
+        let mut xml = String::new();
+        archive
+            .by_name(&name)
+            .map_err(|error| Error::Compile(format!("missing {name}: {error}")))?
+            .read_to_string(&mut xml)
+            .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
+        let mut changed = false;
+        for (id, attributes, temporary) in patches {
+            if patch_paragraph_indentation_xml(&mut xml, id, attributes, *temporary)? {
+                matched.insert(id.as_str());
+                changed = true;
+            }
+        }
+        if changed {
+            replacements.push((name, xml));
+        }
+    }
+    for (id, _, _) in patches {
+        if !matched.contains(id.as_str()) {
+            return Err(Error::Compile(format!(
+                "docx-rs omitted the paragraph marker for character indentation `{id}`"
+            )));
+        }
+    }
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..archive.len() {
+        let file = archive
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        if let Some((_, xml)) = replacements.iter().find(|(name, _)| name == file.name()) {
+            let name = file.name().to_owned();
+            let options = file.options();
+            writer
+                .start_file(name, options)
+                .map_err(|error| Error::Compile(format!("cannot write paragraph XML: {error}")))?;
+            writer
+                .write_all(xml.as_bytes())
+                .map_err(|error| Error::Compile(format!("cannot write paragraph XML: {error}")))?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
+fn patch_paragraph_indentation_xml(
+    xml: &mut String,
+    id: &str,
+    attributes: &BTreeMap<String, i64>,
+    temporary_id: bool,
+) -> Result<bool> {
+    let marker = format!(r#"w14:paraId="{id}""#);
+    let Some(marker_start) = xml.find(&marker) else {
+        return Ok(false);
+    };
+    let paragraph_start = xml[..marker_start]
+        .rfind("<w:p")
+        .ok_or_else(|| Error::Compile(format!("invalid paragraph marker `{id}`")))?;
+    let start_tag_end = xml[paragraph_start..]
+        .find('>')
+        .map(|at| paragraph_start + at + 1)
+        .ok_or_else(|| Error::Compile(format!("invalid paragraph start for `{id}`")))?;
+    let paragraph_end = xml[start_tag_end..]
+        .find("</w:p>")
+        .map(|at| start_tag_end + at)
+        .ok_or_else(|| Error::Compile(format!("invalid paragraph end for `{id}`")))?;
+    let mut attrs = String::new();
+    for (name, value) in attributes {
+        write!(attrs, " w:{name}=\"{value}\"").expect("String write");
+    }
+    let paragraph = &xml[paragraph_start..paragraph_end];
+    if let Some(ppr_relative) = paragraph.find("<w:pPr") {
+        let ppr_start = paragraph_start + ppr_relative;
+        let Some(ppr_open_end) = xml[ppr_start..paragraph_end]
+            .find('>')
+            .map(|at| ppr_start + at + 1)
+        else {
+            return Err(Error::Compile(format!(
+                "invalid w:pPr for paragraph `{id}`"
+            )));
+        };
+        let ppr_is_empty = xml[ppr_start..ppr_open_end].ends_with("/>");
+        if ppr_is_empty {
+            xml.replace_range(
+                ppr_start..ppr_open_end,
+                &format!("<w:pPr><w:ind{attrs} /></w:pPr>"),
+            );
+        } else if let Some(ind_relative) = xml[ppr_open_end..paragraph_end].find("<w:ind") {
+            let ind_start = ppr_open_end + ind_relative;
+            let mut ind_end = xml[ind_start..paragraph_end]
+                .find('>')
+                .map(|at| ind_start + at)
+                .ok_or_else(|| Error::Compile(format!("invalid w:ind for paragraph `{id}`")))?;
+            if xml[ind_end.saturating_sub(1)..=ind_end].ends_with("/>") {
+                ind_end -= 1;
+            }
+            xml.insert_str(ind_end, &attrs);
+        } else {
+            let ppr_end = xml[ppr_open_end..paragraph_end]
+                .find("</w:pPr>")
+                .map(|at| ppr_open_end + at)
+                .ok_or_else(|| Error::Compile(format!("invalid w:pPr for paragraph `{id}`")))?;
+            xml.insert_str(ppr_end, &format!("<w:ind{attrs} />"));
+        }
+    } else {
+        xml.insert_str(start_tag_end, &format!("<w:pPr><w:ind{attrs} /></w:pPr>"));
+    }
+    if temporary_id {
+        let marker_with_space = format!(" {marker}");
+        if let Some(marker_start) = xml.find(&marker_with_space) {
+            xml.replace_range(marker_start..marker_start + marker_with_space.len(), "");
+        }
+    }
+    Ok(true)
 }
 
 fn collect_row_grid_properties(root: &Node) -> Vec<(String, Vec<[Option<u64>; 4]>)> {
@@ -946,8 +1166,16 @@ fn compile_style_indent(
     if left.is_some()
         || right.is_some()
         || special.is_some()
-        || paragraph.contains_key("hangingChars")
-        || paragraph.contains_key("firstLineChars")
+        || [
+            "indentLeftChars",
+            "indentStartChars",
+            "indentRightChars",
+            "indentEndChars",
+            "hangingChars",
+            "firstLineChars",
+        ]
+        .iter()
+        .any(|key| paragraph.contains_key(*key))
     {
         style = style.indent(left, special, right, None);
     }
@@ -1088,10 +1316,22 @@ fn patch_style_character_indentation(
         .filter_map(|style| {
             let id = style.get("id")?.as_str()?;
             let paragraph = style.get("paragraph")?.as_object()?;
-            let attrs = ["hangingChars", "firstLineChars"]
-                .into_iter()
-                .filter_map(|key| paragraph.get(key).and_then(Value::as_i64).map(|v| (key, v)))
-                .collect::<Vec<_>>();
+            let attrs = [
+                ("indentLeftChars", "leftChars"),
+                ("indentStartChars", "startChars"),
+                ("indentRightChars", "rightChars"),
+                ("indentEndChars", "endChars"),
+                ("hangingChars", "hangingChars"),
+                ("firstLineChars", "firstLineChars"),
+            ]
+            .into_iter()
+            .filter_map(|(source, target)| {
+                paragraph
+                    .get(source)
+                    .and_then(Value::as_i64)
+                    .map(|value| (target, value))
+            })
+            .collect::<Vec<_>>();
             (!attrs.is_empty()).then_some((id.to_owned(), attrs))
         })
         .collect::<Vec<_>>();
@@ -2552,7 +2792,8 @@ fn compile_paragraph(
     path: &str,
     context: &mut CompileContext,
 ) -> Result<Paragraph> {
-    let mut paragraph = Paragraph::new();
+    let (mut paragraph, has_character_indents) =
+        register_paragraph_character_indentation(Paragraph::new(), node, context);
     if let Some(style) = string_prop(&node.props, "style", path)? {
         paragraph = paragraph.style(style);
     }
@@ -2600,18 +2841,7 @@ fn compile_paragraph(
     if has_spacing {
         paragraph = paragraph.line_spacing(spacing);
     }
-    let left = optional_twips_i32(&node.props, "indentLeft", path)?;
-    let right = optional_twips_i32(&node.props, "indentRight", path)?;
-    let special = if let Some(value) = number_prop(&node.props, "firstLine", path)? {
-        Some(SpecialIndentType::FirstLine(to_twips_i32(value, path)?))
-    } else if let Some(value) = number_prop(&node.props, "hanging", path)? {
-        Some(SpecialIndentType::Hanging(to_twips_i32(value, path)?))
-    } else {
-        None
-    };
-    if left.is_some() || right.is_some() || special.is_some() {
-        paragraph = paragraph.indent(left, special, right, None);
-    }
+    paragraph = compile_paragraph_indent(paragraph, node, path, has_character_indents)?;
     if let Some(value) = bool_prop(&node.props, "snapToGrid", path)? {
         paragraph = paragraph.snap_to_grid(value);
     }
@@ -2646,6 +2876,33 @@ fn compile_paragraph(
     }
     paragraph = compile_advanced_paragraph_properties(paragraph, node, path)?;
     compile_paragraph_children(paragraph, &node.children, entry_dir, path, context)
+}
+
+fn compile_paragraph_indent(
+    mut paragraph: Paragraph,
+    node: &Node,
+    path: &str,
+    has_character_indents: bool,
+) -> Result<Paragraph> {
+    let left = optional_twips_i32(&node.props, "indentLeft", path)?;
+    let right = optional_twips_i32(&node.props, "indentRight", path)?;
+    let special = if let Some(value) = number_prop(&node.props, "firstLine", path)? {
+        Some(SpecialIndentType::FirstLine(to_twips_i32(value, path)?))
+    } else if let Some(value) = number_prop(&node.props, "hanging", path)? {
+        Some(SpecialIndentType::Hanging(to_twips_i32(value, path)?))
+    } else {
+        None
+    };
+    if left.is_some() || right.is_some() || special.is_some() || has_character_indents {
+        paragraph = paragraph.indent(left, special, right, None);
+    }
+    if let Some(value) = node.props.get("hangingChars") {
+        paragraph = paragraph.hanging_chars(value_to_i32(value, path, "hangingChars")?);
+    }
+    if let Some(value) = node.props.get("firstLineChars") {
+        paragraph = paragraph.first_line_chars(value_to_i32(value, path, "firstLineChars")?);
+    }
+    Ok(paragraph)
 }
 
 fn compile_paragraph_fonts(
@@ -4497,8 +4754,12 @@ fn compile_list(
                 "`level` is outside the list `levels` range",
             ));
         }
-        let mut paragraph =
-            Paragraph::new().numbering(NumberingId::new(id), IndentLevel::new(level));
+        let paragraph = Paragraph::new().numbering(NumberingId::new(id), IndentLevel::new(level));
+        let (mut paragraph, has_character_indentation) =
+            register_paragraph_character_indentation(paragraph, item, context);
+        if has_character_indentation {
+            paragraph = paragraph.indent(None, None, None, None);
+        }
         if let Some(style) = string_prop(&item.props, "style", &item_path)? {
             paragraph = paragraph.style(style);
         }
@@ -5545,6 +5806,37 @@ mod tests {
     }
 
     #[test]
+    fn compile_should_render_character_unit_indentation_without_point_conversion() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"indentLeft":6,"indentLeftChars":-100,"indentRightChars":200,"firstLineChars":640},"children":["first"]},{"type":"Paragraph","props":{"indentStartChars":120,"indentEndChars":80,"hangingChars":20},"children":["second"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        for attr in [
+            r#"w:leftChars="-100""#,
+            r#"w:left="120""#,
+            r#"w:rightChars="200""#,
+            r#"w:firstLineChars="640""#,
+            r#"w:startChars="120""#,
+            r#"w:endChars="80""#,
+            r#"w:hangingChars="20""#,
+        ] {
+            assert!(document.contains(attr), "missing {attr}: {document}");
+        }
+        assert!(
+            !document.contains("F0000000"),
+            "temporary marker leaked: {document}"
+        );
+    }
+
+    #[test]
     fn compile_should_package_web_extensions_and_multiple_custom_xml_items() {
         let ir: IrEnvelope = serde_json::from_str(
             r#"{"version":1,"document":{"type":"Document","props":{"webExtensions":[{"id":"7f33b723-fb58-4524-8733-dbedc4b7c095","referenceId":"office-addin","version":"1.0.0.0","store":"developer","storeType":"Registry","properties":{"mode":"review"}},{"id":"11111111-2222-3333-4444-555555555555","referenceId":"second","version":"2.0","store":"OMEX","storeType":"Marketplace"}],"customXmlItems":[{"id":"06AC5857-5C65-A94A-BCEC-37356A209BC3","xml":"<customer><name>Ada</name></customer>"},{"id":"11111111-AAAA-BBBB-CCCC-222222222222","xml":"<order id=\"42\"/>"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
@@ -5637,6 +5929,30 @@ mod tests {
         assert!(styles.contains(r#"<w:gridSpan w:val="2" />"#));
         assert!(styles.contains(r#"<w:textDirection w:val="tbRl" />"#));
         assert!(styles.contains(r#"<w:shd w:val="clear" w:color="auto" w:fill="FFF2CC" />"#));
+    }
+
+    #[test]
+    fn compile_should_render_all_style_character_indent_sides() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"PhysicalIndent","name":"Physical Indent","type":"paragraph","paragraph":{"indentLeftChars":-100,"indentRightChars":200}},{"id":"LogicalIndent","name":"Logical Indent","type":"paragraph","paragraph":{"indentStartChars":120,"indentEndChars":80}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles should exist")
+            .read_to_string(&mut styles)
+            .expect("styles XML should be UTF-8");
+        for attr in [
+            r#"w:leftChars="-100""#,
+            r#"w:rightChars="200""#,
+            r#"w:startChars="120""#,
+            r#"w:endChars="80""#,
+        ] {
+            assert!(styles.contains(attr), "missing {attr}: {styles}");
+        }
     }
 
     #[test]

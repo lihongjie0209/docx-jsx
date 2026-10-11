@@ -69,6 +69,12 @@ export default (
       <Paragraph fonts={{ ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC" }}>
         <Run style="BodyChar" fonts={{ asciiTheme: "minorHAnsi", eastAsiaTheme: "minorEastAsia", hint: "eastAsia" }}>Linked character style</Run>
       </Paragraph>
+      <Paragraph indentLeftChars={-100} indentRightChars={200} firstLineChars={640}>
+        Character-unit indentation
+      </Paragraph>
+      <Paragraph indentStartChars={120} indentEndChars={80} hangingChars={20}>
+        Logical character-unit indentation
+      </Paragraph>
       <Paragraph style="Body">
         <Hyperlink href="https://example.com" history>
           <ContentControl alias="LinkData">bound</ContentControl>
@@ -91,7 +97,7 @@ export default (
           },
         ]}
       >
-        <ListItem>First numbered</ListItem>
+        <ListItem indentStartChars={120} indentEndChars={80} hangingChars={20}>First numbered</ListItem>
       </List>
       <Table style="ValidationTable" widthPercent={100} align="center" layout="fixed" columnWidths={[220, 220]} indent={2} margins={{ top: 1, right: 1, bottom: 1, left: 1 }} position={{ leftFromText: 2, rightFromText: 2, verticalAnchor: "text", horizontalAnchor: "margin", xAlign: "center", y: 0 }} border={{ style: "single", size: 0.5, color: "808080" }}>
         <TableRow height={30} heightRule="exact" cantSplit gridBefore={1} gridAfter={1} widthBefore={12} widthAfter={12}>

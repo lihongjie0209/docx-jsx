@@ -132,18 +132,16 @@ Colors are uppercase or lowercase six-digit RGB strings without `#`.
   non-negative point values, serialized as `dxa` twips. External reverse
   restores these properties from `w:trPr`; non-`dxa` widths are rejected with
   a conversion suggestion.
-- Paragraph styles may use integer `hangingChars` and `firstLineChars` values
-  in addition to point-based `hanging` and `firstLine`. Character values map
-  directly to `w:hangingChars` and `w:firstLineChars` (no point conversion);
-  `hanging`/`hangingChars` and `firstLine`/`firstLineChars` are mutually
-  exclusive pairs. Reverse preserves these style values from external DOCX.
-- Paragraph indentation uses points in JSX. External DOCX values expressed
-  with `w:leftChars`, `w:startChars`, `w:rightChars`, `w:endChars`,
-  `w:firstLineChars`, or `w:hangingChars` cannot be converted losslessly to
-  points when nonzero, and reverse reports the specific unsupported attribute
-  with a repair suggestion instead of silently omitting it. Zero-valued
-  character indentation is semantically equivalent to no indentation and may
-  be omitted.
+- Paragraphs, headings, list items, and paragraph styles may use integer character-unit
+  indentation properties: `indentLeftChars`, `indentStartChars`,
+  `indentRightChars`, `indentEndChars`, `firstLineChars`, and `hangingChars`.
+  Values map directly to the corresponding OOXML `w:*Chars` values without
+  point conversion. The `leftChars`/`startChars`, `rightChars`/`endChars`,
+  `firstLine`/`firstLineChars`, and `hanging`/`hangingChars` pairs are
+  mutually exclusive; first-line and hanging modes are also mutually
+  exclusive. External reverse preserves the exact OOXML attribute name and
+  integer value, and reports malformed or conflicting values with a repair
+  suggestion.
 - `TableCell`: optional `verticalMerge: "restart" | "continue"`,
   `textDirection: "lr" | "lrV" | "rl" | "rlV" | "tb" | "tbV" | "tbRlV" |
   "tbRl" | "btLr" | "lrTbV"`, and a `margins` object with the same four

@@ -926,7 +926,16 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         | NodeKind::ShadedText) => semantic_text_props(kind),
         NodeKind::TabStop => &["position", "align", "leader"],
         NodeKind::List => &["type", "start", "levels"],
-        NodeKind::ListItem => &["level", "style"],
+        NodeKind::ListItem => &[
+            "level",
+            "style",
+            "indentLeftChars",
+            "indentStartChars",
+            "indentRightChars",
+            "indentEndChars",
+            "firstLineChars",
+            "hangingChars",
+        ],
         NodeKind::Bookmark | NodeKind::InlineBookmark => &["name"],
         NodeKind::TableOfContents => &["startLevel", "endLevel", "hyperlinks", "dirty", "alias"],
         NodeKind::TableOfFigures => &[
@@ -1076,8 +1085,14 @@ fn paragraph_props() -> &'static [&'static str] {
         "lineRule",
         "indentLeft",
         "indentRight",
+        "indentLeftChars",
+        "indentStartChars",
+        "indentRightChars",
+        "indentEndChars",
         "firstLine",
         "hanging",
+        "firstLineChars",
+        "hangingChars",
         "keepNext",
         "keepLines",
         "pageBreakBefore",
@@ -1117,8 +1132,14 @@ fn heading_props() -> &'static [&'static str] {
         "lineRule",
         "indentLeft",
         "indentRight",
+        "indentLeftChars",
+        "indentStartChars",
+        "indentRightChars",
+        "indentEndChars",
         "firstLine",
         "hanging",
+        "firstLineChars",
+        "hangingChars",
         "keepNext",
         "keepLines",
         "pageBreakBefore",
@@ -1393,6 +1414,7 @@ fn validate_image_position(node: &Node, path: &str, key: &str, alignments: &[&st
 
 fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
     if matches!(node.kind, NodeKind::Paragraph | NodeKind::Heading) {
+        validate_character_indent_props(&node.props, path, "")?;
         for key in [
             "keepNext",
             "keepLines",
@@ -2271,6 +2293,10 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             "lineRule",
             "indentLeft",
             "indentRight",
+            "indentLeftChars",
+            "indentStartChars",
+            "indentRightChars",
+            "indentEndChars",
             "firstLine",
             "hanging",
             "hangingChars",
@@ -2279,6 +2305,7 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             "frame",
         ],
     )?;
+    validate_character_indent_props(paragraph, path, "style paragraph ")?;
     validate_map_enum(
         paragraph,
         path,
@@ -2301,23 +2328,12 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
         &["auto", "baseline", "bottom", "center", "top"],
     )?;
     validate_style_paragraph_layout(paragraph, path)?;
-    for key in ["hangingChars", "firstLineChars"] {
-        if paragraph
-            .get(key)
-            .is_some_and(|value| value.as_i64().is_none())
-        {
-            return Err(validation(
-                path,
-                format!("style paragraph `{key}` must be an integer"),
-            ));
-        }
-    }
-    if (paragraph.contains_key("hanging") || paragraph.contains_key("hangingChars"))
-        && (paragraph.contains_key("firstLine") || paragraph.contains_key("firstLineChars"))
+    if paragraph.contains_key("indentLeftChars") && paragraph.contains_key("indentStartChars")
+        || paragraph.contains_key("indentRightChars") && paragraph.contains_key("indentEndChars")
     {
         return Err(validation(
             path,
-            "style paragraph `hanging`/`hangingChars` and `firstLine`/`firstLineChars` are mutually exclusive; choose only one indentation mode",
+            "style paragraph character indentation aliases are mutually exclusive; choose left or start and right or end",
         ));
     }
     if paragraph
@@ -2331,6 +2347,51 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
     }
     if let Some(frame) = paragraph.get("frame") {
         validate_style_frame(frame, path)?;
+    }
+    Ok(())
+}
+
+fn validate_character_indent_props(
+    props: &Map<String, Value>,
+    path: &str,
+    owner: &str,
+) -> Result<()> {
+    for key in [
+        "indentLeftChars",
+        "indentStartChars",
+        "indentRightChars",
+        "indentEndChars",
+        "firstLineChars",
+        "hangingChars",
+    ] {
+        if props.get(key).is_some_and(|value| value.as_i64().is_none()) {
+            return Err(validation(
+                path,
+                format!("{owner}`{key}` must be an integer"),
+            ));
+        }
+    }
+    if props.contains_key("indentLeftChars") && props.contains_key("indentStartChars")
+        || props.contains_key("indentRightChars") && props.contains_key("indentEndChars")
+    {
+        return Err(validation(
+            path,
+            format!(
+                "{owner}character indentation aliases are mutually exclusive; choose left or start and right or end"
+            ),
+        ));
+    }
+    if (props.contains_key("hanging") || props.contains_key("hangingChars"))
+        && (props.contains_key("firstLine") || props.contains_key("firstLineChars"))
+        || props.contains_key("hanging") && props.contains_key("hangingChars")
+        || props.contains_key("firstLine") && props.contains_key("firstLineChars")
+    {
+        return Err(validation(
+            path,
+            format!(
+                "{owner}`hanging`/`hangingChars` and `firstLine`/`firstLineChars` are mutually exclusive; choose only one indentation mode"
+            ),
+        ));
     }
     Ok(())
 }
@@ -3753,6 +3814,34 @@ fn validate_list_item_props(node: &Node, path: &str) -> Result<()> {
             "ListItem `style` must be a non-empty string",
         ));
     }
+    for key in [
+        "indentLeftChars",
+        "indentStartChars",
+        "indentRightChars",
+        "indentEndChars",
+        "firstLineChars",
+        "hangingChars",
+    ] {
+        if node
+            .props
+            .get(key)
+            .is_some_and(|value| value.as_i64().is_none())
+        {
+            return Err(validation(
+                path,
+                format!("ListItem `{key}` must be an integer"),
+            ));
+        }
+    }
+    if node.props.contains_key("indentLeftChars") && node.props.contains_key("indentStartChars")
+        || node.props.contains_key("indentRightChars") && node.props.contains_key("indentEndChars")
+        || (node.props.contains_key("hangingChars") && node.props.contains_key("firstLineChars"))
+    {
+        return Err(validation(
+            path,
+            "ListItem character indentation values are mutually exclusive by axis; choose one value for each axis",
+        ));
+    }
     Ok(())
 }
 
@@ -3970,7 +4059,7 @@ mod tests {
         let ir = parse(
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Header","props":{},"children":[{"type":"Paragraph","props":{},"children":["head"]}]},{"type":"Paragraph","props":{},"children":[{"type":"Hyperlink","props":{"href":"https://example.com"},"children":["link"]},{"type":"PageNumber","props":{},"children":[]}]},{"type":"List","props":{"type":"ordered","start":2},"children":[{"type":"ListItem","props":{"level":1},"children":["item"]}]}]}]}}"#,
         );
-        assert!(ir.validate().is_ok());
+        ir.validate().expect("fixture should validate");
     }
 
     #[test]
@@ -5121,6 +5210,26 @@ mod tests {
     }
 
     #[test]
+    fn validate_should_accept_paragraph_character_unit_indentation() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"indentLeftChars":-100,"indentRightChars":200,"firstLineChars":640},"children":["paragraph"]},{"type":"Heading","props":{"level":2,"indentStartChars":100,"indentEndChars":-20,"hangingChars":200},"children":["heading"]}] }]}}"#,
+        );
+        ir.validate()
+            .expect("valid character-unit indentation should pass validation");
+    }
+
+    #[test]
+    fn validate_should_reject_conflicting_paragraph_character_indentation() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"firstLine":12,"firstLineChars":120},"children":[]}] }]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("the same indentation mode cannot use both units");
+        assert!(error.to_string().contains("mutually exclusive"), "{error}");
+    }
+
+    #[test]
     fn validate_should_accept_custom_style_definitions() {
         let ir = parse(
             r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"keepNext":true,"keepLines":true,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
@@ -5152,6 +5261,10 @@ mod tests {
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"firstLine":1,"hangingChars":20}}]"#,
                 "mutually exclusive",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"indentLeftChars":2,"indentStartChars":3}}]"#,
+                "aliases are mutually exclusive",
             ),
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"keepNext":"yes"}}]"#,
