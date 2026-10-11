@@ -1230,6 +1230,7 @@ fn normalize_ooxml_element_order(bytes: Vec<u8>) -> Result<Vec<u8>> {
 }
 
 fn normalize_word_xml(xml: &mut String, name: &str) -> Result<()> {
+    remove_table_grid_column_type(xml);
     if name == "word/styles.xml" {
         remove_element_children(xml, "w:pPr", "w:rPr")?;
         remove_element_children(xml, "w:tblPr", "w:tblW")?;
@@ -1252,6 +1253,59 @@ fn normalize_word_xml(xml: &mut String, name: &str) -> Result<()> {
     reorder_element_children(xml, "w:sectPr", section_property_rank)?;
     reorder_element_children(xml, "w:style", style_child_rank)?;
     reorder_element_children(xml, "w:settings", settings_child_rank)
+}
+
+fn remove_table_grid_column_type(xml: &mut String) {
+    let element_prefix = "<w:gridCol";
+    let attribute_name = "w:type=";
+    let mut search_from = 0;
+    while let Some(relative_start) = xml[search_from..].find(element_prefix) {
+        let start = search_from + relative_start;
+        let after_element_name = start + element_prefix.len();
+        if xml
+            .as_bytes()
+            .get(after_element_name)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'>' && *byte != b'/')
+        {
+            search_from = after_element_name;
+            continue;
+        }
+        let Some(relative_end) = xml[start..].find('>') else {
+            break;
+        };
+        let end = start + relative_end + 1;
+        let tag = &xml[start..end];
+        let Some(type_attribute_start) = tag.find(attribute_name) else {
+            search_from = end;
+            continue;
+        };
+        let remove_start = tag[..type_attribute_start]
+            .char_indices()
+            .next_back()
+            .filter(|(_, ch)| ch.is_whitespace())
+            .map_or(type_attribute_start, |(index, _)| index);
+        let value_start = type_attribute_start + attribute_name.len();
+        let Some(quote) = tag.as_bytes().get(value_start).copied() else {
+            search_from = end;
+            continue;
+        };
+        if quote != b'\'' && quote != b'"' {
+            search_from = end;
+            continue;
+        }
+        let value_end = tag[value_start + 1..]
+            .find(char::from(quote))
+            .map(|relative| value_start + relative + 2);
+        let Some(value_end) = value_end else {
+            search_from = end;
+            continue;
+        };
+        let mut normalized = String::with_capacity(tag.len());
+        normalized.push_str(&tag[..remove_start]);
+        normalized.push_str(&tag[value_end..]);
+        xml.replace_range(start..end, &normalized);
+        search_from = start + normalized.len();
+    }
 }
 
 fn numbering_level_rank(fragment: &str) -> usize {
@@ -5028,6 +5082,20 @@ mod tests {
         assert_eq!(
             xml,
             r"<w:tcPr><w:tcW/><w:vMerge/><w:tcBorders/><w:shd/><w:tcMar/><w:vAlign/></w:tcPr>"
+        );
+    }
+
+    #[test]
+    fn normalize_should_remove_unsupported_table_grid_column_type() {
+        let mut xml =
+            r#"<w:tblGrid><w:gridCol w:w="4400" w:type="dxa" /><w:gridCol w:w="3200" /></w:tblGrid>"#.to_owned();
+
+        normalize_word_xml(&mut xml, "word/document.xml")
+            .expect("table grid columns should normalize");
+
+        assert_eq!(
+            xml,
+            r#"<w:tblGrid><w:gridCol w:w="4400" /><w:gridCol w:w="3200" /></w:tblGrid>"#
         );
     }
 

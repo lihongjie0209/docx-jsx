@@ -375,7 +375,13 @@ error instead of a silent drop.
   converting their placement to `positionH`/`positionV` or retaining the DOCX.
 - `Table`: `width?`, `widthPercent?`, `align?`, `layout?: "auto" | "fixed"`,
   `columnWidths?: number[]`, `border?: {style?,size?,color?}`. Point and percent
-  widths are mutually exclusive.
+  widths are mutually exclusive. `indent?`, four-edge `margins?`, `style?`,
+  and floating `position?: {leftFromText,rightFromText,verticalAnchor,
+  horizontalAnchor,xAlign,yAlign,x,y}` are also supported. Position distances
+  use points; anchors/alignment use OOXML string values. External reverse
+  restores table properties and grid column widths without the IR manifest;
+  unsupported width units, invalid grid values, and unrepresentable values fail
+  with repair guidance.
 - `TableRow`: optional `height` in points (`1 pt = 20 twips`),
   `heightRule?: "auto" | "atLeast" | "exact"`, and `cantSplit?: boolean`.
   The default height rule is supplied by Word when omitted. Height is converted

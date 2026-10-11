@@ -93,7 +93,7 @@ export default (
       >
         <ListItem>First numbered</ListItem>
       </List>
-      <Table style="ValidationTable" widthPercent={100} border={{ style: "single", size: 0.5, color: "808080" }}>
+      <Table style="ValidationTable" widthPercent={100} align="center" layout="fixed" columnWidths={[220, 220]} indent={2} margins={{ top: 1, right: 1, bottom: 1, left: 1 }} position={{ leftFromText: 2, rightFromText: 2, verticalAnchor: "text", horizontalAnchor: "margin", xAlign: "center", y: 0 }} border={{ style: "single", size: 0.5, color: "808080" }}>
         <TableRow height={30} heightRule="exact" cantSplit>
           <TableCell widthPercent={50} verticalAlign="center" margins={{ top: 2, right: 2, bottom: 2, left: 2 }} shading="D9EAF7"><Paragraph>Component</Paragraph></TableCell>
           <TableCell widthPercent={50}><Paragraph>Status</Paragraph></TableCell>

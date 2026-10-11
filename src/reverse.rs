@@ -63,6 +63,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
     let table_row_xml = collect_table_row_xml_metadata(bytes)?;
+    let table_xml = collect_table_xml_metadata(bytes)?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
         images.by_id.entry(id).or_insert(asset);
@@ -77,6 +78,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         numbering_instances: docx.numberings.numberings.clone(),
         section_columns,
         table_row_xml,
+        table_xml,
         ..Writer::default()
     };
     writer.components.insert("Document");
@@ -97,6 +99,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     writer.line(0, &format!("<Document{document_attrs}>"));
     writer.emit_sections(&docx)?;
     writer.validate_table_row_xml_consumed()?;
+    writer.validate_table_xml_consumed()?;
     writer.line(0, "</Document>");
 
     let imports = writer
@@ -228,11 +231,18 @@ struct Writer {
     section_columns: Vec<usize>,
     table_row_xml: HashMap<String, Vec<TableRowXmlMetadata>>,
     table_row_indices: HashMap<String, usize>,
+    table_xml: HashMap<String, Vec<TableXmlMetadata>>,
+    table_indices: HashMap<String, usize>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct TableRowXmlMetadata {
     cant_split: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TableXmlMetadata {
+    layout: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1064,11 +1074,9 @@ impl Writer {
     fn table(&mut self, table: &docx_rs::Table, depth: usize) -> Result<()> {
         self.components.insert("Table");
         let property = json(&table.property)?;
-        let style = property
-            .get("style")
-            .and_then(scalar_string)
-            .map_or_else(String::new, |value| attr("style", value));
-        self.line(depth, &format!("<Table{style}>"));
+        let metadata = self.next_table_xml_metadata()?;
+        let attrs = table_jsx_attrs(table, &property, &metadata)?;
+        self.line(depth, &format!("<Table{attrs}>"));
         for row in &table.rows {
             let TableChild::TableRow(row) = row;
             self.components.insert("TableRow");
@@ -1114,6 +1122,27 @@ impl Writer {
         Ok(metadata)
     }
 
+    fn next_table_xml_metadata(&mut self) -> Result<TableXmlMetadata> {
+        let part = self
+            .image_scope
+            .as_deref()
+            .unwrap_or("word/document.xml")
+            .to_owned();
+        let index = self.table_indices.entry(part.clone()).or_default();
+        let Some(metadata) = self
+            .table_xml
+            .get(&part)
+            .and_then(|tables| tables.get(*index))
+            .cloned()
+        else {
+            return Err(Error::Reverse(format!(
+                "docx-rs exposed a table that is missing from `{part}`; repair the table structure or retain the original DOCX"
+            )));
+        };
+        *index += 1;
+        Ok(metadata)
+    }
+
     fn validate_table_row_xml_consumed(&self) -> Result<()> {
         for (part, rows) in &self.table_row_xml {
             let consumed = self
@@ -1125,6 +1154,19 @@ impl Writer {
                 return Err(Error::Reverse(format!(
                     "`{part}` contains {} table rows but docx-rs exposed {consumed}; reverse would lose row structure, so repair the table XML or keep the original DOCX",
                     rows.len()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_table_xml_consumed(&self) -> Result<()> {
+        for (part, tables) in &self.table_xml {
+            let consumed = self.table_indices.get(part).copied().unwrap_or_default();
+            if consumed != tables.len() {
+                return Err(Error::Reverse(format!(
+                    "`{part}` contains {} tables but docx-rs exposed {consumed}; reverse would lose table structure, so repair the table XML or keep the original DOCX",
+                    tables.len()
                 )));
             }
         }
@@ -2290,6 +2332,161 @@ fn is_section_break_marker(child: &NestedBlock<'_>) -> bool {
         })
 }
 
+fn table_jsx_attrs(
+    table: &docx_rs::Table,
+    source: &Value,
+    metadata: &TableXmlMetadata,
+) -> Result<String> {
+    let mut attributes = String::new();
+    attributes.push_str(&table_width_jsx_attrs(source)?);
+    if let Some(value) = source
+        .get("justification")
+        .and_then(scalar_string)
+        .filter(|value| *value != "left")
+    {
+        attributes.push_str(&attr("align", value));
+    }
+    if let Some(value) = metadata
+        .layout
+        .as_deref()
+        .or_else(|| source.get("layout").and_then(Value::as_str))
+    {
+        let layout = match value {
+            "fixed" => "fixed",
+            "autofit" => "auto",
+            _ => {
+                return Err(Error::Reverse(format!(
+                    "Table layout `{value}` is unsupported; use fixed or autofit in the DOCX"
+                )));
+            }
+        };
+        attributes.push_str(&attr("layout", layout));
+    }
+    if !table.grid.is_empty() {
+        let widths = table
+            .grid
+            .iter()
+            .map(|width| {
+                let width = i64::try_from(*width).map_err(|_| {
+                    Error::Reverse("Table grid column width exceeds supported range".to_owned())
+                })?;
+                if width <= 0 {
+                    return Err(Error::Reverse(
+                        "Table grid contains a non-positive column width; set every `columnWidths` entry to a positive point value or repair `w:tblGrid`".to_owned(),
+                    ));
+                }
+                points_value(width)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        attributes.push_str(&jsx_prop("columnWidths", &Value::Array(widths))?);
+    }
+    if let Some(value) = source.get("style").and_then(scalar_string) {
+        attributes.push_str(&attr("style", value));
+    }
+    if let Some(value) = source.get("indent").filter(|value| !value.is_null()) {
+        let width_type = value
+            .get("widthType")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if width_type != "dxa" {
+            return Err(Error::Reverse(format!(
+                "Table indent uses `{width_type}`, which JSX cannot represent; convert it to dxa or remove the indent"
+            )));
+        }
+        let twips = value.get("width").and_then(Value::as_i64).ok_or_else(|| {
+            Error::Reverse("Table indent is malformed; repair `w:tblInd`".to_owned())
+        })?;
+        attributes.push_str(&jsx_prop("indent", &points_value(twips)?)?);
+    }
+    if let Some(value) = source.get("margins").filter(|value| !value.is_null()) {
+        attributes.push_str(&jsx_prop("margins", &table_cell_margins_jsx(value)?)?);
+    }
+    if let Some(value) = source.get("borders").filter(|value| !value.is_null()) {
+        attributes.push_str(&jsx_prop("border", &table_cell_border_jsx(value)?)?);
+    }
+    if let Some(value) = source.get("position").filter(|value| !value.is_null()) {
+        attributes.push_str(&jsx_prop("position", &table_position_jsx(value)?)?);
+    }
+    Ok(attributes)
+}
+
+fn table_width_jsx_attrs(source: &Value) -> Result<String> {
+    let mut attributes = String::new();
+    if let Some(value) = source.get("width").filter(|value| !value.is_null()) {
+        let width = value.get("width").and_then(Value::as_u64).ok_or_else(|| {
+            Error::Reverse("Table width is malformed; repair `w:tblW`".to_owned())
+        })?;
+        let width_type = value
+            .get("widthType")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Reverse("Table width unit is missing".to_owned()))?;
+        match width_type {
+            "dxa" => {
+                let twips = i64::try_from(width).map_err(|_| {
+                    Error::Reverse("Table width exceeds supported range".to_owned())
+                })?;
+                attributes.push_str(&jsx_prop("width", &points_value(twips)?)?);
+            }
+            "pct" if width <= 5_000 => {
+                attributes.push_str(&jsx_prop(
+                    "widthPercent",
+                    &Value::Number(percent_value(width)?),
+                )?);
+            }
+            "pct" => {
+                return Err(Error::Reverse(format!(
+                    "Table percentage width `{width}` exceeds JSX's 100 percent limit; reduce the width or retain the DOCX"
+                )));
+            }
+            "auto" => {}
+            _ => {
+                return Err(Error::Reverse(format!(
+                    "Table width uses `{width_type}`, which JSX cannot represent; convert it to dxa, pct, or auto"
+                )));
+            }
+        }
+    }
+    Ok(attributes)
+}
+
+fn percent_value(fiftieths: u64) -> Result<Number> {
+    if fiftieths.is_multiple_of(50) {
+        return Ok(Number::from(fiftieths / 50));
+    }
+    Number::from_f64(
+        f64::from(
+            u32::try_from(fiftieths)
+                .map_err(|_| Error::Reverse("percentage value is out of range".to_owned()))?,
+        ) / 50.0,
+    )
+    .ok_or_else(|| Error::Reverse("percentage value is out of range".to_owned()))
+}
+
+fn table_position_jsx(source: &Value) -> Result<Value> {
+    let mut output = Map::new();
+    for (source_key, target_key) in [
+        ("leftFromText", "leftFromText"),
+        ("rightFromText", "rightFromText"),
+        ("positionX", "x"),
+        ("positionY", "y"),
+    ] {
+        if let Some(value) = source.get(source_key).and_then(Value::as_i64) {
+            output.insert(target_key.to_owned(), points_value(value)?);
+        }
+    }
+    for (source_key, target_key) in [
+        ("verticalAnchor", "verticalAnchor"),
+        ("horizontalAnchor", "horizontalAnchor"),
+        ("positionXAlignment", "xAlign"),
+        ("positionYAlignment", "yAlign"),
+    ] {
+        if let Some(value) = source.get(source_key).and_then(Value::as_str) {
+            output.insert(target_key.to_owned(), Value::String(value.to_owned()));
+        }
+    }
+    Ok(Value::Object(output))
+}
+
 #[allow(clippy::too_many_lines)]
 fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
     let source = json(&cell.property)?;
@@ -2659,6 +2856,56 @@ fn collect_table_row_xml_metadata(
             buffer.clear();
         }
         result.insert(part, rows);
+    }
+    Ok(result)
+}
+
+fn collect_table_xml_metadata(bytes: &[u8]) -> Result<HashMap<String, Vec<TableXmlMetadata>>> {
+    let mut result = HashMap::new();
+    for part in zip_entry_names(bytes)?.into_iter().filter(|name| {
+        name == "word/document.xml"
+            || (name.starts_with("word/header") || name.starts_with("word/footer"))
+                && Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                && !name.contains("/_rels/")
+    }) {
+        let xml = read_zip_text(bytes, &part)?;
+        let mut reader = Reader::from_str(&xml);
+        let mut buffer = Vec::new();
+        let mut tables = Vec::<TableXmlMetadata>::new();
+        let mut active_tables = Vec::<usize>::new();
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(element)) if element.local_name().as_ref() == b"tbl" => {
+                    tables.push(TableXmlMetadata::default());
+                    active_tables.push(tables.len() - 1);
+                }
+                Ok(Event::Empty(element)) if element.local_name().as_ref() == b"tbl" => {
+                    tables.push(TableXmlMetadata::default());
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"tblLayout" =>
+                {
+                    if let Some(index) = active_tables.last().copied() {
+                        tables[index].layout = xml_attribute(&reader, &element, b"type")?;
+                    }
+                }
+                Ok(Event::End(element)) if element.local_name().as_ref() == b"tbl" => {
+                    active_tables.pop();
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "cannot parse {part} table properties at byte {}: {error}",
+                        reader.error_position()
+                    )));
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+        result.insert(part, tables);
     }
     Ok(result)
 }
@@ -4854,9 +5101,11 @@ mod tests {
         Level, LevelJc, LevelSuffixType, LevelText, LineSpacing, LineSpacingType, NumberFormat,
         Numbering, NumberingId, PageMargin, PageOrientationType, PageSize, Paragraph, Pic, Run,
         RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag,
-        Style, StyleType, Table, TableAlignmentType, TableCell, TableCellBorder,
-        TableCellBorderPosition, TableCellBorders, TableCellProperty, TableOfContents, TableRow,
-        TextDirectionType, ThemeColor, VAlignType, VMergeType, WidthType,
+        Style, StyleType, Table, TableAlignmentType, TableBorder, TableBorderPosition,
+        TableBorders, TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders,
+        TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents,
+        TablePositionProperty, TableRow, TextDirectionType, ThemeColor, VAlignType, VMergeType,
+        WidthType,
     };
     use std::io::Write;
 
@@ -5082,7 +5331,10 @@ mod tests {
 
         let jsx = reverse_document(&bytes.into_inner()).expect("external DOCX should reverse");
 
-        assert!(jsx.contains(r#"<Table style="Grid">"#), "{jsx}");
+        assert!(
+            jsx.contains(r#"<Table style="Grid" border={{"top":{"style":"single""#),
+            "table style reference and explicit table borders must reverse: {jsx}"
+        );
     }
 
     #[test]
@@ -5118,6 +5370,66 @@ mod tests {
                 && jsx.contains(r#"shading="D9EAF7""#)
                 && jsx.contains(r#"border={{"top":{"style":"double","size":1,"color":"112233"}}}"#),
             "cell properties must survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_table_properties() {
+        let table = Table::new(vec![])
+            .width(2400, WidthType::Dxa)
+            .align(TableAlignmentType::Center)
+            .layout(TableLayoutType::Fixed)
+            .indent(120)
+            .set_grid(vec![1200, 1200])
+            .margins(
+                TableCellMargins::new()
+                    .margin_top(20, WidthType::Dxa)
+                    .margin_right(40, WidthType::Dxa)
+                    .margin_bottom(60, WidthType::Dxa)
+                    .margin_left(80, WidthType::Dxa),
+            )
+            .set_borders(
+                TableBorders::with_empty().set(
+                    TableBorder::new(TableBorderPosition::Top)
+                        .border_type(BorderType::Double)
+                        .size(8)
+                        .color("112233"),
+                ),
+            )
+            .position(
+                TablePositionProperty::new()
+                    .left_from_text(40)
+                    .right_from_text(60)
+                    .vertical_anchor("text")
+                    .horizontal_anchor("margin")
+                    .position_x_alignment("center")
+                    .position_y(80),
+            );
+        let bytes = pack_docx(Docx::new().add_table(table));
+
+        let jsx = reverse_document(&bytes).expect("external table should reverse");
+
+        assert!(
+            jsx.contains(r#"<Table width={120} align="center" layout="fixed" columnWidths={[60,60]}"#)
+                && jsx.contains(r#"position={{"leftFromText":2,"rightFromText":3,"y":4,"verticalAnchor":"text","horizontalAnchor":"margin","xAlign":"center"}}"#)
+                && jsx.contains(r#"margins={{"top":1,"right":2,"bottom":3,"left":4}}"#)
+                && jsx.contains(r#""top":{"style":"double","size":1,"color":"112233"}"#),
+            "table properties must survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_percent_table_width_and_autofit_layout() {
+        let table = Table::new(vec![])
+            .width(2500, WidthType::Pct)
+            .layout(TableLayoutType::Autofit);
+        let bytes = pack_docx(Docx::new().add_table(table));
+
+        let jsx = reverse_document(&bytes).expect("external table should reverse");
+
+        assert!(
+            jsx.contains(r#"<Table widthPercent={50} layout="auto""#),
+            "percentage width and autofit layout must survive reverse: {jsx}"
         );
     }
 
