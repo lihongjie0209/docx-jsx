@@ -253,6 +253,7 @@ struct Writer {
 #[derive(Clone, Debug, Default)]
 struct ParagraphIndentMetadata {
     values: BTreeMap<String, i64>,
+    suppress_line_numbers: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -577,11 +578,18 @@ impl Writer {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "paragraph properties are emitted together to keep raw OOXML fallbacks aligned"
+    )]
     fn paragraph(&mut self, paragraph: &docx_rs::Paragraph, depth: usize) -> Result<()> {
         self.components.insert("Paragraph");
         let raw_indent = self.next_paragraph_indent_metadata()?;
         let property = json(&paragraph.property)?;
         let mut attrs = Vec::new();
+        if let Some(value) = raw_indent.suppress_line_numbers {
+            attrs.push(jsx_prop("suppressLineNumbers", &Value::Bool(value))?);
+        }
         if let Some(value) = property.get("alignment").and_then(scalar_string) {
             attrs.push(attr("align", value));
         }
@@ -1495,6 +1503,9 @@ impl Writer {
         let raw_indent = self.next_paragraph_indent_metadata()?;
         let property = json(&paragraph.property)?;
         let mut attrs = String::new();
+        if let Some(value) = raw_indent.suppress_line_numbers {
+            attrs.push_str(&jsx_prop("suppressLineNumbers", &Value::Bool(value))?);
+        }
         if let Some(level) =
             nested(&property, &["numberingProperty", "level"]).and_then(Value::as_u64)
             && level > 0
@@ -3081,6 +3092,14 @@ fn validate_character_indent_xml(bytes: &[u8]) -> Result<()> {
                         }
                     }
                 }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"suppressLineNumbers"
+                        && part == "word/styles.xml" =>
+                {
+                    return Err(Error::Reverse(
+                        "word/styles.xml contains style-level `w:suppressLineNumbers`, which the JSX style schema cannot preserve; move the property to each affected Paragraph, Heading, or ListItem, or extend style paragraph-property support before reversing".to_owned(),
+                    ));
+                }
                 Ok(Event::Eof) => break,
                 Err(error) => {
                     return Err(Error::Reverse(format!(
@@ -3096,6 +3115,10 @@ fn validate_character_indent_xml(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "raw paragraph properties are parsed in one ordered XML pass"
+)]
 fn collect_paragraph_indent_metadata(
     bytes: &[u8],
 ) -> Result<HashMap<String, Vec<ParagraphIndentMetadata>>> {
@@ -3170,6 +3193,39 @@ fn collect_paragraph_indent_metadata(
                                     String::from_utf8_lossy(local_name.as_ref())
                                 )));
                             }
+                        }
+                    }
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"suppressLineNumbers" =>
+                {
+                    if let Some(index) = active_paragraphs.last().copied() {
+                        for attribute in element.attributes() {
+                            let attribute = attribute.map_err(|error| {
+                                Error::Reverse(format!(
+                                    "invalid w:suppressLineNumbers attribute in {part}: {error}"
+                                ))
+                            })?;
+                            if attribute.key.local_name().as_ref() != b"val" {
+                                return Err(Error::Reverse(format!(
+                                    "{part} has unsupported attribute `{}` on w:suppressLineNumbers; remove it or extend the line-number suppression spec",
+                                    String::from_utf8_lossy(attribute.key.local_name().as_ref())
+                                )));
+                            }
+                        }
+                        let value = xml_attribute(&reader, &element, b"val")?
+                            .as_deref()
+                            .map(parse_on_off)
+                            .transpose()?
+                            .unwrap_or(true);
+                        if paragraphs[index]
+                            .suppress_line_numbers
+                            .replace(value)
+                            .is_some()
+                        {
+                            return Err(Error::Reverse(format!(
+                                "{part} contains duplicate w:suppressLineNumbers elements in one paragraph"
+                            )));
                         }
                     }
                 }
@@ -5152,6 +5208,16 @@ fn scalar_i64(value: &Value) -> Option<i64> {
         })
 }
 
+fn parse_on_off(value: &str) -> Result<bool> {
+    match value {
+        "1" | "true" | "on" => Ok(true),
+        "0" | "false" | "off" => Ok(false),
+        _ => Err(Error::Reverse(format!(
+            "invalid on/off value `{value}` for w:suppressLineNumbers; use true, false, 1, 0, on, or off"
+        ))),
+    }
+}
+
 fn reverse_style_definition(
     style: &docx_rs::Style,
     metadata: Option<&StyleMetadata>,
@@ -7093,6 +7159,73 @@ mod tests {
                 r#"lineNumbering={{countBy:5,start:3,distance:18.05,restart:"newSection"}}"#
             ),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_paragraph_line_number_suppression_without_manifest() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"lineNumbering":{}},"children":[{"type":"Paragraph","props":{"suppressLineNumbers":true},"children":["excluded"]},{"type":"Paragraph","props":{"suppressLineNumbers":false},"children":["included"]},{"type":"List","props":{"type":"ordered"},"children":[{"type":"ListItem","props":{"suppressLineNumbers":true},"children":["list item"]}]}]}]}}"#,
+        ).expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("valid document should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(jsx.contains("suppressLineNumbers={true}"), "{jsx}");
+        assert!(jsx.contains("suppressLineNumbers={false}"), "{jsx}");
+        assert!(
+            jsx.contains("<ListItem suppressLineNumbers={true}>"),
+            "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_explain_invalid_line_number_suppression_value() {
+        let bytes =
+            external_docx(Paragraph::new().add_run(Run::new().add_text("malformed suppression")));
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        document = document.replace(
+            "<w:pPr><w:rPr /></w:pPr>",
+            r#"<w:pPr><w:suppressLineNumbers w:val="maybe" /><w:rPr /></w:pPr>"#,
+        );
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let error = reverse_document(&external).expect_err("invalid on/off must be rejected");
+        assert!(
+            error.to_string().contains("invalid on/off value")
+                && error.to_string().contains("use true, false"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unrepresented_style_line_number_suppression() {
+        let bytes =
+            external_docx(Paragraph::new().add_run(Run::new().add_text("style suppression")));
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part")
+            .read_to_string(&mut styles)
+            .expect("styles XML");
+        let insertion = styles
+            .find("</w:style>")
+            .expect("at least one style should exist");
+        styles.insert_str(insertion, "<w:pPr><w:suppressLineNumbers /></w:pPr>");
+        let external = rewrite_package_parts(&bytes, &[("word/styles.xml", styles.as_bytes())]);
+        let error = reverse_document(&external).expect_err("style-level behavior must not drop");
+        assert!(
+            error
+                .to_string()
+                .contains("style-level `w:suppressLineNumbers`")
+                && error.to_string().contains("move the property"),
+            "{error}"
         );
     }
 

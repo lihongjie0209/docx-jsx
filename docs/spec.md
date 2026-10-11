@@ -300,6 +300,11 @@ error instead of a silent drop.
   line-spacing controls. The `*Lines` values are non-negative integers in
   OOXML hundredths-of-a-line units and may be combined with point spacing.
 - `Paragraph`: also accepts `snapToGrid?`, `widowControl?`, `bidi?`,
+  `suppressLineNumbers?: boolean` suppresses active section line numbers for this
+  paragraph; it is independent of section `lineNumbering` and preserves explicit
+  `false` when reversing external DOCX. It is supported on `Paragraph`, `Heading`,
+  and `ListItem`. Style-level `suppressLineNumbers` is not in the style DSL; reverse
+  reports an actionable error rather than flattening inherited style behavior.
   `textAlign?: "auto" | "baseline" | "bottom" | "center" | "top"`, signed
   integer `adjustRightIndent?`, six-digit RGB `shading?`, and integer
   `outlineLevel?: 0..9`. `frame?` has the same shape, units, enumerations, and

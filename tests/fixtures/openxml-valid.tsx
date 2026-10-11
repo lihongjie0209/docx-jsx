@@ -66,6 +66,12 @@ export default (
       <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.
       </Paragraph>
+      <Paragraph suppressLineNumbers>
+        This paragraph is excluded from section line numbering.
+      </Paragraph>
+      <Paragraph suppressLineNumbers={false}>
+        This paragraph explicitly keeps section line numbering.
+      </Paragraph>
       <Paragraph fonts={{ ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC" }}>
         <Run style="BodyChar" fonts={{ asciiTheme: "minorHAnsi", eastAsiaTheme: "minorEastAsia", hint: "eastAsia" }}>Linked character style</Run>
       </Paragraph>
@@ -103,7 +109,7 @@ export default (
           definition: { format: "lowerLetter", text: "%1)" },
         }]}
       >
-        <ListItem indentStartChars={120} indentEndChars={80} hangingChars={20}>First numbered</ListItem>
+        <ListItem indentStartChars={120} indentEndChars={80} hangingChars={20} suppressLineNumbers>First numbered</ListItem>
       </List>
       <Table style="ValidationTable" widthPercent={100} align="center" layout="fixed" columnWidths={[220, 220]} indent={2} margins={{ top: 1, right: 1, bottom: 1, left: 1 }} position={{ leftFromText: 2, rightFromText: 2, verticalAnchor: "text", horizontalAnchor: "margin", xAlign: "center", y: 0 }} border={{ style: "single", size: 0.5, color: "808080" }}>
         <TableRow height={30} heightRule="exact" cantSplit gridBefore={1} gridAfter={1} widthBefore={12} widthAfter={12}>

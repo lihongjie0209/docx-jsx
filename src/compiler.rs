@@ -36,10 +36,17 @@ struct CompileContext {
     next_bookmark_id: usize,
     next_comment_id: usize,
     numberings: Vec<(AbstractNumbering, Numbering)>,
-    character_indent_patches: Vec<(String, BTreeMap<String, i64>, bool)>,
+    character_indent_patches: Vec<ParagraphPropertyPatch>,
     numbering_style_links: Vec<(usize, Option<String>, Option<String>)>,
     used_paragraph_ids: BTreeSet<String>,
     next_generated_paragraph_id: u32,
+}
+
+struct ParagraphPropertyPatch {
+    paragraph_id: String,
+    indentation: BTreeMap<String, i64>,
+    temporary_id: bool,
+    suppress_line_numbers: Option<bool>,
 }
 
 impl Default for CompileContext {
@@ -212,7 +219,7 @@ fn compile_section_into_docx(
 fn package_document(
     docx: Docx,
     ir: &IrEnvelope,
-    paragraph_character_indents: &[(String, BTreeMap<String, i64>, bool)],
+    paragraph_character_indents: &[ParagraphPropertyPatch],
     numbering_style_links: &[(usize, Option<String>, Option<String>)],
 ) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
@@ -335,7 +342,12 @@ fn register_paragraph_character_indentation(
     context: &mut CompileContext,
 ) -> (Paragraph, bool) {
     let attributes = paragraph_character_indent_attributes(&node.props);
-    if attributes.is_empty() {
+    let has_character_indents = !attributes.is_empty();
+    let suppress_line_numbers = node
+        .props
+        .get("suppressLineNumbers")
+        .and_then(Value::as_bool);
+    if attributes.is_empty() && suppress_line_numbers.is_none() {
         return (paragraph, false);
     }
     let (id, is_temporary) = if let Some(id) = node.props.get("paragraphId").and_then(Value::as_str)
@@ -354,13 +366,18 @@ fn register_paragraph_character_indentation(
     paragraph = paragraph.id(id.clone());
     context
         .character_indent_patches
-        .push((id, attributes, is_temporary));
-    (paragraph, true)
+        .push(ParagraphPropertyPatch {
+            paragraph_id: id,
+            indentation: attributes,
+            temporary_id: is_temporary,
+            suppress_line_numbers,
+        });
+    (paragraph, has_character_indents)
 }
 
 fn patch_paragraph_character_indentation(
     bytes: Vec<u8>,
-    patches: &[(String, BTreeMap<String, i64>, bool)],
+    patches: &[ParagraphPropertyPatch],
 ) -> Result<Vec<u8>> {
     if patches.is_empty() {
         return Ok(bytes);
@@ -391,9 +408,15 @@ fn patch_paragraph_character_indentation(
             .read_to_string(&mut xml)
             .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
         let mut changed = false;
-        for (id, attributes, temporary) in patches {
-            if patch_paragraph_indentation_xml(&mut xml, id, attributes, *temporary)? {
-                matched.insert(id.as_str());
+        for patch in patches {
+            if patch_paragraph_indentation_xml(
+                &mut xml,
+                &patch.paragraph_id,
+                &patch.indentation,
+                patch.temporary_id,
+                patch.suppress_line_numbers,
+            )? {
+                matched.insert(patch.paragraph_id.as_str());
                 changed = true;
             }
         }
@@ -401,10 +424,11 @@ fn patch_paragraph_character_indentation(
             replacements.push((name, xml));
         }
     }
-    for (id, _, _) in patches {
-        if !matched.contains(id.as_str()) {
+    for patch in patches {
+        if !matched.contains(patch.paragraph_id.as_str()) {
             return Err(Error::Compile(format!(
-                "docx-rs omitted the paragraph marker for character indentation `{id}`"
+                "docx-rs omitted the paragraph marker for paragraph properties `{}`",
+                patch.paragraph_id
             )));
         }
     }
@@ -440,6 +464,7 @@ fn patch_paragraph_indentation_xml(
     id: &str,
     attributes: &BTreeMap<String, i64>,
     temporary_id: bool,
+    suppress_line_numbers: Option<bool>,
 ) -> Result<bool> {
     let marker = format!(r#"w14:paraId="{id}""#);
     let Some(marker_start) = xml.find(&marker) else {
@@ -460,6 +485,15 @@ fn patch_paragraph_indentation_xml(
     for (name, value) in attributes {
         write!(attrs, " w:{name}=\"{value}\"").expect("String write");
     }
+    let suppress_xml = suppress_line_numbers
+        .map(|value| {
+            if value {
+                "<w:suppressLineNumbers />"
+            } else {
+                "<w:suppressLineNumbers w:val=\"0\" />"
+            }
+        })
+        .unwrap_or_default();
     let paragraph = &xml[paragraph_start..paragraph_end];
     if let Some(ppr_relative) = paragraph.find("<w:pPr") {
         let ppr_start = paragraph_start + ppr_relative;
@@ -473,9 +507,14 @@ fn patch_paragraph_indentation_xml(
         };
         let ppr_is_empty = xml[ppr_start..ppr_open_end].ends_with("/>");
         if ppr_is_empty {
+            let indentation = if attrs.is_empty() {
+                String::new()
+            } else {
+                format!("<w:ind{attrs} />")
+            };
             xml.replace_range(
                 ppr_start..ppr_open_end,
-                &format!("<w:pPr><w:ind{attrs} /></w:pPr>"),
+                &format!("<w:pPr>{indentation}{suppress_xml}</w:pPr>"),
             );
         } else if let Some(ind_relative) = xml[ppr_open_end..paragraph_end].find("<w:ind") {
             let ind_start = ppr_open_end + ind_relative;
@@ -487,15 +526,30 @@ fn patch_paragraph_indentation_xml(
                 ind_end -= 1;
             }
             xml.insert_str(ind_end, &attrs);
+            if !suppress_xml.is_empty() {
+                let ppr_end = xml[ppr_open_end..paragraph_end]
+                    .find("</w:pPr>")
+                    .map(|at| ppr_open_end + at)
+                    .ok_or_else(|| Error::Compile(format!("invalid w:pPr for paragraph `{id}`")))?;
+                xml.insert_str(ppr_end, suppress_xml);
+            }
         } else {
             let ppr_end = xml[ppr_open_end..paragraph_end]
                 .find("</w:pPr>")
                 .map(|at| ppr_open_end + at)
                 .ok_or_else(|| Error::Compile(format!("invalid w:pPr for paragraph `{id}`")))?;
-            xml.insert_str(ppr_end, &format!("<w:ind{attrs} />"));
+            xml.insert_str(ppr_end, &format!("<w:ind{attrs} />{suppress_xml}"));
         }
     } else {
-        xml.insert_str(start_tag_end, &format!("<w:pPr><w:ind{attrs} /></w:pPr>"));
+        let indentation = if attrs.is_empty() {
+            String::new()
+        } else {
+            format!("<w:ind{attrs} />")
+        };
+        xml.insert_str(
+            start_tag_end,
+            &format!("<w:pPr>{indentation}{suppress_xml}</w:pPr>"),
+        );
     }
     if temporary_id {
         let marker_with_space = format!(" {marker}");
@@ -6454,6 +6508,27 @@ mod tests {
             .read_to_string(&mut document)
             .expect("UTF-8");
         assert!(document.contains(r#"<w:lnNumType w:countBy="5" w:start="3" w:distance="360" w:restart="newSection" />"#), "{document}");
+    }
+
+    #[test]
+    fn compile_should_render_paragraph_line_number_suppression() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"lineNumbering":{}},"children":[{"type":"Paragraph","props":{"suppressLineNumbers":true},"children":["body"]},{"type":"Paragraph","props":{"suppressLineNumbers":false},"children":["numbered"]}]}]}}"#,
+        ).expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        assert!(document.contains("<w:suppressLineNumbers />"), "{document}");
+        assert!(
+            document.contains("<w:suppressLineNumbers w:val=\"0\" />"),
+            "{document}"
+        );
     }
 
     #[test]

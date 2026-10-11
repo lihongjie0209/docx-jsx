@@ -937,6 +937,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::ListItem => &[
             "level",
             "style",
+            "suppressLineNumbers",
             "indentLeftChars",
             "indentStartChars",
             "indentRightChars",
@@ -1109,6 +1110,7 @@ fn paragraph_props() -> &'static [&'static str] {
         "pageBreakBefore",
         "snapToGrid",
         "widowControl",
+        "suppressLineNumbers",
         "font",
         "fonts",
         "size",
@@ -1156,6 +1158,7 @@ fn heading_props() -> &'static [&'static str] {
         "pageBreakBefore",
         "snapToGrid",
         "widowControl",
+        "suppressLineNumbers",
         "font",
         "fonts",
         "size",
@@ -1513,6 +1516,7 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
             "pageBreakBefore",
             "snapToGrid",
             "widowControl",
+            "suppressLineNumbers",
             "bold",
             "italic",
             "bidi",
@@ -3954,6 +3958,13 @@ fn validate_list_item_props(node: &Node, path: &str) -> Result<()> {
     if node.kind != NodeKind::ListItem {
         return Ok(());
     }
+    if node
+        .props
+        .get("suppressLineNumbers")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(validation(path, "`suppressLineNumbers` must be a boolean"));
+    }
     if let Some(value) = node.props.get("level")
         && value.as_u64().is_none_or(|level| level > 8)
     {
@@ -4504,6 +4515,24 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"snapToGrid":false,"widowControl":true,"font":"Noto Sans CJK SC","size":12,"bold":true,"italic":false,"color":"1a2B3c","characterSpacing":0.5},"children":["body"]},{"type":"Heading","props":{"level":2,"font":"Noto Sans CJK SC","size":16},"children":["title"]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_suppress_line_numbers_on_paragraph_and_list_item() {
+        let input = r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"suppressLineNumbers":true},"children":["body"]},{"type":"List","props":{},"children":[{"type":"ListItem","props":{"suppressLineNumbers":false},"children":["item"]}]}]}]}}"#;
+        let ir = parse(input);
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_non_boolean_suppress_line_numbers() {
+        let input = r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"suppressLineNumbers":"yes"},"children":[]}]}]}}"#;
+        let error = parse(input).validate().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("suppressLineNumbers` must be a boolean")
+        );
     }
 
     #[test]
