@@ -201,7 +201,11 @@ error instead of a silent drop.
   item requires non-empty `id`, `referenceId`, `version`, `store`, and
   `storeType`; optional `properties` is a string map. Extension IDs must be
   unique. Supplying the array creates the task-pane part and one relationship
-  and `webextensionN.xml` part per item.
+  and `webextensionN.xml` part per item. External reverse reads the task-pane
+  catalog and its relationships without the IR manifest, retaining extension
+  IDs, metadata, and string properties. Missing or ambiguous relationships,
+  malformed entries, and non-string properties are errors rather than silently
+  dropping extensions.
   `customXmlItems?: {id:string,xml:string}[]` embeds parsed XML data-store
   items. IDs must be non-empty and unique, XML must be well-formed, and both
   arrays must be non-empty when present. The compiler emits item, properties,

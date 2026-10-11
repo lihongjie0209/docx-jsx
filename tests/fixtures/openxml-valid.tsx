@@ -30,6 +30,23 @@ export default (
     defaultLineSpacing={{ after: 6, line: 14, lineRule: "atLeast" }}
     customProperties={{ Generator: "docx-jsx" }}
     documentVariables={{ ValidationFixture: "true" }}
+    webExtensions={[
+      {
+        id: "7f33b723-fb58-4524-8733-dbedc4b7c095",
+        referenceId: "docx-jsx-validation",
+        version: "1.0.0.0",
+        store: "developer",
+        storeType: "Registry",
+        properties: { mode: "validation" },
+      },
+      {
+        id: "11111111-2222-3333-4444-555555555555",
+        referenceId: "docx-jsx-secondary",
+        version: "1.0.0.0",
+        store: "OMEX",
+        storeType: "Marketplace",
+      },
+    ]}
     customXmlItems={[
       {
         id: "06AC5857-5C65-A94A-BCEC-37356A209BC3",

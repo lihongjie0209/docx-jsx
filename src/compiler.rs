@@ -198,7 +198,14 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     docx.pack(&mut cursor)
         .map_err(|error| Error::Compile(error.to_string()))?;
-    let bytes = patch_external_hyperlink_relationships(cursor.into_inner(), &ir.document)?;
+    let extension_count = ir
+        .document
+        .props
+        .get("webExtensions")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let bytes = patch_taskpane_references(cursor.into_inner(), extension_count)?;
+    let bytes = patch_external_hyperlink_relationships(bytes, &ir.document)?;
     let custom_xml_count = ir
         .document
         .props
@@ -211,6 +218,55 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     embed_ir_manifest(bytes, ir)
+}
+
+fn patch_taskpane_references(bytes: Vec<u8>, extension_count: usize) -> Result<Vec<u8>> {
+    if extension_count <= 1 {
+        return Ok(bytes);
+    }
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut taskpanes = String::new();
+    source
+        .by_name("word/webextensions/taskpanes.xml")
+        .map_err(|error| Error::Compile(format!("missing task-pane catalog: {error}")))?
+        .read_to_string(&mut taskpanes)
+        .map_err(|error| Error::Compile(format!("cannot read task-pane catalog: {error}")))?;
+    let closing = "</wetp:taskpanes>";
+    let end = taskpanes
+        .rfind(closing)
+        .ok_or_else(|| Error::Compile("invalid task-pane catalog XML".to_owned()))?;
+    let mut additional = String::new();
+    for index in 2..=extension_count {
+        write!(additional, r#"<wetp:taskpane dockstate="" visibility="1" width="350" row="1"><wetp:webextensionref xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId{index}" /></wetp:taskpane>"#)
+            .expect("writing to String cannot fail");
+    }
+    taskpanes.insert_str(end, &additional);
+
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..source.len() {
+        let file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        if file.name() == "word/webextensions/taskpanes.xml" {
+            let options = file.options();
+            writer.start_file(file.name(), options).map_err(|error| {
+                Error::Compile(format!("cannot write task-pane catalog: {error}"))
+            })?;
+            writer.write_all(taskpanes.as_bytes()).map_err(|error| {
+                Error::Compile(format!("cannot write task-pane catalog: {error}"))
+            })?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
 }
 
 fn compile_package_parts(mut docx: Docx, props: &Map<String, Value>) -> Result<Docx> {
@@ -5072,6 +5128,8 @@ mod tests {
         };
         let extension = read("word/webextensions/webextension1.xml");
         assert!(extension.contains("office-addin") && extension.contains("name=\"mode\""));
+        let taskpanes = read("word/webextensions/taskpanes.xml");
+        assert!(taskpanes.contains(r#"r:id="rId1""#) && taskpanes.contains(r#"r:id="rId2""#));
         assert!(read("customXml/item1.xml").contains("<name>Ada</name>"));
         assert!(read("customXml/item2.xml").contains("id=\"42\""));
         let content_types = read("[Content_Types].xml");

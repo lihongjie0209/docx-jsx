@@ -2905,6 +2905,9 @@ fn reverse_document_attributes(
     if let Some(items) = collect_custom_xml_items(bytes)? {
         attributes.push_str(&jsx_prop("customXmlItems", &items)?);
     }
+    if let Some(extensions) = collect_web_extensions(bytes)? {
+        attributes.push_str(&jsx_prop("webExtensions", &extensions)?);
+    }
     attributes.push_str(&reverse_styles_attribute(docx, metadata, writer)?);
     Ok(attributes)
 }
@@ -3242,6 +3245,264 @@ fn collect_custom_xml_items(bytes: &[u8]) -> Result<Option<Value>> {
         )));
     }
     Ok(Some(Value::Array(items)))
+}
+
+fn collect_web_extensions(bytes: &[u8]) -> Result<Option<Value>> {
+    const TASKPANES: &str = "word/webextensions/taskpanes.xml";
+    const RELS: &str = "word/webextensions/_rels/taskpanes.xml.rels";
+    let names = zip_entry_names(bytes)?;
+    if !names.iter().any(|name| name == TASKPANES) {
+        if names
+            .iter()
+            .any(|name| name.starts_with("word/webextensions/"))
+        {
+            return Err(Error::Reverse(format!(
+                "web extension package parts exist without `{TASKPANES}`; restore the task-pane catalog or remove the orphan parts"
+            )));
+        }
+        return Ok(None);
+    }
+    let refs = parse_taskpane_refs(&read_zip_text(bytes, TASKPANES)?)?;
+    let rels_xml = read_zip_text(bytes, RELS).map_err(|_| {
+        Error::Reverse(format!(
+            "task-pane catalog has no `{RELS}` relationship part; restore the web-extension relationships or remove the task-pane catalog"
+        ))
+    })?;
+    let relationships = parse_taskpane_relationships(&rels_xml)?;
+    if refs.is_empty() {
+        return Err(Error::Reverse(
+            "task-pane catalog contains no web extension references; add a `wetp:webextensionref` or remove the empty task-pane part".to_owned(),
+        ));
+    }
+    let mut used_targets = BTreeSet::new();
+    let mut extensions = Vec::with_capacity(refs.len());
+    for id in &refs {
+        let target = relationships.get(id).ok_or_else(|| {
+            Error::Reverse(format!(
+                "task-pane reference `{id}` has no web-extension relationship; restore its relationship in `{RELS}`"
+            ))
+        })?;
+        if !used_targets.insert(target.clone()) {
+            return Err(Error::Reverse(format!(
+                "multiple task-pane references target `{target}`; assign each extension a distinct relationship and part"
+            )));
+        }
+        let part = resolve_webextension_target(target)?;
+        let xml = read_zip_text(bytes, &part).map_err(|_| {
+            Error::Reverse(format!(
+                "web-extension relationship `{id}` targets missing `{part}`; restore the part or remove the relationship"
+            ))
+        })?;
+        extensions.push(parse_webextension(&xml, &part)?);
+    }
+    if relationships.len() != refs.len() {
+        return Err(Error::Reverse(
+            "task-pane relationships and references do not match; remove orphan web-extension relationships or restore matching references".to_owned(),
+        ));
+    }
+    Ok(Some(Value::Array(extensions)))
+}
+
+fn parse_taskpane_refs(xml: &str) -> Result<Vec<String>> {
+    parse_xml_elements(
+        xml,
+        "word/webextensions/taskpanes.xml",
+        |reader, element| {
+            if element.local_name().as_ref() != b"webextensionref" {
+                if element.local_name().as_ref() == b"taskpane" {
+                    for (name, expected) in [
+                        (b"dockstate".as_slice(), ""),
+                        (b"visibility", "1"),
+                        (b"width", "350"),
+                        (b"row", "1"),
+                    ] {
+                        if let Some(value) = xml_attribute(reader, element, name)?
+                            && value != expected
+                        {
+                            return Err(Error::Reverse(format!(
+                                "task-pane layout `{}` is not representable in JSX; restore the default `{}` value or keep the original DOCX",
+                                String::from_utf8_lossy(name),
+                                expected
+                            )));
+                        }
+                    }
+                }
+                return Ok(None);
+            }
+            xml_attribute(reader, element, b"id")?.map(Some).ok_or_else(|| {
+            Error::Reverse(
+                "task-pane web-extension reference is missing `r:id`; restore the relationship id or remove the malformed reference".to_owned(),
+            )
+        })
+        },
+    )
+}
+
+fn parse_taskpane_relationships(xml: &str) -> Result<HashMap<String, String>> {
+    let mut relationships = HashMap::new();
+    for (id, target) in parse_xml_elements(
+        xml,
+        "word/webextensions/_rels/taskpanes.xml.rels",
+        |reader, element| {
+            if element.local_name().as_ref() != b"Relationship"
+                || xml_attribute(reader, element, b"Type")?.as_deref()
+                    != Some("http://schemas.microsoft.com/office/2011/relationships/webextension")
+            {
+                return Ok(None);
+            }
+            let id = xml_attribute(reader, element, b"Id")?.ok_or_else(|| {
+            Error::Reverse("web-extension relationship is missing `Id`; restore its relationship identifier".to_owned())
+        })?;
+            let target = xml_attribute(reader, element, b"Target")?.ok_or_else(|| {
+            Error::Reverse(format!("web-extension relationship `{id}` is missing `Target`; restore the target part path"))
+        })?;
+            Ok(Some((id, target)))
+        },
+    )? {
+        if relationships.insert(id.clone(), target).is_some() {
+            return Err(Error::Reverse(format!(
+                "duplicate web-extension relationship id `{id}`; assign unique relationship ids"
+            )));
+        }
+    }
+    Ok(relationships)
+}
+
+fn resolve_webextension_target(target: &str) -> Result<String> {
+    let target = target.trim_start_matches('/');
+    if target.starts_with("../") || target.contains("/../") || target.is_empty() {
+        return Err(Error::Reverse(format!(
+            "web-extension relationship target `{target}` is not a safe package-relative path; repair it to point inside `word/webextensions/`"
+        )));
+    }
+    let part = if target.starts_with("word/") {
+        target.to_owned()
+    } else {
+        format!("word/webextensions/{target}")
+    };
+    if !part.starts_with("word/webextensions/") {
+        return Err(Error::Reverse(format!(
+            "web-extension target `{target}` is outside `word/webextensions/`; move the part into that directory or remove the relationship"
+        )));
+    }
+    Ok(part)
+}
+
+fn parse_webextension(xml: &str, part: &str) -> Result<Value> {
+    let mut extension = Map::new();
+    let mut properties = Map::new();
+    let mut root_seen = false;
+    let mut reference_seen = false;
+    let mut inside_properties = false;
+    let mut unsupported_children = Vec::new();
+    let _: Vec<()> = parse_xml_elements(xml, part, |reader, element| {
+        let name = element.local_name();
+        match name.as_ref() {
+            b"webextension" => {
+                if root_seen {
+                    return Err(Error::Reverse(format!(
+                        "`{part}` contains multiple web-extension roots; keep exactly one `we:webextension` element"
+                    )));
+                }
+                root_seen = true;
+                let id = xml_attribute(reader, element, b"id")?.ok_or_else(|| Error::Reverse(format!("`{part}` is missing web-extension `id`; restore the `we:webextension/@id` attribute")))?;
+                let id = id.trim_matches(['{', '}']).to_owned();
+                if id.is_empty() {
+                    return Err(Error::Reverse(format!(
+                        "`{part}` has an empty web-extension id; restore its `we:webextension/@id` value"
+                    )));
+                }
+                extension.insert("id".to_owned(), Value::String(id));
+            }
+            b"reference" => {
+                if reference_seen {
+                    return Err(Error::Reverse(format!(
+                        "`{part}` contains multiple web-extension references; keep exactly one `we:reference` element"
+                    )));
+                }
+                reference_seen = true;
+                for (xml_name, key) in [
+                    (b"id".as_slice(), "referenceId"),
+                    (b"version", "version"),
+                    (b"store", "store"),
+                    (b"storeType", "storeType"),
+                ] {
+                    let value = xml_attribute(reader, element, xml_name)?.filter(|value| !value.is_empty()).ok_or_else(|| Error::Reverse(format!("`{part}` web-extension reference is missing or has an empty `{key}`; restore the corresponding `we:reference` attribute")))?;
+                    extension.insert(key.to_owned(), Value::String(value));
+                }
+            }
+            b"properties" => inside_properties = true,
+            b"property" if inside_properties => {
+                let name = xml_attribute(reader, element, b"name")?.ok_or_else(|| Error::Reverse(format!("`{part}` has a web-extension property without `name`; add a unique property name")))?;
+                let value = xml_attribute(reader, element, b"value")?.ok_or_else(|| Error::Reverse(format!("`{part}` web-extension property `{name}` has no `value`; restore its string value")))?;
+                // docx-rs 0.4.22 encodes property strings as JSON string values.
+                let value = if value.starts_with('"') && value.ends_with('"') {
+                    serde_json::from_str::<String>(&value).map_err(|error| {
+                        Error::Reverse(format!(
+                            "`{part}` web-extension property `{name}` is not a valid JSON string (`{error}`); repair its value or remove the property"
+                        ))
+                    })?
+                } else {
+                    value
+                };
+                if properties
+                    .insert(name.clone(), Value::String(value))
+                    .is_some()
+                {
+                    return Err(Error::Reverse(format!(
+                        "`{part}` contains duplicate web-extension property `{name}`; rename or remove the duplicate"
+                    )));
+                }
+            }
+            b"alternateReferences" | b"bindings" | b"snapshot" => {}
+            _ => unsupported_children.push(String::from_utf8_lossy(name.as_ref()).into_owned()),
+        }
+        Ok(None)
+    })?;
+    if !root_seen || !reference_seen {
+        return Err(Error::Reverse(format!(
+            "`{part}` is missing its web-extension root or reference; restore the required `we:webextension` and `we:reference` elements"
+        )));
+    }
+    if !unsupported_children.is_empty() {
+        return Err(Error::Reverse(format!(
+            "`{part}` contains unsupported web-extension structures {}; these have no JSX representation, so remove them or retain the original DOCX",
+            unsupported_children.join(", ")
+        )));
+    }
+    if !properties.is_empty() {
+        extension.insert("properties".to_owned(), Value::Object(properties));
+    }
+    Ok(Value::Object(extension))
+}
+
+fn parse_xml_elements<T>(
+    xml: &str,
+    part: &str,
+    mut visit: impl FnMut(&Reader<&[u8]>, &BytesStart<'_>) -> Result<Option<T>>,
+) -> Result<Vec<T>> {
+    let mut reader = Reader::from_str(xml);
+    let mut buffer = Vec::new();
+    let mut values = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element) | Event::Empty(element)) => {
+                if let Some(value) = visit(&reader, &element)? {
+                    values.push(value);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse {part} at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(values)
 }
 
 fn zip_entry_names(bytes: &[u8]) -> Result<Vec<String>> {
@@ -4965,6 +5226,45 @@ mod tests {
                 && jsx.contains(r#""id":"11111111-AAAA-BBBB-CCCC-222222222222""#)
                 && jsx.contains(r#""xml":"<order id=\"42\""#),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_without_manifest_should_preserve_web_extensions() {
+        let ir: crate::ir::IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"webExtensions":[{"id":"7f33b723-fb58-4524-8733-dbedc4b7c095","referenceId":"office-addin","version":"1.0.0.0","store":"developer","storeType":"Registry","properties":{"mode":"review"}},{"id":"11111111-2222-3333-4444-555555555555","referenceId":"second","version":"2.0","store":"OMEX","storeType":"Marketplace"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture IR should parse");
+        let compiled =
+            crate::compiler::compile_document(&ir, Path::new(".")).expect("fixture should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external task panes should reverse");
+        assert!(
+            jsx.contains("webExtensions={")
+                && jsx.contains(r#""id":"7f33b723-fb58-4524-8733-dbedc4b7c095""#)
+                && jsx.contains(r#""referenceId":"office-addin""#)
+                && jsx.contains(r#""mode":"review""#)
+                && jsx.contains(r#""id":"11111111-2222-3333-4444-555555555555""#),
+            "web extensions must survive structural reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_should_explain_web_extension_reference_without_relationship() {
+        let ir: crate::ir::IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"webExtensions":[{"id":"11111111-2222-3333-4444-555555555555","referenceId":"addin","version":"1","store":"developer","storeType":"Registry"}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture IR should parse");
+        let compiled =
+            crate::compiler::compile_document(&ir, Path::new(".")).expect("fixture should compile");
+        let external = strip_ir_manifest(&compiled);
+        let stripped =
+            strip_package_parts(&external, &["word/webextensions/_rels/taskpanes.xml.rels"]);
+        let error = reverse_document(&stripped)
+            .expect_err("missing task-pane relationship must not be ignored");
+        assert!(
+            error.to_string().contains("relationship") && error.to_string().contains("restore"),
+            "diagnostic should explain the cause and repair: {error}"
         );
     }
 
