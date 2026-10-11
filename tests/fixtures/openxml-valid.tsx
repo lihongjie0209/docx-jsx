@@ -99,6 +99,9 @@ export default (
           <InlineBookmark name="insideLink">marked</InlineBookmark>
         </Hyperlink>
       </Paragraph>
+      <Paragraph>
+        <Hyperlink href="https://example.org" history={false}>unvisited link</Hyperlink>
+      </Paragraph>
       <ContentControl alias="BlockData">
         <Paragraph style="Body">block bound</Paragraph>
       </ContentControl>

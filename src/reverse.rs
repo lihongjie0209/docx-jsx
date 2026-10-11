@@ -1,6 +1,6 @@
 //! DOCX to deterministic, recompilable JSX conversion.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -68,6 +68,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let paragraph_indent_xml = collect_paragraph_indent_metadata(bytes)?;
     let style_character_indents = collect_style_character_indent_metadata(bytes)?;
     let style_suppress_line_numbers = collect_style_line_number_suppression_metadata(bytes)?;
+    let hyperlink_histories = collect_hyperlink_histories(bytes)?;
     let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
@@ -90,6 +91,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         paragraph_indent_xml,
         style_character_indents,
         style_suppress_line_numbers,
+        hyperlink_histories,
         ..Writer::default()
     };
     writer.components.insert("Document");
@@ -224,6 +226,7 @@ struct Writer {
     components: BTreeSet<&'static str>,
     comments: HashMap<usize, Comment>,
     hyperlink_targets: HashMap<String, String>,
+    hyperlink_histories: HashMap<String, VecDeque<Option<usize>>>,
     sdt_plan: SdtPlan,
     paragraph_index: usize,
     hyperlink_index: usize,
@@ -805,10 +808,10 @@ impl Writer {
         Ok(())
     }
 
-    fn hyperlink_attrs(&self, value: &Hyperlink) -> Result<String> {
+    fn hyperlink_attrs(&mut self, value: &Hyperlink) -> Result<String> {
         let data = json(value)?;
-        let link = match &value.link {
-            HyperlinkData::Anchor { anchor } => attr("anchor", anchor),
+        let (link, key) = match &value.link {
+            HyperlinkData::Anchor { anchor } => (attr("anchor", anchor), format!("a:{anchor}")),
             HyperlinkData::External { rid, path } => {
                 let href = if path.is_empty() {
                     self.hyperlink_targets.get(rid).ok_or_else(|| {
@@ -819,14 +822,28 @@ impl Writer {
                 } else {
                     path
                 };
-                attr("href", href)
+                (attr("href", href), format!("r:{rid}"))
             }
         };
-        let history = data
-            .get("history")
-            .and_then(Value::as_u64)
-            .filter(|value| *value != 0)
-            .map_or("", |_| " history");
+        let raw_history = self
+            .hyperlink_histories
+            .get_mut(&key)
+            .and_then(VecDeque::pop_front);
+        let history_value = raw_history.unwrap_or_else(|| {
+            data.get("history")
+                .and_then(Value::as_u64)
+                .map(|value| usize::try_from(value).unwrap_or(usize::MAX))
+        });
+        let history = match history_value {
+            Some(0) => " history={false}",
+            Some(1) => " history",
+            Some(value) => {
+                return Err(Error::Reverse(format!(
+                    "hyperlink `w:history` has unsupported value `{value}`; use 0 or 1"
+                )));
+            }
+            None => "",
+        };
         Ok(format!("{link}{history}"))
     }
 
@@ -2419,6 +2436,64 @@ fn read_zip_text(bytes: &[u8], name: &str) -> Result<String> {
     file.read_to_string(&mut text)
         .map_err(|error| Error::Reverse(format!("cannot read {name}: {error}")))?;
     Ok(text)
+}
+
+fn collect_hyperlink_histories(bytes: &[u8]) -> Result<HashMap<String, VecDeque<Option<usize>>>> {
+    let xml = read_zip_text(bytes, "word/document.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut histories: HashMap<String, VecDeque<Option<usize>>> = HashMap::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(element) | Event::Empty(element))
+                if element.local_name().as_ref() == b"hyperlink" =>
+            {
+                let mut key = None;
+                let mut history = None;
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|error| {
+                        Error::Reverse(format!(
+                            "invalid hyperlink attribute while reading `w:history`: {error}"
+                        ))
+                    })?;
+                    let name = attribute.key.local_name();
+                    let value = attribute
+                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                        .map_err(|error| {
+                            Error::Reverse(format!(
+                                "cannot decode hyperlink attribute while reading `w:history`: {error}"
+                            ))
+                        })?;
+                    match name.as_ref() {
+                        b"id" => key = Some(format!("r:{value}")),
+                        b"anchor" => key = Some(format!("a:{value}")),
+                        b"history" => {
+                            history = Some(match value.as_ref() {
+                                "1" | "true" | "on" => 1,
+                                "0" | "false" | "off" => 0,
+                                _ => {
+                                    return Err(Error::Reverse(format!(
+                                        "hyperlink `w:history` has invalid value `{value}`; use true, false, 1, 0, on, or off"
+                                    )));
+                                }
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(key) = key {
+                    histories.entry(key).or_default().push_back(history);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "invalid `word/document.xml` while reading hyperlink history: {error}"
+                )));
+            }
+        }
+    }
+    Ok(histories)
 }
 
 fn split_section_groups<'a>(
@@ -7193,6 +7268,54 @@ mod tests {
                 && jsx.contains(r#"<Comment text="review" author="Grace""#)
                 && !jsx.contains("<InlineBookmark name=\"insideLink\" />"),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_should_preserve_false_hyperlink_history_without_manifest() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Hyperlink","props":{"href":"https://example.com","history":false},"children":["link"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, std::path::Path::new("."))
+            .expect("compile should work");
+        let bytes = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&bytes).expect("manifest-free DOCX should reverse");
+        assert!(jsx.contains("history={false}"), "{jsx}");
+    }
+
+    #[test]
+    fn reverse_should_reject_non_boolean_hyperlink_history() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Hyperlink","props":{"href":"https://example.com"},"children":["link"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, std::path::Path::new("."))
+            .expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(compiled.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document.xml")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let changed = document.replace("w:history=\"1\"", "w:history=\"2\"");
+        assert_ne!(
+            changed, document,
+            "test fixture has no explicit w:history: {document}"
+        );
+        document = changed;
+        let without_manifest = strip_ir_manifest(&compiled);
+        let external = rewrite_package_parts(
+            &without_manifest,
+            &[("word/document.xml", document.as_bytes())],
+        );
+        let error = reverse_document(&external).expect_err("invalid history value must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("use true, false, 1, 0, on, or off"),
+            "{error}"
         );
     }
 

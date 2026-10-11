@@ -456,7 +456,9 @@ error instead of a silent drop.
 - `Header`, `Footer`: `type?: "default" | "first" | "even"`. A `first`
   header or footer enables the section's different-first-page setting.
 - `Hyperlink`: exactly one of `href?: string` (external relationship) or
-  `anchor?: string` (document bookmark), plus `history?: boolean`. In addition
+  `anchor?: string` (document bookmark), plus `history?: boolean`. Reverse
+  preserves `w:history="0"` as `history={false}` and `w:history="1"` as the
+  true shorthand; other values are rejected with a repair suggestion. In addition
   to ordinary run-level children it accepts `ContentControl`, `Inserted`,
   `Deleted`, `InlineBookmark`, and `Comment`, mapping to the corresponding
   public `docx_rs::Hyperlink::add_*` APIs. Hyperlinks cannot be nested.
