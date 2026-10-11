@@ -2753,17 +2753,108 @@ fn validate_section_semantics(node: &Node, path: &str) -> Result<()> {
     if let Some(value) = node.props.get("lineNumbering") {
         validate_line_numbering(value, path)?;
     }
-    if node.props.get("columns").is_some_and(|value| {
-        value
-            .as_u64()
-            .is_none_or(|columns| !(1..=45).contains(&columns))
-    }) {
+    if let Some(value) = node.props.get("columns") {
+        validate_section_columns(value, path)?;
+    }
+    Ok(())
+}
+
+fn validate_section_columns(value: &Value, path: &str) -> Result<()> {
+    if let Some(columns) = value.as_u64() {
+        if (1..=45).contains(&columns) {
+            return Ok(());
+        }
         return Err(validation(
             path,
             "`columns` must be an integer from 1 to 45",
         ));
     }
-    Ok(())
+    let columns = value.as_object().ok_or_else(|| {
+        validation(
+            path,
+            "`columns` must be an integer from 1 to 45 or an object with `count` or `widths`",
+        )
+    })?;
+    validate_object_keys(
+        columns,
+        &format!("{path}.columns"),
+        &["count", "spacing", "separator", "widths"],
+    )?;
+    if columns
+        .get("separator")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(validation(path, "`columns.separator` must be a boolean"));
+    }
+    match (columns.get("count"), columns.get("widths")) {
+        (Some(_), Some(_)) => Err(validation(
+            path,
+            "`columns.count` and `columns.widths` are mutually exclusive; choose equal-width count or individual widths",
+        )),
+        (Some(count), None) => {
+            if count
+                .as_u64()
+                .is_none_or(|count| !(1..=45).contains(&count))
+            {
+                return Err(validation(
+                    path,
+                    "`columns.count` must be an integer from 1 to 45",
+                ));
+            }
+            if let Some(spacing) = columns.get("spacing") {
+                validate_non_negative_column_measure(spacing, path, "columns.spacing")?;
+            }
+            Ok(())
+        }
+        (None, Some(widths)) => {
+            if columns.contains_key("spacing") {
+                return Err(validation(
+                    path,
+                    "`columns.spacing` cannot be combined with `columns.widths`; set `spacing` on each width entry",
+                ));
+            }
+            let widths = widths.as_array().ok_or_else(|| {
+                validation(path, "`columns.widths` must be an array of column objects")
+            })?;
+            if widths.is_empty() || widths.len() > 45 {
+                return Err(validation(
+                    path,
+                    "`columns.widths` must contain between 1 and 45 column objects",
+                ));
+            }
+            for (index, column) in widths.iter().enumerate() {
+                let column = column.as_object().ok_or_else(|| {
+                    validation(path, format!("`columns.widths[{index}]` must be an object"))
+                })?;
+                let column_path = format!("{path}.columns.widths[{index}]");
+                validate_object_keys(column, &column_path, &["width", "spacing"])?;
+                for key in ["width", "spacing"] {
+                    if let Some(value) = column.get(key) {
+                        validate_non_negative_column_measure(value, &column_path, key)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+        (None, None) => Err(validation(
+            path,
+            "`columns` object requires either `count` or `widths`",
+        )),
+    }
+}
+
+fn validate_non_negative_column_measure(value: &Value, path: &str, key: &str) -> Result<()> {
+    if value
+        .as_f64()
+        .is_some_and(|number| number.is_finite() && number >= 0.0)
+    {
+        Ok(())
+    } else {
+        Err(validation(
+            path,
+            format!("`{key}` must be a finite non-negative point measure"),
+        ))
+    }
 }
 
 fn validate_document_grid(value: &Value, path: &str) -> Result<()> {
@@ -5465,6 +5556,29 @@ mod tests {
         );
         ir.validate()
             .expect("section configuration should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_equal_and_individually_sized_section_columns() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"columns":{"count":3,"spacing":18,"separator":true}},"children":[]},{"type":"Section","props":{"columns":{"widths":[{"width":180,"spacing":24},{"width":240,"spacing":18},{"width":300}],"separator":false}},"children":[]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_individually_sized_section_columns() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"columns":{"widths":[{"width":10},{"width":-1}] }},"children":[]}]}}"#,
+        );
+        let error = ir.validate().expect_err("negative column width must fail");
+        assert!(
+            error.to_string().contains("columns.widths[1]")
+                && error
+                    .to_string()
+                    .contains("finite non-negative point measure"),
+            "{error}"
+        );
     }
 
     #[test]

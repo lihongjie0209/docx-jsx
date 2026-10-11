@@ -49,6 +49,31 @@ struct ParagraphPropertyPatch {
     suppress_line_numbers: Option<bool>,
 }
 
+#[derive(Clone, Debug)]
+struct SectionColumnsConfig {
+    count: usize,
+    spacing: Option<u32>,
+    separator: bool,
+    widths: Vec<SectionColumnWidth>,
+}
+
+#[derive(Clone, Debug)]
+struct SectionColumnWidth {
+    width: Option<u32>,
+    spacing: Option<u32>,
+}
+
+impl Default for SectionColumnsConfig {
+    fn default() -> Self {
+        Self {
+            count: 1,
+            spacing: Some(425),
+            separator: false,
+            widths: Vec::new(),
+        }
+    }
+}
+
 impl Default for CompileContext {
     fn default() -> Self {
         Self {
@@ -225,25 +250,18 @@ fn package_document(
     let mut cursor = Cursor::new(Vec::new());
     docx.pack(&mut cursor)
         .map_err(|error| Error::Compile(error.to_string()))?;
-    let columns = ir
-        .document
-        .children
-        .iter()
-        .filter_map(|child| match child {
-            Child::Node(node) if node.kind == NodeKind::Section => Some(
-                usize::try_from(
-                    node.props
-                        .get("columns")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(1),
-                )
-                .map_err(|_| {
-                    Error::Compile("section column count exceeds platform range".to_owned())
-                }),
-            ),
-            Child::Node(_) | Child::String(_) | Child::Number(_) => None,
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let columns =
+        ir.document
+            .children
+            .iter()
+            .enumerate()
+            .filter_map(|(index, child)| match child {
+                Child::Node(node) if node.kind == NodeKind::Section => Some(
+                    section_columns_config(node, &format!("Document/Section[{index}]")),
+                ),
+                Child::Node(_) | Child::String(_) | Child::Number(_) => None,
+            })
+            .collect::<Result<Vec<_>>>()?;
     let bytes = patch_section_columns(cursor.into_inner(), &columns)?;
     let section_types = ir
         .document
@@ -702,8 +720,78 @@ fn patch_table_row_grid_properties(
     replace_zip_text_entry(archive, part, xml.as_bytes())
 }
 
-fn patch_section_columns(bytes: Vec<u8>, columns: &[usize]) -> Result<Vec<u8>> {
-    if columns.iter().all(|count| *count == 1) {
+fn section_columns_config(node: &Node, path: &str) -> Result<SectionColumnsConfig> {
+    let Some(value) = node.props.get("columns") else {
+        return Ok(SectionColumnsConfig::default());
+    };
+    if let Some(count) = value.as_u64() {
+        return Ok(SectionColumnsConfig {
+            count: usize::try_from(count)
+                .map_err(|_| validation(path, "`columns` count is out of range"))?,
+            ..SectionColumnsConfig::default()
+        });
+    }
+    let columns = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`columns` must be an integer or object"))?;
+    if let Some(count) = columns.get("count").and_then(Value::as_u64) {
+        let spacing = columns
+            .get("spacing")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        return Ok(SectionColumnsConfig {
+            count: usize::try_from(count)
+                .map_err(|_| validation(path, "`columns.count` is out of range"))?,
+            spacing: Some(to_twips_u32(spacing, &format!("{path}/columns/spacing"))?),
+            separator: columns
+                .get("separator")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            widths: Vec::new(),
+        });
+    }
+    let widths = columns
+        .get("widths")
+        .and_then(Value::as_array)
+        .ok_or_else(|| validation(path, "`columns.widths` must be an array"))?;
+    let column_widths = widths
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let column = value.as_object().ok_or_else(|| {
+                validation(path, format!("`columns.widths[{index}]` must be an object"))
+            })?;
+            let measure = |key: &str| -> Result<Option<u32>> {
+                column
+                    .get(key)
+                    .and_then(Value::as_f64)
+                    .map(|points| {
+                        to_twips_u32(points, &format!("{path}/columns/widths[{index}]/{key}"))
+                    })
+                    .transpose()
+            };
+            Ok(SectionColumnWidth {
+                width: measure("width")?,
+                spacing: measure("spacing")?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(SectionColumnsConfig {
+        count: column_widths.len(),
+        spacing: None,
+        separator: columns
+            .get("separator")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        widths: column_widths,
+    })
+}
+
+fn patch_section_columns(bytes: Vec<u8>, columns: &[SectionColumnsConfig]) -> Result<Vec<u8>> {
+    if columns
+        .iter()
+        .all(|section| section.count == 1 && section.widths.is_empty() && !section.separator)
+    {
         return Ok(bytes);
     }
     let mut source = zip::ZipArchive::new(Cursor::new(bytes))
@@ -718,27 +806,29 @@ fn patch_section_columns(bytes: Vec<u8>, columns: &[usize]) -> Result<Vec<u8>> {
     let mut column_index = 0;
     while let Some(relative_start) = document[offset..].find("<w:cols") {
         let start = offset + relative_start;
-        let end = document[start..]
+        let open_end = document[start..]
             .find('>')
             .map(|relative_end| start + relative_end + 1)
             .ok_or_else(|| {
                 Error::Compile("invalid `w:cols` element in word/document.xml".to_owned())
             })?;
-        let num_start = document[start..end]
-            .find("w:num=\"")
-            .map(|relative| start + relative + "w:num=\"".len())
-            .ok_or_else(|| Error::Compile("docx-rs emitted `w:cols` without `w:num`".to_owned()))?;
-        let num_end = document[num_start..end]
-            .find('"')
-            .map(|relative| num_start + relative)
-            .ok_or_else(|| {
-                Error::Compile("invalid `w:cols/@w:num` in word/document.xml".to_owned())
-            })?;
-        let column_count = columns.get(column_index).ok_or_else(|| {
+        let config = columns.get(column_index).ok_or_else(|| {
             Error::Compile("DOCX section count does not match the JSX Section count".to_owned())
         })?;
-        document.replace_range(num_start..num_end, &column_count.to_string());
-        offset = num_start + column_count.to_string().len();
+        let is_empty = document[start..open_end].ends_with("/>");
+        let end = if is_empty {
+            open_end
+        } else {
+            document[open_end..]
+                .find("</w:cols>")
+                .map(|relative| open_end + relative + "</w:cols>".len())
+                .ok_or_else(|| {
+                    Error::Compile("invalid `w:cols` element in word/document.xml".to_owned())
+                })?
+        };
+        let replacement = section_columns_xml(config);
+        document.replace_range(start..end, &replacement);
+        offset = start + replacement.len();
         column_index += 1;
     }
     if column_index != columns.len() {
@@ -748,6 +838,39 @@ fn patch_section_columns(bytes: Vec<u8>, columns: &[usize]) -> Result<Vec<u8>> {
         )));
     }
     replace_zip_text_entry(source, "word/document.xml", document.as_bytes())
+}
+
+fn section_columns_xml(config: &SectionColumnsConfig) -> String {
+    if config.widths.is_empty() {
+        let mut xml = String::from("<w:cols");
+        if let Some(spacing) = config.spacing {
+            write!(xml, " w:space=\"{spacing}\"").expect("String write");
+        }
+        write!(xml, " w:num=\"{}\"", config.count).expect("String write");
+        if config.separator {
+            xml.push_str(" w:sep=\"1\"");
+        }
+        xml.push_str(" />");
+        return xml;
+    }
+    let mut xml = format!("<w:cols w:num=\"{}\"", config.count);
+    xml.push_str(" w:equalWidth=\"0\"");
+    if config.separator {
+        xml.push_str(" w:sep=\"1\"");
+    }
+    xml.push('>');
+    for column in &config.widths {
+        xml.push_str("<w:col");
+        if let Some(width) = column.width {
+            write!(xml, " w:w=\"{width}\"").expect("String write");
+        }
+        if let Some(spacing) = column.spacing {
+            write!(xml, " w:space=\"{spacing}\"").expect("String write");
+        }
+        xml.push_str(" />");
+    }
+    xml.push_str("</w:cols>");
+    xml
 }
 
 fn patch_section_types(bytes: Vec<u8>, section_types: &[Option<String>]) -> Result<Vec<u8>> {
@@ -6507,6 +6630,30 @@ mod tests {
         );
         assert!(
             document.contains(r#"<w:cols w:space="425" w:num="3" />"#),
+            "{document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_custom_section_column_layouts() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"columns":{"count":2,"spacing":18,"separator":true}},"children":[]},{"type":"Section","props":{"columns":{"widths":[{"width":144,"spacing":24},{"width":180,"spacing":18},{"width":216}]}},"children":[]}]}}"#,
+        ).expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document")
+            .read_to_string(&mut document)
+            .expect("UTF-8");
+        assert!(
+            document.contains(r#"<w:cols w:space="360" w:num="2" w:sep="1" />"#),
+            "{document}"
+        );
+        assert!(
+            document.contains(r#"<w:cols w:num="3" w:equalWidth="0"><w:col w:w="2880" w:space="480" /><w:col w:w="3600" w:space="360" /><w:col w:w="4320" /></w:cols>"#),
             "{document}"
         );
     }

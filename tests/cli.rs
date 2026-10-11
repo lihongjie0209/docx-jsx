@@ -356,6 +356,73 @@ export default <Document styles={[{id:"NoLines",name:"No Lines",type:"paragraph"
 }
 
 #[test]
+fn cli_should_reverse_custom_section_columns_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("columns.tsx");
+    let docx = directory.path().join("columns.docx");
+    let external = directory.path().join("external.docx");
+    let jsx = directory.path().join("reverse.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document><Section columns={{count:2,spacing:18,separator:true}}><Paragraph>equal</Paragraph></Section><Section columns={{widths:[{width:144,spacing:24},{width:180}]}}><Paragraph>unequal</Paragraph></Section></Document>;"#,
+    )
+    .expect("input should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&docx)
+        .assert()
+        .success();
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&docx).expect("DOCX should exist")),
+    )
+    .expect("external DOCX should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&jsx)
+        .assert()
+        .success();
+    let source = fs::read_to_string(&jsx).expect("reverse JSX should exist");
+    assert!(source.contains("\"count\":2"), "{source}");
+    assert!(source.contains("\"separator\":true"), "{source}");
+    assert!(
+        source.contains("\"widths\":[{\"width\":144,\"spacing\":24},{\"width\":180}]"),
+        "{source}"
+    );
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&jsx)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+        fs::read(&rebuilt).expect("rebuilt DOCX should exist"),
+    ))
+    .expect("rebuilt DOCX should be ZIP");
+    let mut document = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part should exist")
+        .read_to_string(&mut document)
+        .expect("document XML should read");
+    assert!(
+        document.contains(r#"w:space="360" w:num="2" w:sep="1""#),
+        "{document}"
+    );
+    assert!(document.contains(r#"w:equalWidth="0""#), "{document}");
+}
+
+#[test]
 fn cli_should_reverse_and_rebuild_external_simple_position_image() {
     let directory = tempdir().expect("tempdir should work");
     let mut png = std::io::Cursor::new(Vec::new());

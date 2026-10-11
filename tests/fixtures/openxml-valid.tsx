@@ -129,5 +129,11 @@ export default (
         <Image src="pixel.ppm" width={24} height={24} floating layoutInCell simplePosition={{ x: 25400, y: -12700 }} />
       </Paragraph>
     </Section>
+    <Section columns={{ count: 2, spacing: 18, separator: true }}>
+      <Paragraph>Equal-width columns with a separator.</Paragraph>
+    </Section>
+    <Section columns={{ widths: [{ width: 144, spacing: 24 }, { width: 180, spacing: 18 }, { width: 216 }] }}>
+      <Paragraph>Individually sized columns.</Paragraph>
+    </Section>
   </Document>
 );

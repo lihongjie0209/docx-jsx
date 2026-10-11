@@ -275,11 +275,15 @@ error instead of a silent drop.
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
   `documentGrid?: {type,linePitch?,charSpace?}`, and
   `pageNumbering?: {start?,chapterStyle?}`, `lineNumbering?: {countBy?,start?,distance?,restart?}`,
-  and `columns?: 1..45` (default 1).
-  Columns are equal-width with the backend's default 425-twip spacing. External
-  reverse preserves `type` and the column count; layouts with custom column widths,
-  spacing, or separators are rejected with a repair suggestion because this
-  DSL does not yet model those values. Document-grid `type` is `default`,
+  and `columns?: 1..45 | {count, spacing?, separator?} | {widths, separator?}`.
+  The numeric shorthand retains equal-width columns with the backend's default
+  425-twip spacing. In `{count, spacing?, separator?}`, `count` is 1..45,
+  `spacing` is a non-negative point measure (default 0), and `separator` is a
+  boolean. In `{widths, separator?}`, `widths` contains 1..45 column objects;
+  each accepts optional non-negative `width` and `spacing` point measures.
+  `count` and `widths` are mutually exclusive. Reverse preserves equal and
+  individual widths, spacing, and separator settings without the IR manifest.
+  Document-grid `type` is `default`,
   `lines`, `linesAndChars`, or `snapToChars`; `linePitch` is a positive point
   measurement, while `charSpace` is a signed integer in OOXML 1/4096-em units.
   `pageNumbering.start` is a non-negative integer and `chapterStyle` is a
