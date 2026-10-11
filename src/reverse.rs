@@ -2976,6 +2976,12 @@ fn validate_character_indent_xml(bytes: &[u8]) -> Result<()> {
                         })?;
                         let local_name = attribute.key.local_name();
                         if UNSUPPORTED.contains(&local_name.as_ref()) {
+                            if part == "word/styles.xml"
+                                && [b"hangingChars".as_slice(), b"firstLineChars".as_slice()]
+                                    .contains(&local_name.as_ref())
+                            {
+                                continue;
+                            }
                             let raw_value = attribute.value.as_ref();
                             if raw_value == b"0" || raw_value == b"+0" {
                                 continue;
@@ -4999,6 +5005,11 @@ fn reverse_paragraph_properties(source: &Value) -> Result<Option<Map<String, Val
                 output.insert(target_key.to_owned(), points_value(value)?);
             }
         }
+        for key in ["hangingChars", "firstLineChars"] {
+            if let Some(value) = indent.get(key).and_then(Value::as_i64) {
+                output.insert(key.to_owned(), Value::Number(value.into()));
+            }
+        }
         if let Some(special) = indent.get("specialIndent")
             && let (Some(kind), Some(value)) = (
                 special.get("type").and_then(Value::as_str),
@@ -5011,6 +5022,11 @@ fn reverse_paragraph_properties(source: &Value) -> Result<Option<Map<String, Val
                 "firstLine"
             };
             output.insert(key.to_owned(), points_value(value)?);
+        }
+        for key in ["hangingChars", "firstLineChars"] {
+            if let Some(value) = indent.get(key).and_then(Value::as_i64) {
+                output.insert(key.to_owned(), Value::Number(value.into()));
+            }
         }
     }
     if source.get("keepNext").and_then(Value::as_bool) == Some(true) {
@@ -5280,6 +5296,31 @@ mod tests {
                 && error.to_string().contains("replace it"),
             "diagnostic should identify the unsupported unit and a repair: {error}"
         );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_style_character_indentation() {
+        let packed = pack_docx(Docx::new().add_style(
+            Style::new("CharacterIndent", StyleType::Paragraph).name("Character Indent"),
+        ));
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part")
+            .read_to_string(&mut styles)
+            .expect("styles XML");
+        let style_marker = styles
+            .find(r#"w:styleId="CharacterIndent""#)
+            .expect("custom style should be present");
+        let style_end = styles[style_marker..]
+            .find("</w:style>")
+            .map(|offset| style_marker + offset)
+            .expect("style end should be present");
+        styles.insert_str(style_end, r#"<w:pPr><w:ind w:hangingChars="20" /></w:pPr>"#);
+        let modified = rewrite_package_parts(&packed, &[("word/styles.xml", styles.as_bytes())]);
+        let jsx = reverse_document(&modified).expect("style character indentation should reverse");
+        assert!(jsx.contains(r#""hangingChars":20"#), "{jsx}");
     }
 
     #[test]

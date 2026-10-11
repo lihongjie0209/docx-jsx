@@ -240,6 +240,7 @@ fn package_document(docx: Docx, ir: &IrEnvelope) -> Result<Vec<u8>> {
     let bytes = patch_custom_xml_content_types(bytes, custom_xml_count)?;
     let bytes = patch_custom_xml_schema_refs(bytes, &ir.document.props)?;
     let bytes = patch_duplicate_normal_style(bytes, &ir.document.props)?;
+    let bytes = patch_style_character_indentation(bytes, &ir.document.props)?;
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     embed_ir_manifest(bytes, ir)
@@ -942,7 +943,12 @@ fn compile_style_indent(
     } else {
         None
     };
-    if left.is_some() || right.is_some() || special.is_some() {
+    if left.is_some()
+        || right.is_some()
+        || special.is_some()
+        || paragraph.contains_key("hangingChars")
+        || paragraph.contains_key("firstLineChars")
+    {
         style = style.indent(left, special, right, None);
     }
     Ok(style)
@@ -1068,6 +1074,94 @@ fn patch_duplicate_normal_style(bytes: Vec<u8>, props: &Map<String, Value>) -> R
         styles.replace_range(range, "");
     }
     replace_zip_text_entry(source, "word/styles.xml", styles.as_bytes())
+}
+
+fn patch_style_character_indentation(
+    bytes: Vec<u8>,
+    props: &Map<String, Value>,
+) -> Result<Vec<u8>> {
+    let style_patches = props
+        .get("styles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|style| {
+            let id = style.get("id")?.as_str()?;
+            let paragraph = style.get("paragraph")?.as_object()?;
+            let attrs = ["hangingChars", "firstLineChars"]
+                .into_iter()
+                .filter_map(|key| paragraph.get(key).and_then(Value::as_i64).map(|v| (key, v)))
+                .collect::<Vec<_>>();
+            (!attrs.is_empty()).then_some((id.to_owned(), attrs))
+        })
+        .collect::<Vec<_>>();
+    if style_patches.is_empty() {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name("word/styles.xml")
+        .map_err(|error| Error::Compile(format!("missing styles: {error}")))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot read styles: {error}")))?;
+    for (id, properties) in style_patches {
+        let marker = format!(r#"w:styleId="{}""#, xml_escape(&id));
+        let marker_start = xml.find(&marker).ok_or_else(|| {
+            Error::Compile(format!("docx-rs omitted custom paragraph style `{id}`"))
+        })?;
+        let style_start = xml[..marker_start]
+            .rfind("<w:style")
+            .ok_or_else(|| Error::Compile(format!("invalid style start for `{id}`")))?;
+        let style_end = xml[marker_start..]
+            .find("</w:style>")
+            .map(|at| marker_start + at)
+            .ok_or_else(|| Error::Compile(format!("invalid style end for `{id}`")))?;
+        let mut attrs = String::new();
+        for (name, value) in properties {
+            write!(attrs, " w:{name}=\"{value}\"").expect("String write");
+        }
+        let segment = &xml[style_start..style_end];
+        if let Some(ppr_relative) = segment.find("<w:pPr") {
+            let ppr_start = style_start + ppr_relative;
+            let ppr_end = xml[ppr_start..style_end].find("</w:pPr>").map_or_else(
+                || {
+                    xml[ppr_start..style_end]
+                        .find(" />")
+                        .map_or(ppr_start, |at| ppr_start + at)
+                },
+                |at| ppr_start + at,
+            );
+            if let Some(ind_relative) = xml[ppr_start..style_end].find("<w:ind") {
+                let ind_start = ppr_start + ind_relative;
+                let mut ind_end = xml[ind_start..style_end]
+                    .find('>')
+                    .map(|at| ind_start + at)
+                    .ok_or_else(|| Error::Compile(format!("invalid w:ind in style `{id}`")))?;
+                if xml[ind_end.saturating_sub(1)..=ind_end].ends_with("/>") {
+                    ind_end -= 1;
+                }
+                xml.insert_str(ind_end, &attrs);
+            } else if xml[ppr_start..style_end].starts_with("<w:pPr />") {
+                let ppr_end = ppr_start + "<w:pPr />".len();
+                xml.replace_range(
+                    ppr_start..ppr_end,
+                    &format!("<w:pPr><w:ind{attrs} /></w:pPr>"),
+                );
+            } else {
+                xml.insert_str(ppr_end, &format!("<w:ind{attrs} />"));
+            }
+        } else {
+            let insertion = ["<w:rPr", "<w:tblPr", "<w:trPr", "<w:tcPr", "</w:style>"]
+                .into_iter()
+                .filter_map(|tag| segment.find(tag).map(|offset| style_start + offset))
+                .min()
+                .ok_or_else(|| Error::Compile(format!("invalid style body for `{id}`")))?;
+            xml.insert_str(insertion, &format!("<w:pPr><w:ind{attrs} /></w:pPr>"));
+        }
+    }
+    replace_zip_text_entry(archive, "word/styles.xml", xml.as_bytes())
 }
 
 fn first_normal_style_range(xml: &str) -> Option<std::ops::Range<usize>> {
@@ -5498,7 +5592,7 @@ mod tests {
     #[test]
     fn compile_should_render_custom_style_definition() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":false,"uiPriority":5,"semiHidden":true,"unhideWhenUsed":true,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":true,"underline":"single","hidden":true,"textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"firstLine":2,"hangingChars":20,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":false,"uiPriority":5,"semiHidden":true,"unhideWhenUsed":true,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":true,"underline":"single","hidden":true,"textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"spacingAfter":12,"indentLeft":6,"hangingChars":20,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportFirst","name":"Report First","type":"paragraph","paragraph":{"firstLineChars":640}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         )
         .expect("fixture should parse");
         ir.validate().expect("fixture should validate");
@@ -5521,7 +5615,14 @@ mod tests {
         );
         assert!(styles.contains(r#"<w:snapToGrid w:val="false" />"#));
         assert!(styles.contains(r#"w:after="240""#));
-        assert!(styles.contains(r#"w:left="120" w:right="0" w:firstLine="40""#));
+        assert!(styles.contains(r#"w:left="120" w:right="0""#));
+        assert!(styles.contains(r#"w:hangingChars="20""#));
+        let report_first_style = styles
+            .split(r#"w:styleId="ReportFirst""#)
+            .nth(1)
+            .and_then(|value| value.split("</w:style>").next())
+            .expect("ReportFirst style body should exist");
+        assert!(report_first_style.contains(r#"w:firstLineChars="640""#));
         assert!(styles.contains(r#"w:wrap="around""#) && styles.contains(r#"w:y="240""#));
         assert!(styles.contains(r#"<w:uiPriority w:val="5" />"#));
         assert!(styles.contains("<w:semiHidden />") && styles.contains("<w:unhideWhenUsed />"));

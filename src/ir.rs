@@ -2312,6 +2312,14 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             ));
         }
     }
+    if (paragraph.contains_key("hanging") || paragraph.contains_key("hangingChars"))
+        && (paragraph.contains_key("firstLine") || paragraph.contains_key("firstLineChars"))
+    {
+        return Err(validation(
+            path,
+            "style paragraph `hanging`/`hangingChars` and `firstLine`/`firstLineChars` are mutually exclusive; choose only one indentation mode",
+        ));
+    }
     if paragraph
         .get("outlineLevel")
         .is_some_and(|value| value.as_u64().is_none_or(|level| level > 9))
@@ -5139,6 +5147,10 @@ mod tests {
             ),
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"firstLine":1,"hanging":1}}]"#,
+                "mutually exclusive",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"firstLine":1,"hangingChars":20}}]"#,
                 "mutually exclusive",
             ),
             (

@@ -132,6 +132,11 @@ Colors are uppercase or lowercase six-digit RGB strings without `#`.
   non-negative point values, serialized as `dxa` twips. External reverse
   restores these properties from `w:trPr`; non-`dxa` widths are rejected with
   a conversion suggestion.
+- Paragraph styles may use integer `hangingChars` and `firstLineChars` values
+  in addition to point-based `hanging` and `firstLine`. Character values map
+  directly to `w:hangingChars` and `w:firstLineChars` (no point conversion);
+  `hanging`/`hangingChars` and `firstLine`/`firstLineChars` are mutually
+  exclusive pairs. Reverse preserves these style values from external DOCX.
 - Paragraph indentation uses points in JSX. External DOCX values expressed
   with `w:leftChars`, `w:startChars`, `w:rightChars`, `w:endChars`,
   `w:firstLineChars`, or `w:hangingChars` cannot be converted losslessly to
