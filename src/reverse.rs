@@ -904,6 +904,7 @@ struct Writer {
 struct ParagraphIndentMetadata {
     values: BTreeMap<String, i64>,
     suppress_line_numbers: Option<bool>,
+    contextual_spacing: Option<bool>,
 }
 
 type RawIndexParagraphProperties = Vec<(String, BTreeMap<String, String>)>;
@@ -1531,6 +1532,9 @@ impl Writer {
         let mut attrs = Vec::new();
         if let Some(value) = raw_indent.suppress_line_numbers {
             attrs.push(jsx_prop("suppressLineNumbers", &Value::Bool(value))?);
+        }
+        if let Some(value) = raw_indent.contextual_spacing {
+            attrs.push(jsx_prop("contextualSpacing", &Value::Bool(value))?);
         }
         if let Some(value) = property.get("alignment").and_then(scalar_string) {
             attrs.push(attr("align", value));
@@ -2575,6 +2579,9 @@ impl Writer {
         let mut attrs = String::new();
         if let Some(value) = raw_indent.suppress_line_numbers {
             attrs.push_str(&jsx_prop("suppressLineNumbers", &Value::Bool(value))?);
+        }
+        if let Some(value) = raw_indent.contextual_spacing {
+            attrs.push_str(&jsx_prop("contextualSpacing", &Value::Bool(value))?);
         }
         if let Some(level) =
             nested(&property, &["numberingProperty", "level"]).and_then(Value::as_u64)
@@ -5521,6 +5528,39 @@ fn collect_paragraph_indent_metadata(
                         }
                     }
                 }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"contextualSpacing" =>
+                {
+                    if let Some(index) = active_paragraphs.last().copied() {
+                        for attribute in element.attributes() {
+                            let attribute = attribute.map_err(|error| {
+                                Error::Reverse(format!(
+                                    "invalid w:contextualSpacing attribute in {part}: {error}"
+                                ))
+                            })?;
+                            if attribute.key.local_name().as_ref() != b"val" {
+                                return Err(Error::Reverse(format!(
+                                    "{part} has unsupported attribute `{}` on w:contextualSpacing; remove it or extend the paragraph specification",
+                                    String::from_utf8_lossy(attribute.key.local_name().as_ref())
+                                )));
+                            }
+                        }
+                        let value = xml_attribute(&reader, &element, b"val")?
+                            .as_deref()
+                            .map(|value| parse_on_off_named(value, "contextualSpacing"))
+                            .transpose()?
+                            .unwrap_or(true);
+                        if paragraphs[index]
+                            .contextual_spacing
+                            .replace(value)
+                            .is_some()
+                        {
+                            return Err(Error::Reverse(format!(
+                                "{part} contains duplicate w:contextualSpacing elements in one paragraph"
+                            )));
+                        }
+                    }
+                }
                 Ok(Event::End(element)) if element.local_name().as_ref() == b"p" => {
                     if let Some(index) = active_paragraphs.pop() {
                         validate_raw_character_indent(&paragraphs[index].values, "paragraph")?;
@@ -6220,6 +6260,10 @@ fn collect_style_line_number_suppression_metadata(bytes: &[u8]) -> Result<HashMa
     Ok(result)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "strict style paragraph parsing keeps property validation and duplicate checks in one pass"
+)]
 fn collect_style_paragraph_xml_metadata(
     bytes: &[u8],
 ) -> Result<HashMap<String, Map<String, Value>>> {
@@ -6266,6 +6310,15 @@ fn collect_style_paragraph_xml_metadata(
                             &reader,
                             &element,
                             current_style.as_deref().unwrap_or_default(),
+                        )?),
+                    ),
+                    b"contextualSpacing" => (
+                        "contextualSpacing",
+                        Some(style_xml_on_off_named(
+                            &reader,
+                            &element,
+                            current_style.as_deref().unwrap_or_default(),
+                            "contextualSpacing",
                         )?),
                     ),
                     b"adjustRightInd" => {
@@ -6475,12 +6528,27 @@ fn style_xml_on_off(
     element: &BytesStart<'_>,
     style_id: &str,
 ) -> Result<Value> {
-    validate_style_xml_attributes(element, &[b"val"], style_id, "on/off paragraph property")?;
-    let value = xml_attribute(reader, element, b"val")?.as_deref().map(|value| match value {
-        "1" | "true" | "on" => Ok(true),
-        "0" | "false" | "off" => Ok(false),
-        _ => Err(Error::Reverse(format!("style `{style_id}` has invalid on/off value `{value}`; use true, false, 1, 0, on, or off"))),
-    }).transpose()?.unwrap_or(true);
+    style_xml_on_off_named(reader, element, style_id, "on/off paragraph property")
+}
+
+fn style_xml_on_off_named(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+    style_id: &str,
+    property: &str,
+) -> Result<Value> {
+    validate_style_xml_attributes(element, &[b"val"], style_id, property)?;
+    let value = xml_attribute(reader, element, b"val")?
+        .as_deref()
+        .map(|value| match value {
+            "1" | "true" | "on" => Ok(true),
+            "0" | "false" | "off" => Ok(false),
+            _ => Err(Error::Reverse(format!(
+                "style `{style_id}` has invalid w:{property} on/off value `{value}`; use true, false, 1, 0, on, or off"
+            ))),
+        })
+        .transpose()?
+        .unwrap_or(true);
     Ok(Value::Bool(value))
 }
 
@@ -9047,11 +9115,15 @@ fn scalar_i64(value: &Value) -> Option<i64> {
 }
 
 fn parse_on_off(value: &str) -> Result<bool> {
+    parse_on_off_named(value, "suppressLineNumbers")
+}
+
+fn parse_on_off_named(value: &str, property: &str) -> Result<bool> {
     match value {
         "1" | "true" | "on" => Ok(true),
         "0" | "false" | "off" => Ok(false),
         _ => Err(Error::Reverse(format!(
-            "invalid on/off value `{value}` for w:suppressLineNumbers; use true, false, 1, 0, on, or off"
+            "invalid on/off value `{value}` for w:{property}; use true, false, 1, 0, on, or off"
         ))),
     }
 }
@@ -12329,6 +12401,51 @@ mod tests {
         assert!(
             jsx.contains("<ListItem suppressLineNumbers={true}>"),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_contextual_spacing_without_manifest() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","paragraph":{"contextualSpacing":false}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"contextualSpacing":true},"children":["on"]},{"type":"Paragraph","props":{"contextualSpacing":false},"children":["off"]},{"type":"List","props":{"type":"bullet"},"children":[{"type":"ListItem","props":{"contextualSpacing":true},"children":["item"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("valid document should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(jsx.contains("contextualSpacing={true}"), "{jsx}");
+        assert!(jsx.contains("contextualSpacing={false}"), "{jsx}");
+        assert!(
+            jsx.contains("\"contextualSpacing\":false"),
+            "style property must preserve explicit false: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_invalid_contextual_spacing_with_repair() {
+        let bytes = external_docx(
+            Paragraph::new().add_run(Run::new().add_text("invalid contextual spacing")),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        document = document.replace(
+            "<w:pPr><w:rPr /></w:pPr>",
+            r#"<w:pPr><w:contextualSpacing w:val="maybe" /><w:rPr /></w:pPr>"#,
+        );
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let error = reverse_document(&external)
+            .expect_err("invalid contextual spacing must not be silently discarded");
+        assert!(
+            error.to_string().contains("invalid on/off value")
+                && error.to_string().contains("w:contextualSpacing")
+                && error.to_string().contains("use true, false"),
+            "{error}"
         );
     }
 

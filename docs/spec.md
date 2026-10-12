@@ -382,6 +382,9 @@ error instead of a silent drop.
   line-spacing controls. The `*Lines` values are non-negative integers in
   OOXML hundredths-of-a-line units and may be combined with point spacing.
 - `Paragraph`: also accepts `snapToGrid?`, `widowControl?`, `bidi?`,
+  `contextualSpacing?: boolean` preserves `w:contextualSpacing` (including an
+  explicit false value) on `Paragraph`, `Heading`, and `ListItem`; the inherited
+  form is `Document.styles[].paragraph.contextualSpacing?: boolean`.
   `suppressLineNumbers?: boolean` suppresses active section line numbers for this
   paragraph; it is independent of section `lineNumbering` and preserves explicit
   `false` when reversing external DOCX. It is supported on `Paragraph`, `Heading`,

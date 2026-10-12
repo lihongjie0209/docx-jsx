@@ -598,6 +598,78 @@ export default <Document><Section><Paragraph inserted={{author:"Ada",date:"2026-
 }
 
 #[test]
+fn cli_should_roundtrip_contextual_spacing_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("contextual-spacing.tsx");
+    let compiled = directory.path().join("contextual-spacing.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    let rebuilt_external = directory.path().join("rebuilt-external.docx");
+    let rebuilt_jsx = directory.path().join("rebuilt.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph, Heading, List, ListItem } from "docx-jsx";
+export default <Document styles={[{id:"Body",name:"Body",type:"paragraph",paragraph:{contextualSpacing:false}}]}><Section><Paragraph contextualSpacing>on</Paragraph><Paragraph contextualSpacing={false}>off</Paragraph><Heading level={2} contextualSpacing>heading</Heading><List type="bullet"><ListItem contextualSpacing>item</ListItem></List></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        jsx.contains("contextualSpacing={true}")
+            && jsx.contains("contextualSpacing={false}")
+            && jsx.contains(r#""contextualSpacing":false"#),
+        "CLI reverse should preserve paragraph, heading, list-item, and style values: {jsx}"
+    );
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    fs::write(
+        &rebuilt_external,
+        strip_ir_manifest(&fs::read(&rebuilt).expect("rebuilt DOCX should exist")),
+    )
+    .expect("rebuilt manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&rebuilt_external)
+        .args(["-o"])
+        .arg(&rebuilt_jsx)
+        .assert()
+        .success();
+    let rebuilt_jsx = fs::read_to_string(rebuilt_jsx).expect("rebuilt reverse JSX should exist");
+    assert!(
+        rebuilt_jsx.contains("contextualSpacing={true}")
+            && rebuilt_jsx.contains("contextualSpacing={false}")
+            && rebuilt_jsx.contains(r#""contextualSpacing":false"#),
+        "contextual spacing should survive a full CLI reverse/recompile cycle: {rebuilt_jsx}"
+    );
+}
+
+#[test]
 fn cli_should_roundtrip_run_vertical_alignment_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("run-alignment.tsx");

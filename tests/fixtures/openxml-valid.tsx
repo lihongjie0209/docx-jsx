@@ -85,7 +85,7 @@ export default (
       { id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: { fonts: { ascii: "Times New Roman", eastAsia: "Noto Sans CJK SC", hint: "eastAsia" }, size: 11 }, paragraph: { keepNext: false, keepLines: false } },
       { id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: { italic: true } },
       { id: "NoLineNumbers", name: "No Line Numbers", type: "paragraph", paragraph: { suppressLineNumbers: true } },
-      { id: "StyleAllProps", name: "Extended Paragraph Properties", type: "paragraph", paragraph: { pageBreakBefore: true, widowControl: false, bidi: true, shading: "DDEEFF", adjustRightIndent: 1 } },
+      { id: "StyleAllProps", name: "Extended Paragraph Properties", type: "paragraph", paragraph: { pageBreakBefore: true, widowControl: false, bidi: true, shading: "DDEEFF", adjustRightIndent: 1, contextualSpacing: false } },
       { id: "RunStyleAllProps", name: "Extended Run Properties", type: "character", run: { size: 12, sizeCs: 15, bold: false, boldCs: true, italic: false, italicCs: true, strike: true, doubleStrike: false, caps: true, verticalAlign: "superscript", characterSpacing: -1.5 } },
       { id: "RunVisualEffects", name: "Run Visual Effects", type: "character", run: { fitText: { width: 42, id: 9 }, stretch: 125, specVanish: true, shading: { fill: "FFF2CC", color: "336699", pattern: "pct20" } } },
       { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center", indent: 6 }, cell: { verticalAlign: "center", shading: "EAF2F8", margins: { top: 1, right: 1, bottom: 1, left: 1 } } },
@@ -148,6 +148,12 @@ export default (
       </Paragraph>
       <Paragraph suppressLineNumbers={false}>
         This paragraph explicitly keeps section line numbering.
+      </Paragraph>
+      <Paragraph contextualSpacing>
+        Adjacent paragraphs with this style do not add contextual spacing.
+      </Paragraph>
+      <Paragraph contextualSpacing={false}>
+        This paragraph explicitly disables contextual spacing.
       </Paragraph>
       <Paragraph style="NoLineNumbers">
         This style inherits line-number suppression.

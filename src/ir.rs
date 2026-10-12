@@ -1233,6 +1233,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::ListItem => &[
             "level",
             "style",
+            "contextualSpacing",
             "suppressLineNumbers",
             "indentLeftChars",
             "indentStartChars",
@@ -1468,6 +1469,7 @@ fn paragraph_props() -> &'static [&'static str] {
         "hangingChars",
         "keepNext",
         "keepLines",
+        "contextualSpacing",
         "pageBreakBefore",
         "snapToGrid",
         "widowControl",
@@ -1516,6 +1518,7 @@ fn heading_props() -> &'static [&'static str] {
         "hangingChars",
         "keepNext",
         "keepLines",
+        "contextualSpacing",
         "pageBreakBefore",
         "snapToGrid",
         "widowControl",
@@ -1874,6 +1877,7 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
         for key in [
             "keepNext",
             "keepLines",
+            "contextualSpacing",
             "pageBreakBefore",
             "snapToGrid",
             "widowControl",
@@ -3076,6 +3080,7 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             "adjustRightIndent",
             "keepNext",
             "keepLines",
+            "contextualSpacing",
             "spacingBefore",
             "spacingAfter",
             "lineSpacing",
@@ -3200,6 +3205,7 @@ fn validate_style_paragraph_layout(paragraph: &Map<String, Value>, path: &str) -
     for key in [
         "keepNext",
         "keepLines",
+        "contextualSpacing",
         "suppressLineNumbers",
         "pageBreakBefore",
         "widowControl",
@@ -5281,6 +5287,13 @@ fn validate_list_item_props(node: &Node, path: &str) -> Result<()> {
         .is_some_and(|value| !value.is_boolean())
     {
         return Err(validation(path, "`suppressLineNumbers` must be a boolean"));
+    }
+    if node
+        .props
+        .get("contextualSpacing")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(validation(path, "`contextualSpacing` must be a boolean"));
     }
     if let Some(value) = node.props.get("level")
         && value.as_u64().is_none_or(|level| level > 8)
@@ -7445,6 +7458,31 @@ mod tests {
         );
         ir.validate()
             .expect("valid character-unit indentation should pass validation");
+    }
+
+    #[test]
+    fn validate_should_accept_contextual_spacing_on_paragraphs_and_styles() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","paragraph":{"contextualSpacing":false}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"contextualSpacing":true},"children":["first"]},{"type":"Heading","props":{"level":2,"contextualSpacing":false},"children":["heading"]},{"type":"List","props":{"type":"bullet"},"children":[{"type":"ListItem","props":{"contextualSpacing":true},"children":["item"]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("contextual spacing must be valid on paragraphs and paragraph styles");
+    }
+
+    #[test]
+    fn validate_should_reject_non_boolean_contextual_spacing() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"contextualSpacing":"yes"},"children":[]}] }]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("contextual spacing requires an explicit boolean");
+        assert!(
+            error
+                .to_string()
+                .contains("`contextualSpacing` must be a boolean"),
+            "{error}"
+        );
     }
 
     #[test]

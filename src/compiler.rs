@@ -53,6 +53,7 @@ struct ParagraphPropertyPatch {
     indentation: BTreeMap<String, i64>,
     temporary_id: bool,
     suppress_line_numbers: Option<bool>,
+    contextual_spacing: Option<bool>,
 }
 
 struct IndexFieldParagraphPatch {
@@ -963,7 +964,8 @@ fn register_paragraph_character_indentation(
         .props
         .get("suppressLineNumbers")
         .and_then(Value::as_bool);
-    if attributes.is_empty() && suppress_line_numbers.is_none() {
+    let contextual_spacing = node.props.get("contextualSpacing").and_then(Value::as_bool);
+    if attributes.is_empty() && suppress_line_numbers.is_none() && contextual_spacing.is_none() {
         return (paragraph, false);
     }
     let (id, is_temporary) = if let Some(id) = node.props.get("paragraphId").and_then(Value::as_str)
@@ -980,6 +982,7 @@ fn register_paragraph_character_indentation(
             indentation: attributes,
             temporary_id: is_temporary,
             suppress_line_numbers,
+            contextual_spacing,
         });
     (paragraph, has_character_indents)
 }
@@ -1034,6 +1037,7 @@ fn patch_paragraph_character_indentation(
                 &patch.indentation,
                 patch.temporary_id,
                 patch.suppress_line_numbers,
+                patch.contextual_spacing,
             )? {
                 matched.insert(patch.paragraph_id.as_str());
                 changed = true;
@@ -1078,12 +1082,17 @@ fn patch_paragraph_character_indentation(
         .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "paragraph package repair keeps marker matching and ordered property insertion together"
+)]
 fn patch_paragraph_indentation_xml(
     xml: &mut String,
     id: &str,
     attributes: &BTreeMap<String, i64>,
     temporary_id: bool,
     suppress_line_numbers: Option<bool>,
+    contextual_spacing: Option<bool>,
 ) -> Result<bool> {
     let marker = format!(r#"w14:paraId="{id}""#);
     let Some(marker_start) = xml.find(&marker) else {
@@ -1113,6 +1122,13 @@ fn patch_paragraph_indentation_xml(
             }
         })
         .unwrap_or_default();
+    let contextual_xml = contextual_spacing.map_or_else(String::new, |value| {
+        if value {
+            "<w:contextualSpacing />".to_owned()
+        } else {
+            "<w:contextualSpacing w:val=\"0\" />".to_owned()
+        }
+    });
     let paragraph = &xml[paragraph_start..paragraph_end];
     if let Some(ppr_relative) = paragraph.find("<w:pPr") {
         let ppr_start = paragraph_start + ppr_relative;
@@ -1133,7 +1149,7 @@ fn patch_paragraph_indentation_xml(
             };
             xml.replace_range(
                 ppr_start..ppr_open_end,
-                &format!("<w:pPr>{indentation}{suppress_xml}</w:pPr>"),
+                &format!("<w:pPr>{indentation}{suppress_xml}{contextual_xml}</w:pPr>"),
             );
         } else if let Some(ind_relative) = xml[ppr_open_end..paragraph_end].find("<w:ind") {
             let ind_start = ppr_open_end + ind_relative;
@@ -1145,19 +1161,22 @@ fn patch_paragraph_indentation_xml(
                 ind_end -= 1;
             }
             xml.insert_str(ind_end, &attrs);
-            if !suppress_xml.is_empty() {
+            if !suppress_xml.is_empty() || !contextual_xml.is_empty() {
                 let ppr_end = xml[ppr_open_end..paragraph_end]
                     .find("</w:pPr>")
                     .map(|at| ppr_open_end + at)
                     .ok_or_else(|| Error::Compile(format!("invalid w:pPr for paragraph `{id}`")))?;
-                xml.insert_str(ppr_end, suppress_xml);
+                xml.insert_str(ppr_end, &format!("{suppress_xml}{contextual_xml}"));
             }
         } else {
             let ppr_end = xml[ppr_open_end..paragraph_end]
                 .find("</w:pPr>")
                 .map(|at| ppr_open_end + at)
                 .ok_or_else(|| Error::Compile(format!("invalid w:pPr for paragraph `{id}`")))?;
-            xml.insert_str(ppr_end, &format!("<w:ind{attrs} />{suppress_xml}"));
+            xml.insert_str(
+                ppr_end,
+                &format!("<w:ind{attrs} />{suppress_xml}{contextual_xml}"),
+            );
         }
     } else {
         let indentation = if attrs.is_empty() {
@@ -1167,7 +1186,7 @@ fn patch_paragraph_indentation_xml(
         };
         xml.insert_str(
             start_tag_end,
-            &format!("<w:pPr>{indentation}{suppress_xml}</w:pPr>"),
+            &format!("<w:pPr>{indentation}{suppress_xml}{contextual_xml}</w:pPr>"),
         );
     }
     if temporary_id {
@@ -2607,11 +2626,14 @@ fn patch_style_character_indentation(
             let suppress_line_numbers = paragraph
                 .get("suppressLineNumbers")
                 .and_then(Value::as_bool);
-            (!attrs.is_empty() || suppress_line_numbers.is_some()).then_some((
-                id.to_owned(),
-                attrs,
-                suppress_line_numbers,
-            ))
+            let contextual_spacing = paragraph.get("contextualSpacing").and_then(Value::as_bool);
+            (!attrs.is_empty() || suppress_line_numbers.is_some() || contextual_spacing.is_some())
+                .then_some((
+                    id.to_owned(),
+                    attrs,
+                    suppress_line_numbers,
+                    contextual_spacing,
+                ))
         })
         .collect::<Vec<_>>();
     if style_patches.is_empty() {
@@ -2625,7 +2647,7 @@ fn patch_style_character_indentation(
         .map_err(|error| Error::Compile(format!("missing styles: {error}")))?
         .read_to_string(&mut xml)
         .map_err(|error| Error::Compile(format!("cannot read styles: {error}")))?;
-    for (id, properties, suppress_line_numbers) in style_patches {
+    for (id, properties, suppress_line_numbers, contextual_spacing) in style_patches {
         let marker = format!(r#"w:styleId="{}""#, xml_escape(&id));
         let marker_start = xml.find(&marker).ok_or_else(|| {
             Error::Compile(format!("docx-rs omitted custom paragraph style `{id}`"))
@@ -2650,6 +2672,13 @@ fn patch_style_character_indentation(
                 }
             })
             .unwrap_or_default();
+        let contextual_xml = contextual_spacing.map_or_else(String::new, |value| {
+            if value {
+                "<w:contextualSpacing />".to_owned()
+            } else {
+                "<w:contextualSpacing w:val=\"0\" />".to_owned()
+            }
+        });
         let segment = &xml[style_start..style_end];
         if let Some(ppr_relative) = segment.find("<w:pPr") {
             let ppr_start = style_start + ppr_relative;
@@ -2663,7 +2692,8 @@ fn patch_style_character_indentation(
                 } else {
                     format!("<w:ind{attrs} />")
                 };
-                let replacement = format!("<w:pPr>{indentation}{suppress_xml}</w:pPr>");
+                let replacement =
+                    format!("<w:pPr>{indentation}{suppress_xml}{contextual_xml}</w:pPr>");
                 xml.replace_range(ppr_start..ppr_open_end, &replacement);
             } else {
                 let ppr_end = xml[ppr_open_end..style_end]
@@ -2680,14 +2710,17 @@ fn patch_style_character_indentation(
                         ind_end -= 1;
                     }
                     xml.insert_str(ind_end, &attrs);
-                    xml.insert_str(ppr_end, suppress_xml);
+                    xml.insert_str(ppr_end, &format!("{suppress_xml}{contextual_xml}"));
                 } else {
                     let indentation = if attrs.is_empty() {
                         String::new()
                     } else {
                         format!("<w:ind{attrs} />")
                     };
-                    xml.insert_str(ppr_end, &format!("{indentation}{suppress_xml}"));
+                    xml.insert_str(
+                        ppr_end,
+                        &format!("{indentation}{suppress_xml}{contextual_xml}"),
+                    );
                 }
             }
         } else {
@@ -2703,7 +2736,7 @@ fn patch_style_character_indentation(
             };
             xml.insert_str(
                 insertion,
-                &format!("<w:pPr>{indentation}{suppress_xml}</w:pPr>"),
+                &format!("<w:pPr>{indentation}{suppress_xml}{contextual_xml}</w:pPr>"),
             );
         }
     }
@@ -9148,6 +9181,37 @@ mod tests {
                 "block content control missing from {part}: {xml}"
             );
         }
+    }
+
+    #[test]
+    fn compile_should_emit_contextual_spacing_on_paragraph_and_style_properties() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","paragraph":{"contextualSpacing":false}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"contextualSpacing":true},"children":["on"]},{"type":"Paragraph","props":{"contextualSpacing":false},"children":["off"]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part")
+            .read_to_string(&mut styles)
+            .expect("UTF-8 XML");
+        assert!(document.contains("<w:contextualSpacing />"), "{document}");
+        assert!(
+            document.contains("<w:contextualSpacing w:val=\"0\" />"),
+            "{document}"
+        );
+        assert!(
+            styles.contains("<w:contextualSpacing w:val=\"0\" />"),
+            "{styles}"
+        );
     }
 
     #[test]
