@@ -9225,7 +9225,66 @@ fn validate_run_visibility_xml(bytes: &[u8]) -> Result<()> {
 
 fn validate_external_xml_features(bytes: &[u8]) -> Result<()> {
     validate_run_visibility_xml(bytes)?;
+    validate_positional_tab_placement(bytes)?;
     validate_character_indent_xml(bytes)
+}
+
+fn validate_positional_tab_placement(bytes: &[u8]) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Reverse(format!("invalid DOCX archive: {error}")))?;
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|error| Error::Reverse(format!("cannot read DOCX part: {error}")))?;
+        let part = file.name().to_owned();
+        if !part.starts_with("word/")
+            || !Path::new(&part)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            continue;
+        }
+        let mut xml = String::new();
+        file.read_to_string(&mut xml)
+            .map_err(|error| Error::Reverse(format!("cannot read `{part}`: {error}")))?;
+        let mut reader = Reader::from_str(&xml);
+        let mut parents = Vec::new();
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(element)) => {
+                    let name = element.local_name();
+                    if name.as_ref() == b"ptab"
+                        && parents.last().is_some_and(|parent| parent == "rPr")
+                    {
+                        return Err(Error::Reverse(format!(
+                            "`{part}` contains `w:ptab` inside `w:rPr`, which is schema-invalid and would be dropped by docx-rs 0.4.22; move it to run content as `<PositionalTab align=\"left|center|right\" relativeTo=\"margin|indent\" />`"
+                        )));
+                    }
+                    parents.push(String::from_utf8_lossy(name.as_ref()).into_owned());
+                }
+                Ok(Event::Empty(element)) => {
+                    if element.local_name().as_ref() == b"ptab"
+                        && parents.last().is_some_and(|parent| parent == "rPr")
+                    {
+                        return Err(Error::Reverse(format!(
+                            "`{part}` contains `w:ptab` inside `w:rPr`, which is schema-invalid and would be dropped by docx-rs 0.4.22; move it to run content as `<PositionalTab align=\"left|center|right\" relativeTo=\"margin|indent\" />`"
+                        )));
+                    }
+                }
+                Ok(Event::End(_)) => {
+                    parents.pop();
+                }
+                Ok(Event::Eof) => break,
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "invalid `{part}` while checking positional tab placement: {error}"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn xml_attribute(
@@ -11161,6 +11220,26 @@ mod tests {
             error
                 .to_string()
                 .contains("schema-invalid in this location"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_positional_tab_inside_run_properties() {
+        let mut run = Run::new().add_text("invalid positional tab");
+        run.run_property = docx_rs::RunProperty::new().ptab(docx_rs::PositionalTab::new(
+            docx_rs::PositionalTabAlignmentType::Left,
+            docx_rs::PositionalTabRelativeTo::Margin,
+            docx_rs::TabLeaderType::None,
+        ));
+        let bytes = external_docx(Paragraph::new().add_run(run));
+
+        let error = reverse_document(&bytes)
+            .expect_err("w:ptab in w:rPr is schema-invalid and must not disappear");
+
+        assert!(
+            error.to_string().contains("schema-invalid")
+                && error.to_string().contains("PositionalTab"),
             "{error}"
         );
     }

@@ -443,7 +443,9 @@ error instead of a silent drop.
   explicit on/off values for complex-script characters only (`w:bCs` / `w:iCs`)
   and are independent from `bold?` / `italic?`. External reverse preserves
   these values independently rather than merging them into the non-complex
-  script properties.
+  script properties. `PositionalTab` is represented by a run child component,
+  not by `Run` or `StyleDefinition.run` properties; external `w:ptab` inside
+  `w:rPr` is schema-invalid and reverse reports it instead of dropping it.
   `true` is the compatibility shorthand for `"single"`; `false` means
   `"none"`. String values preserve the exact `w:u/@w:val` token. Supported
   `UnderlineStyle` values are `single`, `words`, `double`, `thick`, `dotted`,
