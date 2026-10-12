@@ -3362,9 +3362,14 @@ fn parse_complex_script_marker(
     let original_style = if style == "-" {
         None
     } else {
-        let bytes = style
-            .as_bytes()
-            .chunks_exact(2)
+        if style.len() % 2 != 0 {
+            return Err(Error::Compile(
+                "malformed encoded style in run marker".to_owned(),
+            ));
+        }
+        let (pairs, _) = style.as_bytes().as_chunks::<2>();
+        let bytes = pairs
+            .iter()
             .map(|pair| {
                 let hex = std::str::from_utf8(pair)
                     .map_err(|error| Error::Compile(format!("invalid style marker: {error}")))?;
@@ -3372,11 +3377,6 @@ fn parse_complex_script_marker(
                     .map_err(|error| Error::Compile(format!("invalid style marker: {error}")))
             })
             .collect::<Result<Vec<_>>>()?;
-        if style.len() % 2 != 0 {
-            return Err(Error::Compile(
-                "malformed encoded style in run marker".to_owned(),
-            ));
-        }
         Some(String::from_utf8(bytes).map_err(|error| {
             Error::Compile(format!("invalid UTF-8 in encoded run style: {error}"))
         })?)

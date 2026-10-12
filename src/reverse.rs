@@ -366,9 +366,9 @@ fn decode_marker_text(value: &str) -> Result<Option<String>> {
             "malformed encoded complex-script style marker".to_owned(),
         ));
     }
-    let bytes = value
-        .as_bytes()
-        .chunks_exact(2)
+    let (pairs, _) = value.as_bytes().as_chunks::<2>();
+    let bytes = pairs
+        .iter()
         .map(|pair| {
             let hex = std::str::from_utf8(pair)
                 .map_err(|error| Error::Reverse(format!("invalid style marker: {error}")))?;
@@ -4268,7 +4268,8 @@ fn index_instruction_attributes(
             )));
         }
         let mut mappings = Vec::new();
-        for pair in entries.chunks_exact(2) {
+        let (pairs, _) = entries.as_slice().as_chunks::<2>();
+        for pair in pairs {
             let level = pair[1]
                 .parse::<u64>()
                 .ok()

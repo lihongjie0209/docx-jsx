@@ -2717,16 +2717,15 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
         require_number(value, path, "run.size", true)?;
     }
     validate_font_choice(run, path, "font", "fonts")?;
-    for key in ["highlight"] {
-        if run
-            .get(key)
-            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
-        {
-            return Err(validation(
-                path,
-                format!("style run `{key}` must be non-empty"),
-            ));
-        }
+    let key = "highlight";
+    if run
+        .get(key)
+        .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(validation(
+            path,
+            format!("style run `{key}` must be non-empty"),
+        ));
     }
     if let Some(value) = run.get("color") {
         validate_rgb(value, path, "style run `color`")?;
