@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 - 2026-10-13
+
+- Add `Image.description` and `Image.title` for accessible image metadata,
+  preserving `wp:docPr/@descr` and `@title` when compiling and reversing
+  external DOCX packages without the embedded IR manifest.
+- Validate non-empty image metadata and relationship IDs, cover escaped XML
+  values and image metadata in simple-position anchors, and run the fixture
+  through Microsoft Open XML SDK validation.
+
 ## 0.6.0 - 2026-10-13
 
 - Preserve paragraph `mirrorIndents` and `suppressOverlap` on paragraphs,
