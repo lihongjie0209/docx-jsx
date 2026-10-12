@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 - 2026-10-13
+
+- Preserve paragraph `mirrorIndents` and `suppressOverlap` on paragraphs,
+  headings, list items, and paragraph styles when compiling and reversing
+  external DOCX files.
+- Keep explicit on/off values in OOXML and validate the paragraph flags as
+  booleans; extend the Agent specification, feature matrix, and Open XML
+  integration fixture.
+
 ## 0.5.0 - 2026-08-15
 
 - Add optional PDF export through a local Microsoft Word, WPS Writer, or

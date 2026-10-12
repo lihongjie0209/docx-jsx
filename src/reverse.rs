@@ -905,6 +905,8 @@ struct ParagraphIndentMetadata {
     values: BTreeMap<String, i64>,
     suppress_line_numbers: Option<bool>,
     contextual_spacing: Option<bool>,
+    mirror_indents: Option<bool>,
+    suppress_overlap: Option<bool>,
 }
 
 type RawIndexParagraphProperties = Vec<(String, BTreeMap<String, String>)>;
@@ -1535,6 +1537,12 @@ impl Writer {
         }
         if let Some(value) = raw_indent.contextual_spacing {
             attrs.push(jsx_prop("contextualSpacing", &Value::Bool(value))?);
+        }
+        if let Some(value) = raw_indent.mirror_indents {
+            attrs.push(jsx_prop("mirrorIndents", &Value::Bool(value))?);
+        }
+        if let Some(value) = raw_indent.suppress_overlap {
+            attrs.push(jsx_prop("suppressOverlap", &Value::Bool(value))?);
         }
         if let Some(value) = property.get("alignment").and_then(scalar_string) {
             attrs.push(attr("align", value));
@@ -2582,6 +2590,12 @@ impl Writer {
         }
         if let Some(value) = raw_indent.contextual_spacing {
             attrs.push_str(&jsx_prop("contextualSpacing", &Value::Bool(value))?);
+        }
+        if let Some(value) = raw_indent.mirror_indents {
+            attrs.push_str(&jsx_prop("mirrorIndents", &Value::Bool(value))?);
+        }
+        if let Some(value) = raw_indent.suppress_overlap {
+            attrs.push_str(&jsx_prop("suppressOverlap", &Value::Bool(value))?);
         }
         if let Some(level) =
             nested(&property, &["numberingProperty", "level"]).and_then(Value::as_u64)
@@ -5561,6 +5575,32 @@ fn collect_paragraph_indent_metadata(
                         }
                     }
                 }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"mirrorIndents" =>
+                {
+                    if let Some(index) = active_paragraphs.last().copied() {
+                        let value =
+                            paragraph_xml_on_off(&reader, &element, &part, "mirrorIndents")?;
+                        if paragraphs[index].mirror_indents.replace(value).is_some() {
+                            return Err(Error::Reverse(format!(
+                                "{part} contains duplicate w:mirrorIndents elements in one paragraph"
+                            )));
+                        }
+                    }
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"suppressOverlap" =>
+                {
+                    if let Some(index) = active_paragraphs.last().copied() {
+                        let value =
+                            paragraph_xml_on_off(&reader, &element, &part, "suppressOverlap")?;
+                        if paragraphs[index].suppress_overlap.replace(value).is_some() {
+                            return Err(Error::Reverse(format!(
+                                "{part} contains duplicate w:suppressOverlap elements in one paragraph"
+                            )));
+                        }
+                    }
+                }
                 Ok(Event::End(element)) if element.local_name().as_ref() == b"p" => {
                     if let Some(index) = active_paragraphs.pop() {
                         validate_raw_character_indent(&paragraphs[index].values, "paragraph")?;
@@ -6319,6 +6359,24 @@ fn collect_style_paragraph_xml_metadata(
                             &element,
                             current_style.as_deref().unwrap_or_default(),
                             "contextualSpacing",
+                        )?),
+                    ),
+                    b"mirrorIndents" => (
+                        "mirrorIndents",
+                        Some(style_xml_on_off_named(
+                            &reader,
+                            &element,
+                            current_style.as_deref().unwrap_or_default(),
+                            "mirrorIndents",
+                        )?),
+                    ),
+                    b"suppressOverlap" => (
+                        "suppressOverlap",
+                        Some(style_xml_on_off_named(
+                            &reader,
+                            &element,
+                            current_style.as_deref().unwrap_or_default(),
+                            "suppressOverlap",
                         )?),
                     ),
                     b"adjustRightInd" => {
@@ -9116,6 +9174,30 @@ fn scalar_i64(value: &Value) -> Option<i64> {
 
 fn parse_on_off(value: &str) -> Result<bool> {
     parse_on_off_named(value, "suppressLineNumbers")
+}
+
+fn paragraph_xml_on_off(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+    part: &str,
+    property: &str,
+) -> Result<bool> {
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|error| {
+            Error::Reverse(format!("invalid w:{property} attribute in {part}: {error}"))
+        })?;
+        if attribute.key.local_name().as_ref() != b"val" {
+            return Err(Error::Reverse(format!(
+                "{part} has unsupported attribute `{}` on w:{property}; remove it or extend the paragraph specification",
+                String::from_utf8_lossy(attribute.key.local_name().as_ref())
+            )));
+        }
+    }
+    xml_attribute(reader, element, b"val")?
+        .as_deref()
+        .map(|value| parse_on_off_named(value, property))
+        .transpose()
+        .map(|value| value.unwrap_or(true))
 }
 
 fn parse_on_off_named(value: &str, property: &str) -> Result<bool> {
@@ -12447,6 +12529,23 @@ mod tests {
                 && error.to_string().contains("use true, false"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_mirror_indents_and_suppress_overlap() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Framed","name":"Framed","type":"paragraph","paragraph":{"mirrorIndents":true,"suppressOverlap":false}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"mirrorIndents":false,"suppressOverlap":true},"children":["body"]},{"type":"List","props":{"type":"bullet"},"children":[{"type":"ListItem","props":{"mirrorIndents":true,"suppressOverlap":false},"children":["item"]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("valid document should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(jsx.contains("mirrorIndents={true}"), "{jsx}");
+        assert!(jsx.contains("mirrorIndents={false}"), "{jsx}");
+        assert!(jsx.contains("suppressOverlap={true}"), "{jsx}");
+        assert!(jsx.contains("suppressOverlap={false}"), "{jsx}");
+        assert!(jsx.contains(r#""suppressOverlap":false"#), "{jsx}");
     }
 
     #[test]

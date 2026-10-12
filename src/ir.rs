@@ -1234,6 +1234,8 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "level",
             "style",
             "contextualSpacing",
+            "mirrorIndents",
+            "suppressOverlap",
             "suppressLineNumbers",
             "indentLeftChars",
             "indentStartChars",
@@ -1470,6 +1472,8 @@ fn paragraph_props() -> &'static [&'static str] {
         "keepNext",
         "keepLines",
         "contextualSpacing",
+        "mirrorIndents",
+        "suppressOverlap",
         "pageBreakBefore",
         "snapToGrid",
         "widowControl",
@@ -1519,6 +1523,8 @@ fn heading_props() -> &'static [&'static str] {
         "keepNext",
         "keepLines",
         "contextualSpacing",
+        "mirrorIndents",
+        "suppressOverlap",
         "pageBreakBefore",
         "snapToGrid",
         "widowControl",
@@ -1878,6 +1884,8 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
             "keepNext",
             "keepLines",
             "contextualSpacing",
+            "mirrorIndents",
+            "suppressOverlap",
             "pageBreakBefore",
             "snapToGrid",
             "widowControl",
@@ -3081,6 +3089,8 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             "keepNext",
             "keepLines",
             "contextualSpacing",
+            "mirrorIndents",
+            "suppressOverlap",
             "spacingBefore",
             "spacingAfter",
             "lineSpacing",
@@ -3206,6 +3216,8 @@ fn validate_style_paragraph_layout(paragraph: &Map<String, Value>, path: &str) -
         "keepNext",
         "keepLines",
         "contextualSpacing",
+        "mirrorIndents",
+        "suppressOverlap",
         "suppressLineNumbers",
         "pageBreakBefore",
         "widowControl",
@@ -5294,6 +5306,11 @@ fn validate_list_item_props(node: &Node, path: &str) -> Result<()> {
         .is_some_and(|value| !value.is_boolean())
     {
         return Err(validation(path, "`contextualSpacing` must be a boolean"));
+    }
+    for key in ["mirrorIndents", "suppressOverlap"] {
+        if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(path, format!("`{key}` must be a boolean")));
+        }
     }
     if let Some(value) = node.props.get("level")
         && value.as_u64().is_none_or(|level| level > 8)
@@ -7483,6 +7500,33 @@ mod tests {
                 .contains("`contextualSpacing` must be a boolean"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn validate_should_accept_mirror_indents() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Framed","name":"Framed","type":"paragraph","paragraph":{"mirrorIndents":true,"suppressOverlap":false}}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"mirrorIndents":false,"suppressOverlap":true},"children":["paragraph"]},{"type":"Heading","props":{"level":2,"mirrorIndents":true},"children":["heading"]},{"type":"List","props":{"type":"bullet"},"children":[{"type":"ListItem","props":{"suppressOverlap":false},"children":["item"]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("paragraph layout flags must validate on supported node types");
+    }
+
+    #[test]
+    fn validate_should_reject_non_boolean_paragraph_layout_flags() {
+        for property in ["mirrorIndents", "suppressOverlap"] {
+            let ir = parse(&format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{}},"children":[{{"type":"Section","props":{{}},"children":[{{"type":"Paragraph","props":{{"{property}":"yes"}},"children":[]}}]}}]}}}}"#
+            ));
+            let error = ir
+                .validate()
+                .expect_err("paragraph layout flags require booleans");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("`{property}` must be a boolean")),
+                "{error}"
+            );
+        }
     }
 
     #[test]

@@ -670,6 +670,80 @@ export default <Document styles={[{id:"Body",name:"Body",type:"paragraph",paragr
 }
 
 #[test]
+fn cli_should_roundtrip_mirror_indents_and_suppress_overlap_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("paragraph-layout.tsx");
+    let compiled = directory.path().join("paragraph-layout.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    let rebuilt_external = directory.path().join("rebuilt-external.docx");
+    let rebuilt_jsx = directory.path().join("rebuilt.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph, Heading, List, ListItem } from "docx-jsx";
+export default <Document styles={[{id:"Layout",name:"Layout",type:"paragraph",paragraph:{mirrorIndents:true,suppressOverlap:false}}]}><Section><Paragraph mirrorIndents={false} suppressOverlap frame={{wrap:"around",horizontalAnchor:"margin",verticalAnchor:"text",x:0,y:0,width:120,height:36}}>body</Paragraph><Heading level={2} mirrorIndents>heading</Heading><List type="bullet"><ListItem suppressOverlap>item</ListItem></List></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        jsx.contains("mirrorIndents={true}")
+            && jsx.contains("mirrorIndents={false}")
+            && jsx.contains("suppressOverlap={true}")
+            && jsx.contains(r#""suppressOverlap":false"#),
+        "CLI reverse should preserve paragraph, heading, list-item, and style flags: {jsx}"
+    );
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    fs::write(
+        &rebuilt_external,
+        strip_ir_manifest(&fs::read(&rebuilt).expect("rebuilt DOCX should exist")),
+    )
+    .expect("rebuilt manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&rebuilt_external)
+        .args(["-o"])
+        .arg(&rebuilt_jsx)
+        .assert()
+        .success();
+    let rebuilt_jsx = fs::read_to_string(rebuilt_jsx).expect("rebuilt reverse JSX should exist");
+    assert!(
+        rebuilt_jsx.contains("mirrorIndents={true}")
+            && rebuilt_jsx.contains("mirrorIndents={false}")
+            && rebuilt_jsx.contains("suppressOverlap={true}")
+            && rebuilt_jsx.contains(r#""suppressOverlap":false"#),
+        "paragraph layout flags should survive a complete CLI round trip: {rebuilt_jsx}"
+    );
+}
+
+#[test]
 fn cli_should_roundtrip_run_vertical_alignment_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("run-alignment.tsx");

@@ -385,6 +385,11 @@ error instead of a silent drop.
   `contextualSpacing?: boolean` preserves `w:contextualSpacing` (including an
   explicit false value) on `Paragraph`, `Heading`, and `ListItem`; the inherited
   form is `Document.styles[].paragraph.contextualSpacing?: boolean`.
+  `mirrorIndents?: boolean` writes `w:mirrorIndents` to interpret left/right
+  indents as inside/outside indents on mirrored pages. `suppressOverlap?: boolean`
+  writes `w:suppressOverlap` for framed paragraphs to prevent overlapping text
+  frames. Both preserve explicit false and are supported on `Paragraph`,
+  `Heading`, `ListItem`, and `Document.styles[].paragraph`.
   `suppressLineNumbers?: boolean` suppresses active section line numbers for this
   paragraph; it is independent of section `lineNumbering` and preserves explicit
   `false` when reversing external DOCX. It is supported on `Paragraph`, `Heading`,
