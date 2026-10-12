@@ -730,6 +730,12 @@ impl Writer {
     fn emit_nested_blocks(&mut self, children: &[NestedBlock<'_>], depth: usize) -> Result<()> {
         let mut index = 0;
         while index < children.len() {
+            if let Some((field, consumed_paragraphs)) = unwrapped_index_at(children, index)? {
+                self.index_component(&field, depth)?;
+                self.paragraph_index += consumed_paragraphs;
+                index += consumed_paragraphs;
+                continue;
+            }
             if section_break_of(&children[index]).is_some()
                 && is_section_break_marker(&children[index])
             {
@@ -2716,6 +2722,115 @@ fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
         }
     }
     Ok(Some(index))
+}
+
+fn unwrapped_index_at(
+    children: &[NestedBlock<'_>],
+    index: usize,
+) -> Result<Option<(IndexField, usize)>> {
+    let Some(NestedBlock::Child(DocumentChild::Paragraph(begin))) = children.get(index) else {
+        return Ok(None);
+    };
+    let Some(NestedBlock::Child(DocumentChild::Paragraph(end))) = children.get(index + 1) else {
+        return Ok(None);
+    };
+    if !paragraph_has_only_field_end(end) {
+        return Ok(None);
+    }
+    let begin_flags = toc_field_paragraph_flags(begin);
+    let end_flags = toc_field_paragraph_flags(end);
+    if !begin_flags.0 || begin_flags.1 || begin_flags.2 || !end_flags.1 || end_flags.0 {
+        return Ok(None);
+    }
+    let Some(instruction) = toc_instruction_from_paragraph(begin) else {
+        return Ok(None);
+    };
+    let Some(mut field) = parse_toc_instruction(&instruction)? else {
+        return Ok(None);
+    };
+    let attributes = match &mut field {
+        IndexField::Contents { attributes, .. }
+        | IndexField::Figures { attributes, .. }
+        | IndexField::Entries { attributes, .. } => attributes,
+    };
+    attributes.push_str(" withoutSdt");
+    if let Some(dirty) = paragraph_field_dirty(begin) {
+        if dirty {
+            attributes.push_str(" dirty");
+        } else {
+            attributes.push_str(" dirty={false}");
+        }
+    }
+    Ok(Some((field, 2)))
+}
+
+fn toc_instruction_from_paragraph(paragraph: &docx_rs::Paragraph) -> Option<String> {
+    let mut started = false;
+    let mut in_instruction = false;
+    let mut separated = false;
+    let mut instruction = String::new();
+    for child in &paragraph.children {
+        let ParagraphChild::Run(run) = child else {
+            return None;
+        };
+        for child in &run.children {
+            match child {
+                RunChild::FieldChar(field)
+                    if field.field_char_type == docx_rs::FieldCharType::Begin
+                        && !started
+                        && !separated =>
+                {
+                    started = true;
+                    in_instruction = true;
+                }
+                RunChild::InstrTextString(value) if in_instruction => {
+                    instruction.push_str(value);
+                }
+                RunChild::FieldChar(field)
+                    if field.field_char_type == docx_rs::FieldCharType::Separate
+                        && in_instruction
+                        && !separated =>
+                {
+                    in_instruction = false;
+                    separated = true;
+                }
+                _ => return None,
+            }
+        }
+    }
+    (started && separated && !instruction.is_empty()).then_some(instruction)
+}
+
+fn paragraph_has_only_field_end(paragraph: &docx_rs::Paragraph) -> bool {
+    let mut end_count = 0;
+    for child in &paragraph.children {
+        let ParagraphChild::Run(run) = child else {
+            return false;
+        };
+        for child in &run.children {
+            if matches!(child, RunChild::FieldChar(field) if field.field_char_type == docx_rs::FieldCharType::End)
+            {
+                end_count += 1;
+            } else {
+                return false;
+            }
+        }
+    }
+    end_count == 1
+}
+
+fn paragraph_field_dirty(paragraph: &docx_rs::Paragraph) -> Option<bool> {
+    paragraph.children.iter().find_map(|child| {
+        let ParagraphChild::Run(run) = child else {
+            return None;
+        };
+        run.children.iter().find_map(|child| {
+            let RunChild::FieldChar(field) = child else {
+                return None;
+            };
+            (field.field_char_type == docx_rs::FieldCharType::Begin).then_some(field.dirty)
+        })
+    })
 }
 
 fn toc_content_from_sdt(
@@ -8177,11 +8292,11 @@ mod tests {
     use docx_rs::{
         AbstractNumbering, BorderType, CellMargins, CharacterSpacingValues, Comment, Delete,
         DocGrid, Docx, Footer, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
-        Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing, LineSpacingType,
-        NumberFormat, Numbering, NumberingId, PageMargin, PageNumType, PageOrientationType,
-        PageSize, Paragraph, ParagraphProperty, Pic, Run, RunFonts, Section, Settings, Shading,
-        ShdType, SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Table,
-        TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
+        InstrToC, Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing,
+        LineSpacingType, NumberFormat, Numbering, NumberingId, PageMargin, PageNumType,
+        PageOrientationType, PageSize, Paragraph, ParagraphProperty, Pic, Run, RunFonts, Section,
+        Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag, Style, StyleType,
+        Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
         TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
         TableCellProperty, TableLayoutType, TableOfContents, TableOfContentsItem,
         TablePositionProperty, TableRow, TextDirectionType, ThemeColor, VAlignType, VMergeType,
@@ -9667,6 +9782,38 @@ mod tests {
         assert!(
             !toc_as_control,
             "TOC must not flatten to a nameless ContentControl: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_restore_unwrapped_dynamic_toc_without_manifest() {
+        let mut figures = TableOfContents::new();
+        figures.instr = InstrToC::new().caption_label("Figure");
+        let mut entries = TableOfContents::new();
+        entries.instr = InstrToC::new().tc_field_identifier(Some("legal".to_owned()));
+        let bytes = pack_docx(
+            Docx::new()
+                .add_table_of_contents(
+                    TableOfContents::new()
+                        .heading_styles_range(1, 3)
+                        .auto()
+                        .without_sdt(),
+                )
+                .add_table_of_contents(figures.without_sdt())
+                .add_table_of_contents(entries.without_sdt()),
+        );
+        let external = strip_ir_manifest(&bytes);
+        let jsx = reverse_document(&external).expect("unwrapped external TOC should reverse");
+        assert!(
+            jsx.contains("<TableOfContents")
+                && jsx.contains("<TableOfFigures")
+                && jsx.contains("<TableOfEntries")
+                && jsx.matches("withoutSdt").count() == 3,
+            "unwrapped field paragraphs should reconstruct all index components: {jsx}"
+        );
+        assert!(
+            !jsx.contains("<Paragraph"),
+            "the native field marker paragraphs should not leak as user paragraphs: {jsx}"
         );
     }
 

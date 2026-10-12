@@ -385,50 +385,45 @@ fn patch_index_dirty_values(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> 
     let mut xml = read_zip_text_entry(&bytes, "word/document.xml")?;
     let mut search_from = 0;
     let mut index_number = 0;
-    while let Some(relative_start) = xml[search_from..].find("<w:sdt>") {
-        let start = search_from + relative_start;
-        let Some(relative_end) = xml[start..].find("</w:sdt>") else {
+    while let Some(relative_start) = xml[search_from..].find("<w:instrText>TOC ") {
+        let instruction_start = search_from + relative_start;
+        let Some(dirty) = dirty_values.get(index_number) else {
             return Err(Error::Compile(
-                "word/document.xml contains an unclosed `w:sdt` while applying TOC dirty settings"
-                    .to_owned(),
+                "more serialized TOC fields exist than index components in the DSL; keep the DOCX structure aligned with the document tree".to_owned(),
             ));
         };
-        let end = start + relative_end + "</w:sdt>".len();
-        let control = &xml[start..end];
-        if control.contains("<w:instrText>TOC ") {
-            let Some(dirty) = dirty_values.get(index_number) else {
+        if !dirty {
+            let Some(begin) = xml[..instruction_start].rfind("<w:fldChar") else {
                 return Err(Error::Compile(
-                    "more serialized TOC controls exist than index components in the DSL; keep the DOCX structure aligned with the document tree".to_owned(),
+                    "TOC field instruction has no preceding begin field character; repair the generated field structure".to_owned(),
                 ));
             };
-            if !dirty {
-                let Some(begin) = control.find("<w:fldChar w:fldCharType=\"begin\"") else {
-                    return Err(Error::Compile(
-                        "TOC control has no begin field character; repair the generated field structure".to_owned(),
-                    ));
-                };
-                let tag_end = control[begin..]
-                    .find('>')
-                    .map(|offset| begin + offset + 1)
-                    .ok_or_else(|| {
-                        Error::Compile(
-                            "TOC begin field character is malformed; repair the generated field structure".to_owned(),
-                        )
-                    })?;
-                let tag = &control[begin..tag_end];
-                if !tag.contains("w:dirty=\"true\"") {
-                    return Err(Error::Compile(
-                        "TOC begin field character does not contain its expected dirty flag; report this docx-rs serialization change".to_owned(),
-                    ));
-                }
-                let patched = tag.replace("w:dirty=\"true\"", "w:dirty=\"false\"");
-                let absolute_begin = start + begin;
-                let absolute_end = start + tag_end;
-                xml.replace_range(absolute_begin..absolute_end, &patched);
+            if xml[begin..instruction_start].contains("</w:p>")
+                || !xml[begin..instruction_start].contains("w:fldCharType=\"begin\"")
+            {
+                return Err(Error::Compile(
+                    "TOC field instruction is not preceded by its begin marker in the same paragraph; repair the generated field structure".to_owned(),
+                ));
             }
-            index_number += 1;
+            let tag_end = xml[begin..]
+                .find('>')
+                .map(|offset| begin + offset + 1)
+                .ok_or_else(|| {
+                    Error::Compile(
+                        "TOC begin field character is malformed; repair the generated field structure".to_owned(),
+                    )
+                })?;
+            let tag = &xml[begin..tag_end];
+            if !tag.contains("w:dirty=\"true\"") {
+                return Err(Error::Compile(
+                    "TOC begin field character does not contain its expected dirty flag; report this docx-rs serialization change".to_owned(),
+                ));
+            }
+            let patched = tag.replace("w:dirty=\"true\"", "w:dirty=\"false\"");
+            xml.replace_range(begin..tag_end, &patched);
         }
-        search_from = end;
+        index_number += 1;
+        search_from = instruction_start + "<w:instrText>TOC ".len();
     }
     if index_number != dirty_values.len() {
         return Err(Error::Compile(format!(
@@ -6253,6 +6248,9 @@ fn configure_index(
     if let Some(alias) = string_prop(&node.props, "alias", path)? {
         toc = toc.alias(alias);
     }
+    if bool_prop(&node.props, "withoutSdt", path)?.unwrap_or(false) {
+        toc = toc.without_sdt();
+    }
     add_index_items(toc, node, path, entry_dir, context)
 }
 
@@ -9011,6 +9009,33 @@ mod tests {
         assert!(document.contains(">7</w:t>"), "{document}");
         assert!(document.contains("w:pos=\"8400\""), "{document}");
         assert!(!document.contains("w:pos=\"80000\""), "{document}");
+    }
+
+    #[test]
+    fn compile_should_omit_outer_sdt_for_unwrapped_dynamic_toc() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [{
+                    "type": "TableOfContents", "props": {"withoutSdt": true, "dirty": false}, "children": []
+                }]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(document.contains("TOC "), "{document}");
+        assert!(
+            document.contains("w:fldCharType=\"begin\" w:dirty=\"false\""),
+            "dirty state must patch the field marker even without an outer SDT: {document}"
+        );
+        assert!(!document.contains("<w:sdt>"), "{document}");
     }
 
     #[test]

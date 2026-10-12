@@ -124,7 +124,7 @@ export default (
         </TocAfter>
       </TableOfContents>
       <TableOfFigures label="Figure" separator="-" dirty={false} />
-      <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} />
+      <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} withoutSdt />
       <Paragraph><Deleted author="Open XML SDK"><Comment text="Deleted text review" author="Agent">removed</Comment></Deleted></Paragraph>
       <Paragraph><Deleted author="Open XML SDK"><Run><DeletedInstruction instruction={'HYPERLINK "https://example.com"'} /></Run></Deleted></Paragraph>
       <Bookmark name="validation-heading"><Heading level={1}>Open XML validation fixture</Heading></Bookmark>

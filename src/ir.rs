@@ -839,6 +839,17 @@ fn validate_child_node(parent: NodeKind, child: &Node, path: &str, index: usize)
         ));
     }
     let child_path = format!("{path}/{}[{index}]", child.kind.name());
+    if matches!(
+        child.kind,
+        NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
+    ) && child.props.get("withoutSdt") == Some(&Value::Bool(true))
+        && parent != NodeKind::Section
+    {
+        return Err(validation(
+            &child_path,
+            "`withoutSdt` is currently supported only for an index directly inside `Section`; move the index out of the table cell or omit `withoutSdt`",
+        ));
+    }
     if child.kind == NodeKind::ContentControl {
         validate_content_control_placement(parent, child, &child_path)?;
     }
@@ -1230,6 +1241,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "hyperlinks",
             "dirty",
             "alias",
+            "withoutSdt",
         ],
         NodeKind::TableOfFigures => &[
             "label",
@@ -1247,6 +1259,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "hyperlinks",
             "dirty",
             "alias",
+            "withoutSdt",
         ],
         NodeKind::TableOfEntries => &[
             "identifier",
@@ -1264,6 +1277,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "hyperlinks",
             "dirty",
             "alias",
+            "withoutSdt",
         ],
         NodeKind::TocEntry => &["text", "level", "omitPageNumber", "identifier"],
         NodeKind::Index => index_props(),
@@ -4372,7 +4386,8 @@ fn validate_index_instruction_options(node: &Node, path: &str) -> Result<()> {
         node.kind,
         NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
     ) {
-        for key in ["hyperlinks", "dirty"] {
+        validate_without_sdt(node, path)?;
+        for key in ["hyperlinks", "dirty", "withoutSdt"] {
             if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
                 return Err(validation(path, format!("`{key}` must be a boolean")));
             }
@@ -4448,6 +4463,16 @@ fn validate_index_instruction_options(node: &Node, path: &str) -> Result<()> {
     }
     if let Some(styles) = node.props.get("stylesWithLevels") {
         validate_styles_with_levels(styles, path)?;
+    }
+    Ok(())
+}
+
+fn validate_without_sdt(node: &Node, path: &str) -> Result<()> {
+    if node.props.get("withoutSdt") == Some(&Value::Bool(true)) && !node.children.is_empty() {
+        return Err(validation(
+            path,
+            "`withoutSdt` currently requires an index with no children; remove `TocItem`, `TocBefore`, and `TocAfter` or omit `withoutSdt`",
+        ));
     }
     Ok(())
 }
@@ -5445,6 +5470,45 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"startLevel":1,"endLevel":3},"children":[]},{"type":"Bookmark","props":{"name":"intro"},"children":[{"type":"Heading","props":{"level":1},"children":["Intro"]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_toc_without_sdt_when_it_has_no_children() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"withoutSdt":true},"children":[]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("an unwrapped dynamic TOC should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_toc_without_sdt_when_it_has_static_rows() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"withoutSdt":true},"children":[{"type":"TocItem","props":{"text":"Intro","bookmark":"intro"},"children":[]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("unwrapped index must not silently retain row SDT");
+        assert!(
+            error
+                .to_string()
+                .contains("requires an index with no children")
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_unwrapped_toc_inside_table_cell() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{},"children":[{"type":"TableOfContents","props":{"withoutSdt":true},"children":[]}]}]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("unwrapped field recognition is section-level only");
+        assert!(
+            error
+                .to_string()
+                .contains("supported only for an index directly inside `Section`")
+        );
     }
 
     #[test]

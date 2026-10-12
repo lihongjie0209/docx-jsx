@@ -679,7 +679,7 @@ error instead of a silent drop.
   `preserveTab?: boolean`, `preserveNewLine?: boolean`,
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
-  `dirty?: boolean`, and `alias?: string`. Defaults to
+  `dirty?: boolean`, `alias?: string`, and `withoutSdt?: boolean`. Defaults to
   levels 1–3, hyperlinks enabled, and automatic refresh requested. A section
   accepts at most one TOC, placed before its body content (headers and footers
   may precede it. Optional `TocItem` children provide a static entry row with
@@ -701,11 +701,11 @@ error instead of a silent drop.
   reader cannot currently reconstruct. The `paragraph_property` setter is
   also not exposed because it applies only to the generated automatic-field
   paragraph and arbitrary paragraph properties have no lossless index-property
-  representation. `without_sdt` is not exposed because its unwrapped dynamic
-  field cannot yet be reconstructed as one index by external reverse; static
-  rows also retain their own nested SDT in this mode. These writer APIs become
-  DSL features only when legal serialization and manifest-free reverse are
-  covered.
+  representation. `withoutSdt?: boolean` omits the outer structured document
+  tag and leaves only the native field paragraphs. It is valid only when the
+  index is a direct `Section` child and has no `TocItem`, `TocBefore`, or
+  `TocAfter` children; reverse recognizes the adjacent field-start and
+  field-end paragraphs without relying on a manifest.
 - `TableOfFigures`: required non-empty `label` (for example `Figure`),
   `includeLabelAndNumber?: boolean`, `separator?: string`,
   `entryBookmarkName?: string`, `entryAndPageNumberSeparator?: string`,
@@ -715,9 +715,10 @@ error instead of a silent drop.
   `preserveTab?: boolean`, `preserveNewLine?: boolean`,
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
-  `dirty?: boolean`, and `alias?: string`. It emits a native TOC field filtered
+  `dirty?: boolean`, `alias?: string`, and `withoutSdt?: boolean`. It emits a native TOC field filtered
   by caption/SEQ label. It also accepts `TocItem` children with the same
-  contract as `TableOfContents`.
+  contract as `TableOfContents`. `withoutSdt?: boolean` has the same direct
+  `Section` child and no-child restrictions as `TableOfContents`.
 - `TableOfEntries`: required non-empty `identifier`, plus `hyperlinks?`,
   `tcFieldLevelRange?: {start:1..9,end:1..9}`,
   `omitPageNumbersLevelRange?: {start:1..9,end:1..9}`,
@@ -727,10 +728,13 @@ error instead of a silent drop.
   `stylesWithLevels?: [{style:string,level:1..9}]`,
   `preserveTab?: boolean`, `preserveNewLine?: boolean`,
   `useAppliedParagraphLineLevel?: boolean`,
-  `hideTabAndPageNumbersInWebview?: boolean`, `dirty?`, and `alias?`. It emits
+  `hideTabAndPageNumbersInWebview?: boolean`, `dirty?`, `alias?`, and
+  `withoutSdt?: boolean`. It emits
   a native custom TOC containing `TocEntry` fields with the same `identifier`.
   It also accepts `TocItem` children with the same contract as
-  `TableOfContents`.
+  `TableOfContents`. `withoutSdt` is valid only as a direct `Section` child
+  with no children and uses the same manifest-free field-paragraph reverse
+  behavior.
   Range starts must be no greater than ends; levels are integers from 1 to 9.
   Style names are non-empty and cannot contain commas or quotes, matching the
   OOXML `\\t` field-argument syntax. The Boolean switches default to false at
