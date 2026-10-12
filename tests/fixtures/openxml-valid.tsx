@@ -157,6 +157,7 @@ export default (
       <Paragraph indentStartChars={120} indentEndChars={80} hangingChars={20}>
         Logical character-unit indentation
       </Paragraph>
+      <Paragraph><Run underline="dottedHeavy">heavy dotted underline</Run><Run underline="wavyDouble">double wave underline</Run><Run underline={false}>explicitly not underlined</Run></Paragraph>
       <Paragraph style="Body">
         <Hyperlink href="https://example.com" history>
           <ContentControl alias="LinkData">bound</ContentControl>

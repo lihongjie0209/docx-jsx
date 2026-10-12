@@ -20,6 +20,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::ir::{
     Child, IrEnvelope, Node, PAGE_NUMBER_CHAPTER_SEPARATORS, PAGE_NUMBER_FORMATS, SHADING_PATTERNS,
+    UNDERLINE_STYLES,
 };
 use crate::{Error, Result};
 
@@ -1580,8 +1581,19 @@ impl Writer {
         if property.get("specVanish").is_some() {
             attrs.push(jsx_prop("specVanish", &Value::Bool(true))?);
         }
-        if property.get("underline").is_some() {
-            attrs.push(" underline".to_owned());
+        if let Some(underline) = property.get("underline") {
+            let value = scalar_string(underline).ok_or_else(|| {
+                Error::Reverse(
+                    "run underline property has no string value; use a valid Word underline token"
+                        .to_owned(),
+                )
+            })?;
+            if !UNDERLINE_STYLES.contains(&value) {
+                return Err(Error::Reverse(format!(
+                    "run has unsupported underline value `{value}`; use a Word underline token such as `single`, `dottedHeavy`, or `none`"
+                )));
+            }
+            attrs.push(jsx_prop("underline", &Value::String(value.to_owned()))?);
         }
         if let Some(value) = property
             .get("color")
@@ -8866,7 +8878,17 @@ fn reverse_run_properties(source: &Value) -> Result<Option<Map<String, Value>>> 
     if let Some((name, value)) = reverse_fonts_property(source, "font", "fonts") {
         output.insert(name, value);
     }
-    if let Some(value) = source.get("underline").and_then(scalar_string) {
+    if let Some(underline) = source.get("underline") {
+        let value = scalar_string(underline).ok_or_else(|| {
+            Error::Reverse(
+                "run formatting has an underline property without a string value; use a Word underline token".to_owned(),
+            )
+        })?;
+        if !UNDERLINE_STYLES.contains(&value) {
+            return Err(Error::Reverse(format!(
+                "run formatting has unsupported underline value `{value}`; use a Word underline token such as `single`, `dottedHeavy`, or `none`"
+            )));
+        }
         output.insert("underline".to_owned(), Value::String(value.to_owned()));
     }
     if let Some(value) = source.get("vertAlign").and_then(scalar_string) {
@@ -9271,6 +9293,26 @@ mod tests {
             .pack(&mut bytes)
             .expect("external DOCX fixture should pack");
         bytes.into_inner()
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unknown_run_underline_token() {
+        let bytes = external_docx(
+            Paragraph::new().add_run(
+                Run::new()
+                    .add_text("invalid underline")
+                    .underline("dotted-heavy"),
+            ),
+        );
+
+        let error = reverse_document(&bytes).expect_err("unknown underline tokens must not vanish");
+
+        assert!(
+            error.to_string().contains("unsupported underline value")
+                && error.to_string().contains("dotted-heavy")
+                && error.to_string().contains("dottedHeavy"),
+            "{error}"
+        );
     }
 
     #[test]

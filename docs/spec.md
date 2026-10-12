@@ -433,9 +433,17 @@ error instead of a silent drop.
   defaults to `: `. It emits a styled paragraph containing the visible label,
   a native `SEQ` field, the separator, and its inline children.
 - `Run`: `font?`, `fonts?`, `size?`, `bold?`, `italic?`, `strike?`,
-  `doubleStrike?`, `caps?`, `hidden?: true`, `specVanish?: true`, `underline?`,
+  `doubleStrike?`, `caps?`, `hidden?: true`, `specVanish?: true`,
+  `underline?: boolean | UnderlineStyle`,
   `color?`, `highlight?`, `style?`, and `verticalAlign?: "baseline" |
   "superscript" | "subscript"`.
+  `true` is the compatibility shorthand for `"single"`; `false` means
+  `"none"`. String values preserve the exact `w:u/@w:val` token. Supported
+  `UnderlineStyle` values are `single`, `words`, `double`, `thick`, `dotted`,
+  `dottedHeavy`, `dash`, `dashedHeavy`, `dashLong`, `dashLongHeavy`,
+  `dotDash`, `dashDotHeavy`, `dotDotDash`, `dashDotDotHeavy`, `wave`,
+  `wavyHeavy`, `wavyDouble`, and `none`. External reverse always emits the
+  string form so underline style is not collapsed to a boolean.
 - `fonts` on `Run`, `Paragraph`, `Heading`, and `StyleDefinition.run` has the
   same nine optional fields as `Document.defaultFonts`. It is mutually
   exclusive with `font`, must not be empty, and preserves distinct physical,
@@ -552,8 +560,8 @@ error instead of a silent drop.
   unaffected.
 - `Bold`, `Italic`, `StrikeThrough`: no properties and require text content;
   they emit independent runs with native `w:b`, `w:i`, or `w:strike` formatting.
-  `Underline` requires text content and accepts `type?: "single" | "double" |
-  "dotted" | "dash" | "wave"` (default `single`), emitting native `w:u`.
+  `Underline` requires text content and accepts `type?: UnderlineStyle`
+  (default `single`), emitting native `w:u`.
 - `DoubleStrike`: no properties; emits native `w:dstrike` formatting.
 - `SpacedText`: required finite `amount` in points. Positive values expand and
   negative values condense character spacing; the value is converted to

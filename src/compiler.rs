@@ -26,7 +26,7 @@ use num_traits::ToPrimitive;
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::ir::{Child, IrEnvelope, Node, NodeKind};
+use crate::ir::{Child, IrEnvelope, Node, NodeKind, UNDERLINE_STYLES};
 
 const TWIPS_PER_POINT: f64 = 20.0;
 const HALF_POINTS_PER_POINT: f64 = 2.0;
@@ -4979,13 +4979,8 @@ fn compile_semantic_text(node: &Node, entry_dir: &Path, path: &str) -> Result<Ru
         NodeKind::Bold => run = run.bold(),
         NodeKind::Italic => run = run.italic(),
         NodeKind::Underline => {
-            let underline = optional_enum(
-                &node.props,
-                "type",
-                &["single", "double", "dotted", "dash", "wave"],
-                path,
-            )?
-            .unwrap_or("single");
+            let underline =
+                optional_enum(&node.props, "type", UNDERLINE_STYLES, path)?.unwrap_or("single");
             run = run.underline(underline);
         }
         NodeKind::StrikeThrough => run = run.strike(),
@@ -5217,8 +5212,13 @@ fn compile_run_properties(props: &Map<String, Value>, path: &str) -> Result<Run>
     if bool_prop(props, "specVanish", path)? == Some(true) {
         run.run_property = std::mem::take(&mut run.run_property).spec_vanish();
     }
-    if bool_prop(props, "underline", path)?.unwrap_or(false) {
-        run = run.underline("single");
+    if let Some(value) = props.get("underline") {
+        let underline = if let Some(enabled) = value.as_bool() {
+            if enabled { "single" } else { "none" }
+        } else {
+            value.as_str().unwrap_or("single")
+        };
+        run = run.underline(underline);
     }
     if let Some(value) = string_prop(props, "verticalAlign", path)? {
         let alignment = match value {

@@ -2694,12 +2694,7 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
         validate_rgb(value, path, "style run `color`")?;
     }
     validate_theme_fields(run, path)?;
-    validate_map_enum(
-        run,
-        path,
-        "underline",
-        &["single", "double", "dotted", "dash", "wave"],
-    )?;
+    validate_map_enum(run, path, "underline", UNDERLINE_STYLES)?;
     for key in ["bold", "italic", "strike", "doubleStrike", "caps", "hidden"] {
         if run.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(validation(
@@ -3893,6 +3888,7 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
         return Ok(());
     }
     validate_font_choice(&node.props, path, "font", "fonts")?;
+    validate_run_underline(&node.props, path)?;
     if node.props.contains_key("verticalAlign") {
         validate_optional_enum_prop(
             node,
@@ -3975,6 +3971,51 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) const UNDERLINE_STYLES: &[&str] = &[
+    "single",
+    "words",
+    "double",
+    "thick",
+    "dotted",
+    "dottedHeavy",
+    "dash",
+    "dashedHeavy",
+    "dashLong",
+    "dashLongHeavy",
+    "dotDash",
+    "dashDotHeavy",
+    "dotDotDash",
+    "dashDotDotHeavy",
+    "wave",
+    "wavyHeavy",
+    "wavyDouble",
+    "none",
+];
+
+fn validate_run_underline(props: &Map<String, Value>, path: &str) -> Result<()> {
+    let Some(value) = props.get("underline") else {
+        return Ok(());
+    };
+    if value.is_boolean()
+        || value
+            .as_str()
+            .is_some_and(|underline| UNDERLINE_STYLES.contains(&underline))
+    {
+        return Ok(());
+    }
+    Err(validation(
+        path,
+        format!(
+            "`underline` must be a boolean or one of {}; use an exact Word underline token such as `dottedHeavy`",
+            UNDERLINE_STYLES
+                .iter()
+                .map(|style| format!("`{style}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ))
+}
+
 fn validate_font_choice(
     props: &Map<String, Value>,
     path: &str,
@@ -4041,12 +4082,7 @@ fn validate_text_effect_semantics(node: &Node, path: &str) -> Result<()> {
         ));
     }
     if node.kind == NodeKind::Underline {
-        validate_optional_enum_prop(
-            node,
-            path,
-            "type",
-            &["single", "double", "dotted", "dash", "wave"],
-        )?;
+        validate_optional_enum_prop(node, path, "type", UNDERLINE_STYLES)?;
     }
     if node.kind == NodeKind::SpacedText {
         let amount = node
@@ -5421,14 +5457,7 @@ fn validate_list_level_scalars(level: &Map<String, Value>, path: &str) -> Result
     if let Some(value) = level.get("color") {
         validate_rgb(value, path, "list level `color`")?;
     }
-    if let Some(value) = level.get("underline")
-        && value.as_str().is_none_or(str::is_empty)
-    {
-        return Err(validation(
-            path,
-            "list level `underline` must be a non-empty string",
-        ));
-    }
+    validate_map_enum(level, path, "underline", UNDERLINE_STYLES)?;
     Ok(())
 }
 
@@ -7040,6 +7069,27 @@ mod tests {
                 .to_string()
                 .contains("invalid `type`")
         );
+    }
+
+    #[test]
+    fn validate_should_accept_run_underline_styles_and_boolean_shorthand() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"underline":"dottedHeavy"},"children":["heavy dotted"]},{"type":"Run","props":{"underline":true},"children":["single"]},{"type":"Run","props":{"underline":false},"children":["none"]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_unknown_run_underline_style_with_repair_guidance() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"underline":"dotted-heavy"},"children":["text"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("unknown underline style must fail")
+            .to_string();
+        assert!(error.contains("underline"), "{error}");
+        assert!(error.contains("dottedHeavy"), "{error}");
     }
 
     #[test]

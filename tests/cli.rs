@@ -69,6 +69,10 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("`creator?: string`"))
         .stdout(predicate::str::contains("`revision?: integer`"))
         .stdout(predicate::str::contains("`documentProtection?:"))
+        .stdout(predicate::str::contains(
+            "`underline?: boolean | UnderlineStyle`",
+        ))
+        .stdout(predicate::str::contains("`dottedHeavy`"))
         .stdout(predicate::str::contains("`tcFieldLevelRange?:"))
         .stdout(predicate::str::contains("`stylesWithLevels?:"))
         .stdout(predicate::str::contains(
@@ -680,6 +684,117 @@ export default <Document><Section><Paragraph><Run verticalAlign="baseline">basel
             && rebuilt_jsx.contains("subscript"),
         "all explicit vertical alignment values should survive recompilation: {rebuilt_jsx}"
     );
+}
+
+#[test]
+fn cli_should_roundtrip_run_underline_values_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("run-underline.tsx");
+    let compiled = directory.path().join("run-underline.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let tokens = [
+        "single",
+        "words",
+        "double",
+        "thick",
+        "dotted",
+        "dottedHeavy",
+        "dash",
+        "dashedHeavy",
+        "dashLong",
+        "dashLongHeavy",
+        "dotDash",
+        "dashDotHeavy",
+        "dotDotDash",
+        "dashDotDotHeavy",
+        "wave",
+        "wavyHeavy",
+        "wavyDouble",
+        "none",
+    ];
+    let runs = tokens.iter().fold(String::new(), |mut runs, token| {
+        runs.push_str("<Run underline=\"");
+        runs.push_str(token);
+        runs.push_str("\">");
+        runs.push_str(token);
+        runs.push_str("</Run>");
+        runs
+    });
+    fs::write(
+        &input,
+        format!(
+            "import {{ Document, Section, Paragraph, Run }} from \"docx-jsx\";\nexport default <Document><Section><Paragraph><Run underline>legacy-on</Run><Run underline={{false}}>legacy-off</Run>{runs}</Paragraph></Section></Document>;"
+        ),
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+        fs::read(&compiled).expect("DOCX should exist"),
+    ))
+    .expect("compiled DOCX should be ZIP");
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part should exist")
+        .read_to_string(&mut document_xml)
+        .expect("document XML should read");
+    for token in tokens {
+        assert!(
+            document_xml.contains(&format!("<w:u w:val=\"{token}\"")),
+            "writer should emit underline token {token}: {document_xml}"
+        );
+    }
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    for token in tokens {
+        assert!(
+            jsx.contains(&format!("underline=\"{token}\"")),
+            "external reverse should preserve underline token {token}: {jsx}"
+        );
+    }
+    assert!(jsx.contains("underline=\"single\""));
+    assert!(jsx.contains("underline=\"none\""));
+}
+
+#[test]
+fn validate_should_explain_invalid_run_underline_style() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("invalid-underline.tsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph, Run } from "docx-jsx";
+export default <Document><Section><Paragraph><Run underline="dotted-heavy">text</Run></Paragraph></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["validate"])
+        .arg(&input)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("underline"))
+        .stderr(predicate::str::contains("dottedHeavy"))
+        .stderr(predicate::str::contains("suggestion"));
 }
 
 #[test]
