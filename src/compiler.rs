@@ -214,9 +214,13 @@ fn compile_section_into_docx(
                 child.kind.name()
             );
             let compiled_index = match child.kind {
-                NodeKind::TableOfFigures => compile_table_of_figures(child, &child_path, context)?,
-                NodeKind::TableOfEntries => compile_table_of_entries(child, &child_path, context)?,
-                _ => compile_table_of_contents(child, &child_path, context)?,
+                NodeKind::TableOfFigures => {
+                    compile_table_of_figures(child, &child_path, entry_dir, context)?
+                }
+                NodeKind::TableOfEntries => {
+                    compile_table_of_entries(child, &child_path, entry_dir, context)?
+                }
+                _ => compile_table_of_contents(child, &child_path, entry_dir, context)?,
             };
             docx = docx.add_table_of_contents(compiled_index);
         }
@@ -5915,9 +5919,12 @@ fn compile_cell(
                 cell.add_table(compile_table(child, entry_dir, &child_path, context)?)
             }
             NodeKind::List => add_list_to_cell(cell, child, entry_dir, &child_path, context)?,
-            NodeKind::TableOfContents => {
-                cell.add_table_of_contents(compile_table_of_contents(child, &child_path, context)?)
-            }
+            NodeKind::TableOfContents => cell.add_table_of_contents(compile_table_of_contents(
+                child,
+                &child_path,
+                entry_dir,
+                context,
+            )?),
             NodeKind::ContentControl => cell.add_structured_data_tag(compile_content_control(
                 child,
                 entry_dir,
@@ -6102,6 +6109,7 @@ fn compile_footer(
 fn compile_table_of_contents(
     node: &Node,
     path: &str,
+    entry_dir: &Path,
     context: &mut CompileContext,
 ) -> Result<TableOfContents> {
     let start = usize::try_from(
@@ -6121,12 +6129,13 @@ fn compile_table_of_contents(
     let toc = TableOfContents::new()
         .heading_styles_range(start, end)
         .auto();
-    configure_index(toc, node, path, context)
+    configure_index(toc, node, path, entry_dir, context)
 }
 
 fn compile_table_of_figures(
     node: &Node,
     path: &str,
+    entry_dir: &Path,
     context: &mut CompileContext,
 ) -> Result<TableOfContents> {
     let label = required_string(&node.props, "label", path)?;
@@ -6142,24 +6151,26 @@ fn compile_table_of_figures(
     };
     let mut toc = TableOfContents::new();
     toc.instr = instr;
-    configure_index(toc, node, path, context)
+    configure_index(toc, node, path, entry_dir, context)
 }
 
 fn compile_table_of_entries(
     node: &Node,
     path: &str,
+    entry_dir: &Path,
     context: &mut CompileContext,
 ) -> Result<TableOfContents> {
     let identifier = required_string(&node.props, "identifier", path)?;
     let mut toc = TableOfContents::new();
     toc.instr = InstrToC::new().tc_field_identifier(Some(identifier.to_owned()));
-    configure_index(toc, node, path, context)
+    configure_index(toc, node, path, entry_dir, context)
 }
 
 fn configure_index(
     mut toc: TableOfContents,
     node: &Node,
     path: &str,
+    entry_dir: &Path,
     context: &mut CompileContext,
 ) -> Result<TableOfContents> {
     toc = toc.auto();
@@ -6242,19 +6253,36 @@ fn configure_index(
     if let Some(alias) = string_prop(&node.props, "alias", path)? {
         toc = toc.alias(alias);
     }
-    add_index_items(toc, node, path, context)
+    add_index_items(toc, node, path, entry_dir, context)
 }
 
 fn add_index_items(
     mut toc: TableOfContents,
     node: &Node,
     path: &str,
+    entry_dir: &Path,
     context: &mut CompileContext,
 ) -> Result<TableOfContents> {
     for (index, child) in node.children.iter().enumerate() {
         let Child::Node(item) = child else {
             continue;
         };
+        if matches!(item.kind, NodeKind::TocBefore | NodeKind::TocAfter) {
+            for (paragraph_index, child) in item.children.iter().enumerate() {
+                let Child::Node(paragraph) = child else {
+                    continue;
+                };
+                let paragraph_path =
+                    format!("{path}/{}/Paragraph[{paragraph_index}]", item.kind.name());
+                let compiled = compile_paragraph(paragraph, entry_dir, &paragraph_path, context)?;
+                toc = if item.kind == NodeKind::TocBefore {
+                    toc.add_before_paragraph(compiled)
+                } else {
+                    toc.add_after_paragraph(compiled)
+                };
+            }
+            continue;
+        }
         if item.kind != NodeKind::TocItem {
             continue;
         }
@@ -8965,6 +8993,38 @@ mod tests {
         assert!(document.contains(">7</w:t>"), "{document}");
         assert!(document.contains("w:pos=\"8400\""), "{document}");
         assert!(!document.contains("w:pos=\"80000\""), "{document}");
+    }
+
+    #[test]
+    fn compile_should_place_toc_before_and_after_paragraphs_around_field() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [{
+                    "type": "TableOfContents", "props": {}, "children": [
+                        {"type": "TocBefore", "props": {}, "children": [
+                            {"type": "Paragraph", "props": {}, "children": ["before index"]}
+                        ]},
+                        {"type": "TocAfter", "props": {}, "children": [
+                            {"type": "Paragraph", "props": {}, "children": ["after index"]}
+                        ]}
+                    ]
+                }]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        let before = document.find("before index").expect("before paragraph");
+        let field = document.find("TOC ").expect("TOC field");
+        let after = document.find("after index").expect("after paragraph");
+        assert!(before < field && field < after, "{document}");
     }
 
     #[test]

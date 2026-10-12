@@ -74,7 +74,9 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_paragraph_properties = collect_style_paragraph_xml_metadata(bytes)?;
     let style_run_properties = collect_style_run_xml_metadata(bytes)?;
     let hyperlink_histories = collect_hyperlink_histories(bytes)?;
-    let (reader_bytes, deleted_instructions) = normalize_deleted_instruction_parts(bytes)?;
+    let toc_reader_bytes = normalize_nested_toc_item_sdts(bytes)?;
+    let (reader_bytes, deleted_instructions) =
+        normalize_deleted_instruction_parts(&toc_reader_bytes)?;
     let docx =
         docx_rs::read_docx(&reader_bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let mut images = collect_package_images(bytes)?;
@@ -141,6 +143,148 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         ),
         assets: writer.assets,
     })
+}
+
+fn normalize_nested_toc_item_sdts(bytes: &[u8]) -> Result<Vec<u8>> {
+    let xml = read_zip_text(bytes, "word/document.xml")?;
+    let normalized = unwrap_nested_toc_item_sdts(&xml)?;
+    if normalized == xml {
+        return Ok(bytes.to_vec());
+    }
+
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes.to_vec()))
+        .map_err(|error| Error::Reverse(format!("invalid DOCX archive: {error}")))?;
+    let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..source.len() {
+        let file = source
+            .by_index(index)
+            .map_err(|error| Error::Reverse(format!("cannot read DOCX entry: {error}")))?;
+        let name = file.name().to_owned();
+        if name == "word/document.xml" {
+            output
+                .start_file(name, file.options())
+                .map_err(|error| Error::Reverse(format!("cannot rewrite DOCX entry: {error}")))?;
+            output
+                .write_all(normalized.as_bytes())
+                .map_err(|error| Error::Reverse(format!("cannot rewrite document XML: {error}")))?;
+        } else {
+            output
+                .raw_copy_file(file)
+                .map_err(|error| Error::Reverse(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
+    output
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Reverse(format!("cannot finish normalized DOCX: {error}")))
+}
+
+fn unwrap_nested_toc_item_sdts(xml: &str) -> Result<String> {
+    #[derive(Default)]
+    struct SdtSpan {
+        start: usize,
+        content_start: Option<usize>,
+        content_end: Option<usize>,
+    }
+
+    let mut reader = Reader::from_str(xml);
+    let mut stack = Vec::<SdtSpan>::new();
+    let mut replacements = Vec::new();
+    loop {
+        let start = usize::try_from(reader.buffer_position())
+            .map_err(|_| Error::Reverse("document XML offset is out of range".to_owned()))?;
+        let event = reader
+            .read_event()
+            .map_err(|error| Error::Reverse(format!("malformed document XML: {error}")))?;
+        let end = usize::try_from(reader.buffer_position())
+            .map_err(|_| Error::Reverse("document XML offset is out of range".to_owned()))?;
+        match event {
+            Event::Start(element) if element.local_name().as_ref() == b"sdt" => {
+                stack.push(SdtSpan {
+                    start,
+                    ..SdtSpan::default()
+                });
+            }
+            Event::Start(element) if element.local_name().as_ref() == b"sdtContent" => {
+                if let Some(span) = stack.last_mut() {
+                    span.content_start = Some(end);
+                }
+            }
+            Event::End(element) if element.local_name().as_ref() == b"sdtContent" => {
+                if let Some(span) = stack.last_mut() {
+                    span.content_end = Some(start);
+                }
+            }
+            Event::End(element) if element.local_name().as_ref() == b"sdt" => {
+                let Some(span) = stack.pop() else {
+                    return Err(Error::Reverse(
+                        "document XML contains an unmatched `w:sdt` end tag".to_owned(),
+                    ));
+                };
+                if stack.is_empty() {
+                    continue;
+                }
+                if let (Some(content_start), Some(content_end)) =
+                    (span.content_start, span.content_end)
+                {
+                    let block = &xml[span.start..end];
+                    if block.contains("PAGEREF")
+                        && block.contains("ToC")
+                        && sdt_properties_are_empty(block)
+                    {
+                        replacements.push((
+                            span.start,
+                            end,
+                            xml[content_start..content_end].to_owned(),
+                        ));
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if !stack.is_empty() {
+        return Err(Error::Reverse(
+            "document XML contains an unclosed `w:sdt` element".to_owned(),
+        ));
+    }
+    replacements.sort_unstable_by_key(|replacement| std::cmp::Reverse(replacement.0));
+    let mut normalized = xml.to_owned();
+    for (start, end, content) in replacements {
+        // Later offsets are replaced first so earlier XML positions remain stable.
+        normalized.replace_range(start..end, &content);
+    }
+    Ok(normalized)
+}
+
+fn sdt_properties_are_empty(block: &str) -> bool {
+    let Some(property_start) = block.find("sdtPr") else {
+        return false;
+    };
+    let Some(open_end) = block[property_start..].find('>') else {
+        return false;
+    };
+    let open_end = property_start + open_end;
+    let Some(tag_start) = block[..property_start].rfind('<') else {
+        return false;
+    };
+    let property_name_end = property_start + "sdtPr".len();
+    let attributes = block[property_name_end..open_end]
+        .trim()
+        .trim_end_matches('/');
+    if !attributes.is_empty() {
+        return false;
+    }
+    if block[tag_start..=open_end].trim_end().ends_with("/>") {
+        return true;
+    }
+    let Some(close_offset) = block[open_end + 1..].find("sdtPr>") else {
+        return false;
+    };
+    block[open_end + 1..open_end + 1 + close_offset]
+        .trim()
+        .is_empty()
 }
 
 fn normalize_deleted_instruction_parts(bytes: &[u8]) -> Result<(Vec<u8>, HashMap<String, String>)> {
@@ -642,7 +786,7 @@ impl Writer {
                 self.body_sdt_index += 1;
             }
             self.advance_paragraphs_in_sdt(tag);
-            self.index_component(&index, depth);
+            self.index_component(&index, depth)?;
             return Ok(());
         }
         self.block_content_control(tag, depth)
@@ -680,20 +824,24 @@ impl Writer {
         }
     }
 
-    fn index_component(&mut self, index: &IndexField, depth: usize) {
+    fn index_component(&mut self, index: &IndexField, depth: usize) -> Result<()> {
         match index {
             IndexField::Contents {
                 start,
                 end,
                 attributes,
                 items,
+                before,
+                after,
             } => {
                 self.index_with_items(
                     "TableOfContents",
                     depth,
                     &format!(" startLevel={{{start}}} endLevel={{{end}}}{attributes}"),
                     items,
-                );
+                    before,
+                    after,
+                )?;
             }
             IndexField::Figures {
                 label,
@@ -701,6 +849,8 @@ impl Writer {
                 separator,
                 attributes,
                 items,
+                before,
+                after,
             } => {
                 let mut properties = attr("label", label);
                 if !include_label_and_number {
@@ -710,18 +860,21 @@ impl Writer {
                     properties.push_str(&attr("separator", separator));
                 }
                 properties.push_str(attributes);
-                self.index_with_items("TableOfFigures", depth, &properties, items);
+                self.index_with_items("TableOfFigures", depth, &properties, items, before, after)?;
             }
             IndexField::Entries {
                 identifier,
                 attributes,
                 items,
+                before,
+                after,
             } => {
                 let mut properties = attr("identifier", identifier);
                 properties.push_str(attributes);
-                self.index_with_items("TableOfEntries", depth, &properties, items);
+                self.index_with_items("TableOfEntries", depth, &properties, items, before, after)?;
             }
         }
+        Ok(())
     }
 
     fn index_with_items(
@@ -730,13 +883,23 @@ impl Writer {
         depth: usize,
         attributes: &str,
         items: &[TocItemField],
-    ) {
-        if items.is_empty() {
+        before: &[docx_rs::Paragraph],
+        after: &[docx_rs::Paragraph],
+    ) -> Result<()> {
+        if items.is_empty() && before.is_empty() && after.is_empty() {
             self.empty(component, depth, attributes);
-            return;
+            return Ok(());
         }
         self.components.insert(component);
         self.line(depth, &format!("<{component}{attributes}>"));
+        if !before.is_empty() {
+            self.components.insert("TocBefore");
+            self.line(depth + 1, "<TocBefore>");
+            for paragraph in before {
+                self.paragraph(paragraph, depth + 2)?;
+            }
+            self.line(depth + 1, "</TocBefore>");
+        }
         for item in items {
             self.components.insert("TocItem");
             let mut attributes = attr("text", &item.text);
@@ -756,7 +919,16 @@ impl Writer {
             }
             self.line(depth + 1, &format!("<TocItem{attributes} />"));
         }
+        if !after.is_empty() {
+            self.components.insert("TocAfter");
+            self.line(depth + 1, "<TocAfter>");
+            for paragraph in after {
+                self.paragraph(paragraph, depth + 2)?;
+            }
+            self.line(depth + 1, "</TocAfter>");
+        }
         self.line(depth, &format!("</{component}>"));
+        Ok(())
     }
 
     fn block_content_control(&mut self, tag: &StructuredDataTag, depth: usize) -> Result<()> {
@@ -1767,7 +1939,7 @@ impl Writer {
                             }
                             self.cell_sdt_index += 1;
                         }
-                        self.index_component(&kind, depth);
+                        self.index_component(&kind, depth)?;
                     } else {
                         self.cell_content_control(tag, depth)?;
                     }
@@ -2452,6 +2624,8 @@ enum IndexField {
         end: u64,
         attributes: String,
         items: Vec<TocItemField>,
+        before: Vec<docx_rs::Paragraph>,
+        after: Vec<docx_rs::Paragraph>,
     },
     Figures {
         label: String,
@@ -2459,11 +2633,15 @@ enum IndexField {
         separator: Option<String>,
         attributes: String,
         items: Vec<TocItemField>,
+        before: Vec<docx_rs::Paragraph>,
+        after: Vec<docx_rs::Paragraph>,
     },
     Entries {
         identifier: String,
         attributes: String,
         items: Vec<TocItemField>,
+        before: Vec<docx_rs::Paragraph>,
+        after: Vec<docx_rs::Paragraph>,
     },
 }
 
@@ -2481,11 +2659,31 @@ fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
     let Some(mut index) = parse_toc_instruction(&instruction)? else {
         return Ok(None);
     };
-    let items = toc_items_from_sdt(tag)?;
+    let (items, before, after) = toc_content_from_sdt(tag)?;
     match &mut index {
         IndexField::Contents { items: target, .. }
         | IndexField::Figures { items: target, .. }
         | IndexField::Entries { items: target, .. } => *target = items,
+    }
+    match &mut index {
+        IndexField::Contents {
+            before: target_before,
+            after: target_after,
+            ..
+        }
+        | IndexField::Figures {
+            before: target_before,
+            after: target_after,
+            ..
+        }
+        | IndexField::Entries {
+            before: target_before,
+            after: target_after,
+            ..
+        } => {
+            *target_before = before;
+            *target_after = after;
+        }
     }
     let attributes = match &mut index {
         IndexField::Contents { attributes, .. }
@@ -2505,13 +2703,52 @@ fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
     Ok(Some(index))
 }
 
-fn toc_items_from_sdt(tag: &StructuredDataTag) -> Result<Vec<TocItemField>> {
+fn toc_content_from_sdt(
+    tag: &StructuredDataTag,
+) -> Result<(
+    Vec<TocItemField>,
+    Vec<docx_rs::Paragraph>,
+    Vec<docx_rs::Paragraph>,
+)> {
     let mut items = Vec::new();
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    let mut field_started = false;
+    let mut field_ended = false;
     for child in &tag.children {
         match child {
             StructuredDataTagChild::Paragraph(paragraph) => {
-                if let Some(item) = toc_item_from_paragraph(paragraph)? {
+                let flags = toc_field_paragraph_flags(paragraph);
+                if flags.2 && (flags.0 || (field_started && !field_ended)) {
+                    let item = toc_item_from_paragraph(paragraph)?.ok_or_else(|| {
+                        Error::Reverse(
+                            "PAGEREF field could not be restored as a static index row".to_owned(),
+                        )
+                    })?;
                     items.push(item);
+                    field_started |= flags.0;
+                    continue;
+                }
+                if flags.0 {
+                    field_started = true;
+                    continue;
+                }
+                if flags.1 {
+                    field_ended = true;
+                    if let Some(paragraph) = paragraph_without_field_end(paragraph) {
+                        after.push(paragraph);
+                    }
+                    continue;
+                }
+                if field_started && !field_ended {
+                    return Err(Error::Reverse(
+                        "index field contains a cached result paragraph that is not a representable PAGEREF row; add one PAGEREF target per row or remove the cached result before reversing"
+                            .to_owned(),
+                    ));
+                } else if field_ended {
+                    after.push((**paragraph).clone());
+                } else {
+                    before.push((**paragraph).clone());
                 }
             }
             StructuredDataTagChild::Table(_) => {
@@ -2533,7 +2770,57 @@ fn toc_items_from_sdt(tag: &StructuredDataTag) -> Result<Vec<TocItemField>> {
             }
         }
     }
-    Ok(items)
+    Ok((items, before, after))
+}
+
+fn toc_field_paragraph_flags(paragraph: &docx_rs::Paragraph) -> (bool, bool, bool) {
+    let mut runs = Vec::new();
+    let mut anchors = Vec::new();
+    if collect_toc_item_runs(&paragraph.children, &mut runs, &mut anchors).is_err() {
+        return (false, false, false);
+    }
+    let mut has_toc_instruction = false;
+    let mut has_field_end = false;
+    let mut has_page_reference = false;
+    for run in runs {
+        for child in &run.children {
+            match child {
+                RunChild::InstrTextString(instruction)
+                    if instruction.trim_start().starts_with("TOC") =>
+                {
+                    has_toc_instruction = true;
+                }
+                RunChild::InstrTextString(instruction)
+                    if instruction.trim_start().starts_with("PAGEREF") =>
+                {
+                    has_page_reference = true;
+                }
+                RunChild::FieldChar(field)
+                    if field.field_char_type == docx_rs::FieldCharType::End =>
+                {
+                    has_field_end = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    (has_toc_instruction, has_field_end, has_page_reference)
+}
+
+fn paragraph_without_field_end(paragraph: &docx_rs::Paragraph) -> Option<docx_rs::Paragraph> {
+    let mut paragraph = paragraph.clone();
+    for child in &mut paragraph.children {
+        let ParagraphChild::Run(run) = child else {
+            continue;
+        };
+        run.children.retain(|child| {
+            !matches!(child, RunChild::FieldChar(field) if field.field_char_type == docx_rs::FieldCharType::End)
+        });
+    }
+    paragraph
+        .children
+        .retain(|child| !matches!(child, ParagraphChild::Run(run) if run.children.is_empty()));
+    (!paragraph.children.is_empty()).then_some(paragraph)
 }
 
 fn toc_item_from_paragraph(paragraph: &docx_rs::Paragraph) -> Result<Option<TocItemField>> {
@@ -2882,6 +3169,8 @@ fn parse_toc_instruction(instruction: &str) -> Result<Option<IndexField>> {
             separator: switches.get(&'d').and_then(Clone::clone),
             attributes,
             items: Vec::new(),
+            before: Vec::new(),
+            after: Vec::new(),
         }));
     }
     if let Some(identifier) = switches.get(&'f') {
@@ -2899,6 +3188,8 @@ fn parse_toc_instruction(instruction: &str) -> Result<Option<IndexField>> {
             identifier: identifier.clone(),
             attributes,
             items: Vec::new(),
+            before: Vec::new(),
+            after: Vec::new(),
         }));
     }
     let (start, end) = match switches.get(&'o') {
@@ -2916,6 +3207,8 @@ fn parse_toc_instruction(instruction: &str) -> Result<Option<IndexField>> {
         end,
         attributes,
         items: Vec::new(),
+        before: Vec::new(),
+        after: Vec::new(),
     }))
 }
 
@@ -9357,6 +9650,30 @@ mod tests {
                 r#"<TocItem text="Overview" bookmark="overview" level={2} pageRef="7" />"#
             ),
             "static TOC entry must be restored: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_should_restore_toc_before_and_after_paragraphs_without_manifest() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocBefore","props":{},"children":[{"type":"Paragraph","props":{},"children":["before index"]}]},{"type":"TocItem","props":{"text":"Entry","bookmark":"entry","pageRef":"3"},"children":[]},{"type":"TocAfter","props":{},"children":[{"type":"Paragraph","props":{},"children":["after index"]}]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled =
+            crate::compiler::compile_document(&ir, Path::new(".")).expect("fixture should compile");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external index should reverse");
+        assert!(
+            jsx.contains("<TocBefore>") && jsx.contains("before index"),
+            "before content should reverse: {jsx}"
+        );
+        assert!(
+            jsx.contains("<TocAfter>") && jsx.contains("after index"),
+            "after content should reverse: {jsx}"
+        );
+        assert!(
+            jsx.contains("text=\"Entry\"") && jsx.contains("bookmark=\"entry\""),
+            "static index item should remain between wrappers: {jsx}"
         );
     }
 

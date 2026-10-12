@@ -23,6 +23,8 @@ import {
   TableOfFigures,
   TableOfEntries,
   TocItem,
+  TocBefore,
+  TocAfter,
   TableRow,
 } from "docx-jsx";
 
@@ -99,7 +101,9 @@ export default (
         useAppliedParagraphLineLevel
         hideTabAndPageNumbersInWebview
       >
+        <TocBefore><Paragraph>Directory introduction</Paragraph></TocBefore>
         <TocItem text="Open XML validation fixture" bookmark="validation-heading" />
+        <TocAfter><Paragraph>Directory note</Paragraph></TocAfter>
       </TableOfContents>
       <TableOfFigures label="Figure" separator="-" dirty={false} />
       <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} />

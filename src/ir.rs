@@ -160,6 +160,8 @@ pub enum NodeKind {
     TableOfFigures,
     TableOfEntries,
     TocItem,
+    TocBefore,
+    TocAfter,
     TocEntry,
     IndexEntry,
     Comment,
@@ -238,6 +240,8 @@ impl NodeKind {
             Self::TableOfFigures => "TableOfFigures",
             Self::TableOfEntries => "TableOfEntries",
             Self::TocItem => "TocItem",
+            Self::TocBefore => "TocBefore",
+            Self::TocAfter => "TocAfter",
             Self::TocEntry => "TocEntry",
             Self::IndexEntry => "IndexEntry",
             Self::Comment => "Comment",
@@ -617,6 +621,7 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
             }
         }
     }
+    validate_toc_wrappers(node, path)?;
     if node.kind == NodeKind::Deleted {
         validate_deleted_children(node, path)?;
     }
@@ -742,6 +747,34 @@ fn validate_deleted_children(node: &Node, path: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_toc_wrappers(node: &Node, path: &str) -> Result<()> {
+    if matches!(
+        node.kind,
+        NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
+    ) {
+        for wrapper in [NodeKind::TocBefore, NodeKind::TocAfter] {
+            let count = node
+                .children
+                .iter()
+                .filter(|child| matches!(child, Child::Node(child) if child.kind == wrapper))
+                .count();
+            if count > 1 {
+                return Err(validation(
+                    path,
+                    format!("index allows at most one `{}` wrapper", wrapper.name()),
+                ));
+            }
+        }
+    }
+    if matches!(node.kind, NodeKind::TocBefore | NodeKind::TocAfter) && node.children.is_empty() {
+        return Err(validation(
+            path,
+            format!("{} requires at least one Paragraph", node.kind.name()),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_toc_item(node: &Node, path: &str) -> Result<()> {
     if node.kind != NodeKind::TocItem {
         return Ok(());
@@ -832,8 +865,9 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
                 | NodeKind::ContentControl
         ),
         NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries => {
-            child == NodeKind::TocItem
+            allows_index_child(child)
         }
+        NodeKind::TocBefore | NodeKind::TocAfter => child == NodeKind::Paragraph,
         NodeKind::Paragraph | NodeKind::Heading | NodeKind::Caption => {
             allows_paragraph_child(child)
         }
@@ -912,6 +946,13 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         }
         NodeKind::Deleted => matches!(child, NodeKind::Run | NodeKind::Text | NodeKind::Comment),
     }
+}
+
+fn allows_index_child(child: NodeKind) -> bool {
+    matches!(
+        child,
+        NodeKind::TocItem | NodeKind::TocBefore | NodeKind::TocAfter
+    )
 }
 
 fn allows_header_footer_child(child: NodeKind) -> bool {
@@ -1127,7 +1168,9 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         | NodeKind::CarriageReturn
         | NodeKind::NonBreakingSpace
         | NodeKind::SoftHyphen
-        | NodeKind::NonBreakingHyphen => &[],
+        | NodeKind::NonBreakingHyphen
+        | NodeKind::TocBefore
+        | NodeKind::TocAfter => &[],
         kind @ (NodeKind::Bold
         | NodeKind::Italic
         | NodeKind::Underline
@@ -5421,6 +5464,41 @@ mod tests {
         assert!(
             error.to_string().contains("requires non-empty `bookmark`"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_accept_toc_before_and_after_paragraph_wrappers() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocBefore","props":{},"children":[{"type":"Paragraph","props":{},"children":["before"]}]},{"type":"TocAfter","props":{},"children":[{"type":"Paragraph","props":{},"children":["after"]}]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("TOC before/after paragraph wrappers should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_duplicate_toc_before_wrapper() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocBefore","props":{},"children":[]},{"type":"TocBefore","props":{},"children":[]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("only one before wrapper may map to the API");
+        assert!(error.to_string().contains("at most one `TocBefore`"));
+    }
+
+    #[test]
+    fn validate_should_reject_empty_toc_after_wrapper() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocAfter","props":{},"children":[]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("empty after wrapper has no content to serialize");
+        assert!(
+            error
+                .to_string()
+                .contains("TocAfter requires at least one Paragraph")
         );
     }
 
