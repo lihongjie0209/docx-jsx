@@ -4578,6 +4578,12 @@ fn validate_index_field_paragraph(node: &Node, path: &str) -> Result<()> {
         "shading",
         "outlineLevel",
         "suppressLineNumbers",
+        "indentLeftChars",
+        "indentStartChars",
+        "indentRightChars",
+        "indentEndChars",
+        "firstLineChars",
+        "hangingChars",
     ];
     validate_object_keys(properties, &format!("{path}.fieldParagraph"), &supported)?;
     for key in ["keepNext", "keepLines", "pageBreakBefore"] {
@@ -5687,6 +5693,26 @@ mod tests {
         );
         ir.validate()
             .expect("field paragraphs should support line-number suppression");
+    }
+
+    #[test]
+    fn validate_should_accept_character_unit_indentation_on_index_field_paragraph() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"indentLeftChars":-100,"indentRightChars":200,"firstLineChars":640}},"children":[]},{"type":"TableOfFigures","props":{"label":"Figure","fieldParagraph":{"indentStartChars":120,"indentEndChars":80,"hangingChars":20}},"children":[]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("all paragraph character-unit indentation forms should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_conflicting_character_unit_index_indent_aliases() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"indentLeftChars":100,"indentStartChars":120}},"children":[]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("left and start character aliases cannot both be set");
+        assert!(error.to_string().contains("mutually exclusive"));
     }
 
     #[test]

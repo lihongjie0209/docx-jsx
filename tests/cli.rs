@@ -346,7 +346,7 @@ fn cli_should_reverse_and_recompile_external_index_field_paragraph_formatting() 
     fs::write(
         &input,
         r#"import { Document, Section, TableOfContents, TableOfFigures } from "docx-jsx";
-export default <Document><Section><TableOfContents fieldParagraph={{align:"center",spacingBefore:6,lineSpacing:28,lineRule:"exact",firstLine:32,keepNext:true,bidi:true,shading:"EEF2F7",suppressLineNumbers:true}} /><TableOfFigures label="Figure" fieldParagraph={{suppressLineNumbers:false}} /></Section></Document>;"#,
+export default <Document><Section><TableOfContents fieldParagraph={{align:"center",spacingBefore:6,lineSpacing:28,lineRule:"exact",keepNext:true,bidi:true,shading:"EEF2F7",suppressLineNumbers:true,indentLeftChars:-100,indentRightChars:200,firstLineChars:640}} /><TableOfFigures label="Figure" fieldParagraph={{suppressLineNumbers:false,indentStartChars:120,indentEndChars:80,hangingChars:20}} /></Section></Document>;"#,
     )
     .expect("input should write");
     Command::cargo_bin("docx-jsx")
@@ -381,6 +381,16 @@ export default <Document><Section><TableOfContents fieldParagraph={{align:"cente
             && jsx.contains(r#""suppressLineNumbers":false"#),
         "reverse should restore both line-number suppression values from external XML: {jsx}"
     );
+    for indentation in [
+        r#""indentLeftChars":-100"#,
+        r#""indentRightChars":200"#,
+        r#""firstLineChars":640"#,
+        r#""indentStartChars":120"#,
+        r#""indentEndChars":80"#,
+        r#""hangingChars":20"#,
+    ] {
+        assert!(jsx.contains(indentation), "missing {indentation}: {jsx}");
+    }
     Command::cargo_bin("docx-jsx")
         .expect("binary should build")
         .arg(&reversed)

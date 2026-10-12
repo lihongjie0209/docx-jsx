@@ -5232,6 +5232,7 @@ fn raw_index_field_paragraph_properties(
 ) -> Result<Map<String, Value>> {
     let mut properties = Map::new();
     let mut special_indent = None;
+    let mut character_indents = BTreeMap::new();
     for (element, attributes) in entries {
         let mut recognized = true;
         match element.as_str() {
@@ -5296,11 +5297,36 @@ fn raw_index_field_paragraph_properties(
                         special_indent = Some((target, parse_raw_i64(value, source)?));
                     }
                 }
-                if attributes
-                    .keys()
-                    .any(|key| !["left", "right", "firstLine", "hanging"].contains(&key.as_str()))
-                {
-                    raw_mark_unsupported(&mut properties, "character-unit indentation");
+                for (source, target) in [
+                    ("leftChars", "indentLeftChars"),
+                    ("startChars", "indentStartChars"),
+                    ("rightChars", "indentRightChars"),
+                    ("endChars", "indentEndChars"),
+                    ("firstLineChars", "firstLineChars"),
+                    ("hangingChars", "hangingChars"),
+                ] {
+                    if let Some(value) = attributes.get(source) {
+                        let value = parse_raw_i64(value, source)?;
+                        properties.insert(target.to_owned(), Value::from(value));
+                        character_indents.insert(target.to_owned(), value);
+                    }
+                }
+                if attributes.keys().any(|key| {
+                    ![
+                        "left",
+                        "right",
+                        "firstLine",
+                        "hanging",
+                        "leftChars",
+                        "startChars",
+                        "rightChars",
+                        "endChars",
+                        "firstLineChars",
+                        "hangingChars",
+                    ]
+                    .contains(&key.as_str())
+                }) {
+                    raw_mark_unsupported(&mut properties, "indentation attributes");
                 }
             }
             "keepNext"
@@ -5357,6 +5383,14 @@ fn raw_index_field_paragraph_properties(
     }
     if let Some((target, value)) = special_indent {
         properties.insert(target.to_owned(), points_value(value)?);
+    }
+    validate_raw_character_indent(&character_indents, "index field paragraph")?;
+    if (properties.contains_key("firstLine") || properties.contains_key("firstLineChars"))
+        && (properties.contains_key("hanging") || properties.contains_key("hangingChars"))
+    {
+        return Err(Error::Reverse(
+            "index field paragraph has conflicting first-line and hanging indents; retain only one indentation mode".to_owned(),
+        ));
     }
     Ok(properties)
 }
@@ -10449,14 +10483,20 @@ mod tests {
             .find("</w:pPr>")
             .map(|end| paragraph_start + end)
             .expect("field paragraph properties should exist");
-        document.insert_str(ppr_end, "<w:suppressLineNumbers />");
+        document.insert_str(
+            ppr_end,
+            "<w:ind w:leftChars=\"-100\" w:rightChars=\"200\" w:firstLineChars=\"640\" /><w:suppressLineNumbers />",
+        );
         let external = strip_ir_manifest(&rewrite_package_parts(
             &packed,
             &[("word/document.xml", document.as_bytes())],
         ));
         let jsx = reverse_document(&external).expect("external field property should reverse");
         assert!(
-            jsx.contains(r#"fieldParagraph={{"suppressLineNumbers":true}}"#),
+            jsx.contains(r#""suppressLineNumbers":true"#)
+                && jsx.contains(r#""indentLeftChars":-100"#)
+                && jsx.contains(r#""indentRightChars":200"#)
+                && jsx.contains(r#""firstLineChars":640"#),
             "index field paragraph should preserve line-number suppression: {jsx}"
         );
         let document = document.replace(
@@ -10469,9 +10509,45 @@ mod tests {
         ));
         let jsx = reverse_document(&external).expect("explicit false should reverse");
         assert!(
-            jsx.contains(r#"fieldParagraph={{"suppressLineNumbers":false}}"#),
+            jsx.contains(r#""suppressLineNumbers":false"#),
             "index field paragraph should preserve explicit false: {jsx}"
         );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_conflicting_index_field_indents() {
+        let packed = pack_docx(
+            Docx::new().add_table_of_contents(TableOfContents::new().heading_styles_range(1, 3)),
+        );
+        let mut document =
+            read_zip_text(&packed, "word/document.xml").expect("document part should be readable");
+        let instruction = document
+            .find("<w:instrText>TOC ")
+            .expect("TOC instruction should exist");
+        let paragraph_start = ["<w:p>", "<w:p "]
+            .iter()
+            .filter_map(|marker| document[..instruction].rfind(marker))
+            .max()
+            .expect("field paragraph should start");
+        let paragraph_end = document[instruction..]
+            .find("</w:p>")
+            .map(|end| instruction + end)
+            .expect("field paragraph should end");
+        let ppr_end = document[paragraph_start..paragraph_end]
+            .find("</w:pPr>")
+            .map(|end| paragraph_start + end)
+            .expect("field paragraph properties should exist");
+        document.insert_str(
+            ppr_end,
+            "<w:ind w:leftChars=\"100\" w:startChars=\"120\" />",
+        );
+        let external = strip_ir_manifest(&rewrite_package_parts(
+            &packed,
+            &[("word/document.xml", document.as_bytes())],
+        ));
+        let error = reverse_document(&external)
+            .expect_err("conflicting indentation units cannot be represented losslessly");
+        assert!(error.to_string().contains("conflicting `indentLeftChars`"));
     }
 
     #[test]

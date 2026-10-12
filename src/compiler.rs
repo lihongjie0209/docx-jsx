@@ -53,6 +53,11 @@ struct ParagraphPropertyPatch {
     suppress_line_numbers: Option<bool>,
 }
 
+struct IndexFieldParagraphPatch {
+    suppress_line_numbers: Option<bool>,
+    indentation: BTreeMap<String, i64>,
+}
+
 #[derive(Clone, Debug)]
 struct SectionColumnsConfig {
     count: usize,
@@ -369,9 +374,9 @@ fn package_document(
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     let bytes = patch_index_dirty_values(bytes, &ir.document)?;
-    let mut index_suppress_line_numbers = Vec::new();
-    collect_index_field_suppress_line_numbers(&ir.document, &mut index_suppress_line_numbers);
-    let bytes = patch_index_field_suppress_line_numbers(bytes, &index_suppress_line_numbers)?;
+    let mut index_paragraph_patches = Vec::new();
+    collect_index_field_paragraph_patches(&ir.document, &mut index_paragraph_patches);
+    let bytes = patch_index_field_paragraphs(bytes, &index_paragraph_patches)?;
     let bytes = patch_toc_item_tabs(bytes, toc_item_tab_patches)?;
     let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_simple_position_images(bytes)?;
@@ -440,31 +445,35 @@ fn patch_index_dirty_values(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> 
     replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
 }
 
-fn collect_index_field_suppress_line_numbers(node: &Node, values: &mut Vec<Option<bool>>) {
+fn collect_index_field_paragraph_patches(node: &Node, patches: &mut Vec<IndexFieldParagraphPatch>) {
     if matches!(
         node.kind,
         NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
     ) {
-        values.push(
-            node.props
-                .get("fieldParagraph")
-                .and_then(Value::as_object)
+        let properties = node.props.get("fieldParagraph").and_then(Value::as_object);
+        patches.push(IndexFieldParagraphPatch {
+            suppress_line_numbers: properties
                 .and_then(|properties| properties.get("suppressLineNumbers"))
                 .and_then(Value::as_bool),
-        );
+            indentation: properties
+                .map_or_else(BTreeMap::new, paragraph_character_indent_attributes),
+        });
     }
     for child in &node.children {
         if let Child::Node(child) = child {
-            collect_index_field_suppress_line_numbers(child, values);
+            collect_index_field_paragraph_patches(child, patches);
         }
     }
 }
 
-fn patch_index_field_suppress_line_numbers(
+fn patch_index_field_paragraphs(
     bytes: Vec<u8>,
-    values: &[Option<bool>],
+    patches: &[IndexFieldParagraphPatch],
 ) -> Result<Vec<u8>> {
-    if !values.iter().any(Option::is_some) {
+    if !patches
+        .iter()
+        .any(|patch| patch.suppress_line_numbers.is_some() || !patch.indentation.is_empty())
+    {
         return Ok(bytes);
     }
     let mut xml = read_zip_text_entry(&bytes, "word/document.xml")?;
@@ -474,11 +483,11 @@ fn patch_index_field_suppress_line_numbers(
         next_toc_instruction(&xml[search_from..])
     {
         let instruction_start = search_from + relative_start;
-        let Some(value) = values.get(index_number) else {
+        let Some(patch) = patches.get(index_number) else {
             return Err(Error::Compile(format!(
                 "more serialized index fields exist than index components in the DSL (found field {}, expected {}); keep the DOCX structure aligned with the document tree",
                 index_number + 1,
-                values.len()
+                patches.len()
             )));
         };
         let paragraph_start = ["<w:p>", "<w:p "]
@@ -492,51 +501,124 @@ fn patch_index_field_suppress_line_numbers(
             .ok_or_else(|| {
                 Error::Compile("index instruction paragraph is unterminated".to_owned())
             })?;
-        if let Some(value) = value {
-            let paragraph = &xml[paragraph_start..paragraph_end];
-            let ppr_start = paragraph
-                .find("<w:pPr")
-                .map(|offset| paragraph_start + offset)
-                .ok_or_else(|| Error::Compile("index field paragraph has no w:pPr".to_owned()))?;
-            let ppr_open_end = xml[ppr_start..paragraph_end]
-                .find('>')
-                .map(|offset| ppr_start + offset + 1)
-                .ok_or_else(|| {
-                    Error::Compile("index field paragraph has malformed w:pPr".to_owned())
-                })?;
-            let suppress = if *value {
-                "<w:suppressLineNumbers />"
-            } else {
-                "<w:suppressLineNumbers w:val=\"0\" />"
-            };
-            if xml[ppr_start..ppr_open_end].ends_with("/>") {
-                xml.replace_range(
-                    ppr_start..ppr_open_end,
-                    &format!("<w:pPr>{suppress}</w:pPr>"),
-                );
-            } else {
-                let ppr_end = xml[ppr_open_end..paragraph_end]
-                    .find("</w:pPr>")
-                    .map(|offset| ppr_open_end + offset)
-                    .ok_or_else(|| {
-                        Error::Compile("index field paragraph has unclosed w:pPr".to_owned())
-                    })?;
-                xml.insert_str(ppr_end, suppress);
-            }
-        }
+        patch_index_field_paragraph_xml(&mut xml, paragraph_start, paragraph_end, patch)?;
         index_number += 1;
         search_from = paragraph_end + "</w:p>".len();
     }
-    if index_number != values.len() {
+    if index_number != patches.len() {
         return Err(Error::Compile(format!(
             "DSL defines {} index components, but only {index_number} were serialized; repair index placement before compiling",
-            values.len()
+            patches.len()
         )));
     }
     reorder_element_children(&mut xml, "w:pPr", paragraph_property_rank)?;
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
     replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
+}
+
+fn patch_index_field_paragraph_xml(
+    xml: &mut String,
+    paragraph_start: usize,
+    paragraph_end: usize,
+    patch: &IndexFieldParagraphPatch,
+) -> Result<()> {
+    if patch.suppress_line_numbers.is_none() && patch.indentation.is_empty() {
+        return Ok(());
+    }
+    let paragraph = &xml[paragraph_start..paragraph_end];
+    let ppr = paragraph
+        .find("<w:pPr")
+        .map(|offset| paragraph_start + offset);
+    let mut indentation_attributes = String::new();
+    for (name, value) in &patch.indentation {
+        write!(indentation_attributes, " w:{name}=\"{value}\"")
+            .expect("writing to String cannot fail");
+    }
+    let suppress = patch
+        .suppress_line_numbers
+        .map_or_else(String::new, |value| {
+            if value {
+                "<w:suppressLineNumbers />".to_owned()
+            } else {
+                "<w:suppressLineNumbers w:val=\"0\" />".to_owned()
+            }
+        });
+    let Some(ppr_start) = ppr else {
+        let ppr = format!(
+            "<w:pPr>{}{suppress}</w:pPr>",
+            if indentation_attributes.is_empty() {
+                String::new()
+            } else {
+                format!("<w:ind{indentation_attributes} />")
+            }
+        );
+        let paragraph_open_end = xml[paragraph_start..paragraph_end]
+            .find('>')
+            .map(|offset| paragraph_start + offset + 1)
+            .ok_or_else(|| Error::Compile("index field paragraph is malformed".to_owned()))?;
+        xml.insert_str(paragraph_open_end, &ppr);
+        return Ok(());
+    };
+    let ppr_open_end = xml[ppr_start..paragraph_end]
+        .find('>')
+        .map(|offset| ppr_start + offset + 1)
+        .ok_or_else(|| Error::Compile("index field paragraph has malformed w:pPr".to_owned()))?;
+    if xml[ppr_start..ppr_open_end].ends_with("/>") {
+        let indent = if indentation_attributes.is_empty() {
+            String::new()
+        } else {
+            format!("<w:ind{indentation_attributes} />")
+        };
+        xml.replace_range(
+            ppr_start..ppr_open_end,
+            &format!("<w:pPr>{indent}{suppress}</w:pPr>"),
+        );
+        return Ok(());
+    }
+    patch_index_indentation_xml(xml, ppr_open_end, paragraph_end, &indentation_attributes)?;
+    if !suppress.is_empty() {
+        let ppr_end = xml[ppr_open_end..]
+            .find("</w:pPr>")
+            .map(|offset| ppr_open_end + offset)
+            .ok_or_else(|| Error::Compile("index field paragraph has unclosed w:pPr".to_owned()))?;
+        xml.insert_str(ppr_end, &suppress);
+    }
+    Ok(())
+}
+
+fn patch_index_indentation_xml(
+    xml: &mut String,
+    ppr_open_end: usize,
+    paragraph_end: usize,
+    indentation_attributes: &str,
+) -> Result<()> {
+    if indentation_attributes.is_empty() {
+        return Ok(());
+    }
+    let ppr_end = xml[ppr_open_end..paragraph_end]
+        .find("</w:pPr>")
+        .map(|offset| ppr_open_end + offset)
+        .ok_or_else(|| Error::Compile("index field paragraph has unclosed w:pPr".to_owned()))?;
+    let ppr_content = &xml[ppr_open_end..ppr_end];
+    if let Some(ind_start_relative) = ppr_content.find("<w:ind") {
+        let ind_start = ppr_open_end + ind_start_relative;
+        let ind_end = xml[ind_start..ppr_end]
+            .find('>')
+            .map(|offset| ind_start + offset)
+            .ok_or_else(|| {
+                Error::Compile("index field paragraph has malformed w:ind".to_owned())
+            })?;
+        let insert_at = if xml[..ind_end].ends_with('/') {
+            ind_end - 1
+        } else {
+            ind_end
+        };
+        xml.insert_str(insert_at, indentation_attributes);
+    } else {
+        xml.insert_str(ppr_end, &format!("<w:ind{indentation_attributes} />"));
+    }
+    Ok(())
 }
 
 fn next_toc_instruction(xml: &str) -> Option<(usize, &'static str)> {
@@ -6408,7 +6490,17 @@ fn configure_index_field_paragraph(
         .as_object()
         .ok_or_else(|| validation(path, "`fieldParagraph` must be an object"))?
         .clone();
-    properties.remove("suppressLineNumbers");
+    for property in [
+        "suppressLineNumbers",
+        "indentLeftChars",
+        "indentStartChars",
+        "indentRightChars",
+        "indentEndChars",
+        "firstLineChars",
+        "hangingChars",
+    ] {
+        properties.remove(property);
+    }
     let paragraph = Node {
         kind: NodeKind::Paragraph,
         props: properties,
@@ -9245,13 +9337,17 @@ mod tests {
                     "type": "TableOfContents",
                     "props": {"fieldParagraph": {
                         "align": "center", "spacingBefore": 6, "lineSpacing": 28,
-                        "lineRule": "exact", "firstLine": 32, "keepNext": true,
-                        "bidi": true, "shading": "EEF2F7", "suppressLineNumbers": true
+                        "lineRule": "exact", "keepNext": true,
+                        "bidi": true, "shading": "EEF2F7", "suppressLineNumbers": true,
+                        "indentLeftChars": -100, "indentRightChars": 200, "firstLineChars": 640
                     }},
                     "children": []
                 }, {
                     "type": "TableOfFigures",
-                    "props": {"label": "Figure", "fieldParagraph": {"suppressLineNumbers": false}},
+                    "props": {"label": "Figure", "fieldParagraph": {
+                        "suppressLineNumbers": false, "indentStartChars": 120,
+                        "indentEndChars": 80, "hangingChars": 20
+                    }},
                     "children": []
                 }]
             }]}
@@ -9269,11 +9365,17 @@ mod tests {
             document.contains("<w:jc w:val=\"center\" />")
                 && document.contains("w:before=\"120\"")
                 && document.contains("w:line=\"560\" w:lineRule=\"exact\"")
-                && document.contains("w:firstLine=\"640\"")
+                && document.contains("w:firstLineChars=\"640\"")
                 && document.contains("<w:keepNext />")
                 && document.contains("<w:bidi />")
                 && document.contains("<w:suppressLineNumbers />")
                 && document.contains("<w:suppressLineNumbers w:val=\"0\" />")
+                && document.contains("w:leftChars=\"-100\"")
+                && document.contains("w:rightChars=\"200\"")
+                && document.contains("w:firstLineChars=\"640\"")
+                && document.contains("w:startChars=\"120\"")
+                && document.contains("w:endChars=\"80\"")
+                && document.contains("w:hangingChars=\"20\"")
                 && document.contains("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"EEF2F7\""),
             "the generated index paragraph should contain all requested formatting: {document}"
         );

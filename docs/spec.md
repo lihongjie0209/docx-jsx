@@ -711,10 +711,15 @@ error instead of a silent drop.
   `spacingAfterLines`, `lineRule`, `indentLeft`, `indentRight`, `firstLine`,
   `hanging`, `keepNext`, `keepLines`, `pageBreakBefore`, `snapToGrid`,
   `widowControl`, `bidi`, `textAlign`, `shading`, `outlineLevel`, and
-  `suppressLineNumbers`. Point-
+  `suppressLineNumbers`, `indentLeftChars`, `indentStartChars`,
+  `indentRightChars`, `indentEndChars`, `firstLineChars`, and
+  `hangingChars`. Point-
   valued spacing and indentation use points. It is valid only without static
   `TocItem` rows because docx-rs ignores paragraph properties in its static-
-  items branch. Character-unit indentation, `false` for `keepNext`,
+  items branch. Character-unit indentation values are integers mapped
+  directly to the corresponding OOXML `w:*Chars` attributes without point
+  conversion; aliases and first-line/hanging modes follow the paragraph
+  indentation exclusivity rules. `false` for `keepNext`,
   `keepLines`, or `pageBreakBefore`, and properties not listed here are
   rejected; reverse restores the listed values (including unwrapped indexes)
   from external DOCX and errors on unsupported properties rather than
