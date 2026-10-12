@@ -6181,6 +6181,10 @@ fn compile_table_of_entries(
     configure_index(toc, node, path, entry_dir, context)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Index options are applied in one ordered pass to preserve docx-rs builder semantics."
+)]
 fn configure_index(
     mut toc: TableOfContents,
     node: &Node,
@@ -6268,6 +6272,9 @@ fn configure_index(
     if let Some(alias) = string_prop(&node.props, "alias", path)? {
         toc = toc.alias(alias);
     }
+    if let Some(value) = node.props.get("fieldParagraph") {
+        toc = configure_index_field_paragraph(toc, value, entry_dir, path, context)?;
+    }
     if let Some(deletion) = node.props.get("deletion") {
         let deletion = deletion
             .as_object()
@@ -6286,6 +6293,26 @@ fn configure_index(
         toc = toc.without_sdt();
     }
     add_index_items(toc, node, path, entry_dir, context)
+}
+
+fn configure_index_field_paragraph(
+    toc: TableOfContents,
+    value: &Value,
+    entry_dir: &Path,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<TableOfContents> {
+    let properties = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`fieldParagraph` must be an object"))?;
+    let paragraph = Node {
+        kind: NodeKind::Paragraph,
+        props: properties.clone(),
+        children: Vec::new(),
+    };
+    let paragraph_path = format!("{path}.fieldParagraph");
+    let compiled = compile_paragraph(&paragraph, entry_dir, &paragraph_path, context)?;
+    Ok(toc.paragraph_property(compiled.property))
 }
 
 fn add_index_items(
@@ -9102,6 +9129,43 @@ mod tests {
                     .count()
                     == 3,
             "all index field codes should be wrapped in the requested deletion revision: {document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_apply_field_paragraph_properties_to_dynamic_index() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [{
+                    "type": "TableOfContents",
+                    "props": {"fieldParagraph": {
+                        "align": "center", "spacingBefore": 6, "lineSpacing": 28,
+                        "lineRule": "exact", "firstLine": 32, "keepNext": true,
+                        "bidi": true, "shading": "EEF2F7"
+                    }},
+                    "children": []
+                }]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(
+            document.contains("<w:jc w:val=\"center\" />")
+                && document.contains("w:before=\"120\"")
+                && document.contains("w:line=\"560\" w:lineRule=\"exact\"")
+                && document.contains("w:firstLine=\"640\"")
+                && document.contains("<w:keepNext />")
+                && document.contains("<w:bidi />")
+                && document.contains("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"EEF2F7\""),
+            "the generated index paragraph should contain all requested formatting: {document}"
         );
     }
 

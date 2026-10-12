@@ -73,6 +73,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_suppress_line_numbers = collect_style_line_number_suppression_metadata(bytes)?;
     let style_paragraph_properties = collect_style_paragraph_xml_metadata(bytes)?;
     let style_run_properties = collect_style_run_xml_metadata(bytes)?;
+    let index_field_paragraph_xml = collect_index_field_paragraph_metadata(bytes)?;
     let hyperlink_histories = collect_hyperlink_histories(bytes)?;
     let toc_reader_bytes = normalize_nested_toc_item_sdts(bytes)?;
     let (reader_bytes, deleted_instructions) =
@@ -104,6 +105,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         style_paragraph_properties,
         style_run_properties,
         deleted_instructions,
+        index_field_paragraph_xml,
         hyperlink_histories,
         ..Writer::default()
     };
@@ -126,6 +128,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let document_attrs = reverse_document_attributes(&docx, &style_metadata, &writer, bytes)?;
     writer.line(0, &format!("<Document{document_attrs}>"));
     writer.emit_sections(&docx)?;
+    writer.validate_index_field_paragraph_xml_consumed()?;
     writer.validate_table_row_xml_consumed()?;
     writer.validate_table_xml_consumed()?;
     writer.line(0, "</Document>");
@@ -565,6 +568,8 @@ struct Writer {
     style_paragraph_properties: HashMap<String, Map<String, Value>>,
     style_run_properties: HashMap<String, Map<String, Value>>,
     deleted_instructions: HashMap<String, String>,
+    index_field_paragraph_xml: HashMap<String, Vec<Map<String, Value>>>,
+    index_field_paragraph_indices: HashMap<String, usize>,
     in_deleted_revision: bool,
 }
 
@@ -573,6 +578,9 @@ struct ParagraphIndentMetadata {
     values: BTreeMap<String, i64>,
     suppress_line_numbers: Option<bool>,
 }
+
+type RawIndexParagraphProperties = Vec<(String, BTreeMap<String, String>)>;
+type RawIndexFieldParagraph = (String, RawIndexParagraphProperties);
 
 #[derive(Clone, Debug, Default)]
 struct TableRowXmlMetadata {
@@ -730,7 +738,18 @@ impl Writer {
     fn emit_nested_blocks(&mut self, children: &[NestedBlock<'_>], depth: usize) -> Result<()> {
         let mut index = 0;
         while index < children.len() {
-            if let Some((field, consumed_paragraphs)) = unwrapped_index_at(children, index)? {
+            if let Some((mut field, consumed_paragraphs)) = unwrapped_index_at(children, index)? {
+                let Some(NestedBlock::Child(DocumentChild::Paragraph(begin))) = children.get(index)
+                else {
+                    return Err(Error::Reverse(
+                        "unwrapped index start paragraph disappeared during reconstruction"
+                            .to_owned(),
+                    ));
+                };
+                let instruction = toc_instruction_from_paragraph(begin).ok_or_else(|| {
+                    Error::Reverse("unwrapped index field instruction is malformed".to_owned())
+                })?;
+                self.append_index_field_paragraph_properties(&mut field, &instruction)?;
                 self.index_component(&field, depth)?;
                 self.paragraph_index += consumed_paragraphs;
                 index += consumed_paragraphs;
@@ -785,6 +804,9 @@ impl Writer {
 
     fn body_structured_tag(&mut self, tag: &StructuredDataTag, depth: usize) -> Result<()> {
         if let Some(mut index) = index_from_sdt(tag, &self.deleted_instructions)? {
+            let deletion = deleted_index_field_from_sdt(tag, &self.deleted_instructions)?;
+            let instruction = collect_sdt_instruction(tag, deletion.as_ref());
+            self.append_index_field_paragraph_properties(&mut index, &instruction)?;
             if self.apply_sdt {
                 if let Some(props) = self.sdt_plan.body_tags.get(self.body_sdt_index) {
                     add_index_sdt_properties(&mut index, props);
@@ -796,6 +818,47 @@ impl Writer {
             return Ok(());
         }
         self.block_content_control(tag, depth)
+    }
+
+    fn append_index_field_paragraph_properties(
+        &mut self,
+        index: &mut IndexField,
+        instruction: &str,
+    ) -> Result<()> {
+        let key = instruction.trim();
+        let index_in_bucket = self
+            .index_field_paragraph_indices
+            .entry(key.to_owned())
+            .or_default();
+        let Some(properties) = self
+            .index_field_paragraph_xml
+            .get(key)
+            .and_then(|values| values.get(*index_in_bucket))
+            .cloned()
+        else {
+            return Err(Error::Reverse(format!(
+                "index field `{key}` has no matching raw paragraph properties in word/document.xml; retain the source package or repair the field structure"
+            )));
+        };
+        *index_in_bucket += 1;
+        append_index_field_paragraph_properties(index, properties)
+    }
+
+    fn validate_index_field_paragraph_xml_consumed(&self) -> Result<()> {
+        for (instruction, values) in &self.index_field_paragraph_xml {
+            let consumed = self
+                .index_field_paragraph_indices
+                .get(instruction)
+                .copied()
+                .unwrap_or_default();
+            if consumed != values.len() {
+                return Err(Error::Reverse(format!(
+                    "word/document.xml has {} TOC field paragraph(s) for `{instruction}`, but only {consumed} were reconstructed as index components; repair the field structure so each TOC field has a matching index control or adjacent begin/end paragraphs",
+                    values.len()
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn advance_paragraphs_in_sdt(&mut self, tag: &StructuredDataTag) {
@@ -1949,6 +2012,10 @@ impl Writer {
                 }
                 TableCellContent::StructuredDataTag(tag) => {
                     if let Some(mut kind) = index_from_sdt(tag, &self.deleted_instructions)? {
+                        let deletion =
+                            deleted_index_field_from_sdt(tag, &self.deleted_instructions)?;
+                        let instruction = collect_sdt_instruction(tag, deletion.as_ref());
+                        self.append_index_field_paragraph_properties(&mut kind, &instruction)?;
                         if self.apply_sdt {
                             if let Some(props) = self.sdt_plan.cell_tags.get(self.cell_sdt_index) {
                                 add_index_sdt_properties(&mut kind, props);
@@ -2738,7 +2805,7 @@ fn index_from_sdt(
             attributes.push_str(" dirty={false}");
         }
     }
-    if let Some(deletion) = deletion {
+    if let Some(deletion) = &deletion {
         let value = serde_json::to_string(&serde_json::json!({
             "author": deletion.author,
             "date": deletion.date,
@@ -2749,6 +2816,74 @@ fn index_from_sdt(
         let _ = write!(attributes, " deletion={{{value}}}");
     }
     Ok(Some(index))
+}
+
+fn append_index_field_paragraph_properties(
+    index: &mut IndexField,
+    mut properties: Map<String, Value>,
+) -> Result<()> {
+    if index_has_static_items(index) {
+        let static_row_only_properties = properties
+            .keys()
+            .all(|key| key == "style" || key == "__unsupported")
+            && properties
+                .get("__unsupported")
+                .and_then(Value::as_array)
+                .is_none_or(|values| {
+                    !values.is_empty()
+                        && values
+                            .iter()
+                            .all(|value| matches!(value.as_str(), Some("tab" | "tabs")))
+                });
+        if properties.is_empty() || static_row_only_properties {
+            return Ok(());
+        }
+        return Err(Error::Reverse(
+            "index field paragraph formatting is present together with static PAGEREF rows, but docx-rs ignores paragraph_property in its static-items branch; remove the rows or keep the automatic field before reversing".to_owned(),
+        ));
+    }
+    if let Some(unsupported) = properties.remove("__unsupported") {
+        let property = unsupported
+            .as_array()
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .unwrap_or("unknown OOXML paragraph formatting");
+        return Err(unsupported_index_field_paragraph_property(property));
+    }
+    for key in ["keepNext", "keepLines", "pageBreakBefore"] {
+        if properties.get(key) == Some(&Value::Bool(false)) {
+            return Err(unsupported_index_field_paragraph_property(key));
+        }
+    }
+    if properties.is_empty() {
+        return Ok(());
+    }
+    let value = serde_json::to_string(&properties).map_err(|error| {
+        Error::Reverse(format!(
+            "cannot encode index field paragraph properties: {error}"
+        ))
+    })?;
+    let attributes = match index {
+        IndexField::Contents { attributes, .. }
+        | IndexField::Figures { attributes, .. }
+        | IndexField::Entries { attributes, .. } => attributes,
+    };
+    let _ = write!(attributes, " fieldParagraph={{{value}}}");
+    Ok(())
+}
+
+fn index_has_static_items(index: &IndexField) -> bool {
+    match index {
+        IndexField::Contents { items, .. }
+        | IndexField::Figures { items, .. }
+        | IndexField::Entries { items, .. } => !items.is_empty(),
+    }
+}
+
+fn unsupported_index_field_paragraph_property(property: &str) -> Error {
+    Error::Reverse(format!(
+        "index field paragraph property `{property}` is not represented by `fieldParagraph`; remove it or use only the documented `fieldParagraph` properties before reversing"
+    ))
 }
 
 fn deleted_index_field_from_sdt(
@@ -4934,6 +5069,340 @@ fn collect_paragraph_indent_metadata(
         result.insert(part, paragraphs);
     }
     Ok(result)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "This parser keeps paragraph, pPr, and field-instruction state synchronized in one streaming pass."
+)]
+fn collect_index_field_paragraph_metadata(
+    bytes: &[u8],
+) -> Result<HashMap<String, Vec<Map<String, Value>>>> {
+    let xml = read_zip_text(bytes, "word/document.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut result: HashMap<String, Vec<Map<String, Value>>> = HashMap::new();
+    let mut paragraph: Option<RawIndexFieldParagraph> = None;
+    let mut paragraph_properties_depth = 0_usize;
+    let mut in_instruction = false;
+    let mut instruction_seen = false;
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"p" => {
+                paragraph = Some((String::new(), Vec::new()));
+                paragraph_properties_depth = 0;
+                in_instruction = false;
+                instruction_seen = false;
+            }
+            Ok(Event::Start(element)) if paragraph.is_some() => {
+                let name = element.local_name();
+                if name.as_ref() == b"pPr" {
+                    paragraph_properties_depth = 1;
+                } else if !instruction_seen
+                    && (name.as_ref() == b"instrText" || name.as_ref() == b"delInstrText")
+                {
+                    in_instruction = true;
+                } else if paragraph_properties_depth > 0 {
+                    let attributes = raw_xml_attributes(&reader, &element)?;
+                    if let Some((_, entries)) = paragraph.as_mut() {
+                        entries.push((
+                            String::from_utf8_lossy(name.as_ref()).into_owned(),
+                            attributes,
+                        ));
+                    }
+                    paragraph_properties_depth += 1;
+                }
+            }
+            Ok(Event::Empty(element)) if paragraph.is_some() => {
+                let name = element.local_name();
+                if name.as_ref() == b"pPr" {
+                    paragraph_properties_depth = 0;
+                } else if name.as_ref() == b"instrText" || name.as_ref() == b"delInstrText" {
+                    in_instruction = false;
+                    instruction_seen = true;
+                } else if paragraph_properties_depth > 0 {
+                    let attributes = raw_xml_attributes(&reader, &element)?;
+                    if let Some((_, entries)) = paragraph.as_mut() {
+                        entries.push((
+                            String::from_utf8_lossy(name.as_ref()).into_owned(),
+                            attributes,
+                        ));
+                    }
+                }
+            }
+            Ok(Event::Text(text)) if paragraph.is_some() && in_instruction => {
+                let decoded = text.decode().map_err(|error| {
+                    Error::Reverse(format!("cannot decode index field instruction: {error}"))
+                })?;
+                let value = quick_xml::escape::unescape(&decoded).map_err(|error| {
+                    Error::Reverse(format!("cannot unescape index field instruction: {error}"))
+                })?;
+                if let Some((instruction, _)) = paragraph.as_mut() {
+                    instruction.push_str(&value);
+                }
+            }
+            Ok(Event::GeneralRef(reference)) if paragraph.is_some() && in_instruction => {
+                let entity = reference.decode().map_err(|error| {
+                    Error::Reverse(format!("cannot decode index field entity: {error}"))
+                })?;
+                if let Some(value) = quick_xml::escape::resolve_predefined_entity(&entity) {
+                    if let Some((instruction, _)) = paragraph.as_mut() {
+                        instruction.push_str(value);
+                    }
+                } else if let Some(value) = reference.resolve_char_ref().map_err(|error| {
+                    Error::Reverse(format!(
+                        "cannot decode index field character reference: {error}"
+                    ))
+                })? {
+                    if let Some((instruction, _)) = paragraph.as_mut() {
+                        instruction.push(value);
+                    }
+                } else {
+                    return Err(Error::Reverse(format!(
+                        "index field instruction contains unsupported entity `&{entity};`"
+                    )));
+                }
+            }
+            Ok(Event::End(element)) if paragraph.is_some() => {
+                let name = element.local_name();
+                if name.as_ref() == b"p" {
+                    if let Some((instruction, entries)) = paragraph.take()
+                        && instruction.trim_start().starts_with("TOC")
+                    {
+                        let properties = raw_index_field_paragraph_properties(&entries)?;
+                        result
+                            .entry(instruction.trim().to_owned())
+                            .or_default()
+                            .push(properties);
+                    }
+                    paragraph_properties_depth = 0;
+                    in_instruction = false;
+                    instruction_seen = false;
+                } else if name.as_ref() == b"instrText" || name.as_ref() == b"delInstrText" {
+                    in_instruction = false;
+                    instruction_seen = true;
+                } else if name.as_ref() == b"pPr" {
+                    paragraph_properties_depth = 0;
+                } else if paragraph_properties_depth > 1 {
+                    paragraph_properties_depth -= 1;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot read index field paragraph properties from word/document.xml: {error}"
+                )));
+            }
+        }
+        buffer.clear();
+    }
+    Ok(result)
+}
+
+fn raw_xml_attributes(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+) -> Result<BTreeMap<String, String>> {
+    let mut attributes = BTreeMap::new();
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|error| {
+            Error::Reverse(format!(
+                "malformed attribute on index field property: {error}"
+            ))
+        })?;
+        let key = String::from_utf8_lossy(attribute.key.local_name().as_ref()).into_owned();
+        let value = attribute
+            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+            .map_err(|error| {
+                Error::Reverse(format!("invalid value on index field property: {error}"))
+            })?
+            .into_owned();
+        attributes.insert(key, value);
+    }
+    Ok(attributes)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "The whitelist is intentionally explicit so unsupported OOXML is never silently discarded."
+)]
+fn raw_index_field_paragraph_properties(
+    entries: &RawIndexParagraphProperties,
+) -> Result<Map<String, Value>> {
+    let mut properties = Map::new();
+    let mut special_indent = None;
+    for (element, attributes) in entries {
+        let mut recognized = true;
+        match element.as_str() {
+            "rPr" | "tabs" if attributes.is_empty() => continue,
+            "pStyle" => {
+                raw_string_property(attributes, "val", "style", &mut properties);
+            }
+            "jc" => raw_string_property(attributes, "val", "align", &mut properties),
+            "spacing" => {
+                for (source, target) in [
+                    ("before", "spacingBefore"),
+                    ("after", "spacingAfter"),
+                    ("line", "lineSpacing"),
+                ] {
+                    if let Some(value) = attributes.get(source) {
+                        let twips = parse_raw_i64(value, source)?;
+                        properties.insert(target.to_owned(), points_value(twips)?);
+                    }
+                }
+                for (source, target) in [
+                    ("beforeLines", "spacingBeforeLines"),
+                    ("afterLines", "spacingAfterLines"),
+                ] {
+                    if let Some(value) = attributes.get(source) {
+                        properties.insert(
+                            target.to_owned(),
+                            Value::from(parse_raw_i64(value, source)?),
+                        );
+                    }
+                }
+                if let Some(value) = attributes.get("lineRule") {
+                    properties.insert("lineRule".to_owned(), Value::String(value.clone()));
+                }
+                if attributes.keys().any(|key| {
+                    ![
+                        "before",
+                        "after",
+                        "line",
+                        "beforeLines",
+                        "afterLines",
+                        "lineRule",
+                    ]
+                    .contains(&key.as_str())
+                }) {
+                    raw_mark_unsupported(&mut properties, "spacing attributes");
+                }
+            }
+            "ind" => {
+                for (source, target) in [("left", "indentLeft"), ("right", "indentRight")] {
+                    if let Some(value) = attributes.get(source) {
+                        properties.insert(
+                            target.to_owned(),
+                            points_value(parse_raw_i64(value, source)?)?,
+                        );
+                    }
+                }
+                for (source, target) in [("firstLine", "firstLine"), ("hanging", "hanging")] {
+                    if let Some(value) = attributes.get(source) {
+                        if special_indent.is_some() {
+                            raw_mark_unsupported(&mut properties, "conflicting paragraph indents");
+                        }
+                        special_indent = Some((target, parse_raw_i64(value, source)?));
+                    }
+                }
+                if attributes
+                    .keys()
+                    .any(|key| !["left", "right", "firstLine", "hanging"].contains(&key.as_str()))
+                {
+                    raw_mark_unsupported(&mut properties, "character-unit indentation");
+                }
+            }
+            "keepNext" | "keepLines" | "pageBreakBefore" | "snapToGrid" | "widowControl"
+            | "bidi" => {
+                let value = attributes
+                    .get("val")
+                    .map(|value| parse_on_off(value))
+                    .transpose()?
+                    .unwrap_or(true);
+                if matches!(
+                    element.as_str(),
+                    "keepNext" | "keepLines" | "pageBreakBefore"
+                ) && !value
+                {
+                    raw_mark_unsupported(&mut properties, element);
+                } else {
+                    properties.insert(element.clone(), Value::Bool(value));
+                }
+                if attributes.keys().any(|key| key != "val") {
+                    raw_mark_unsupported(&mut properties, "paragraph flag attributes");
+                }
+            }
+            "outlineLvl" => {
+                raw_number_property(attributes, "val", "outlineLevel", &mut properties)?;
+            }
+            "textAlignment" => {
+                raw_string_property(attributes, "val", "textAlign", &mut properties);
+            }
+            "shd" => {
+                let supported = attributes.get("val").is_none_or(|value| value == "clear")
+                    && attributes.get("color").is_none_or(|value| value == "auto")
+                    && attributes.contains_key("fill")
+                    && attributes
+                        .keys()
+                        .all(|key| ["val", "color", "fill"].contains(&key.as_str()));
+                if supported {
+                    if let Some(fill) = attributes.get("fill") {
+                        properties.insert("shading".to_owned(), Value::String(fill.clone()));
+                    }
+                } else {
+                    raw_mark_unsupported(&mut properties, "shading");
+                }
+            }
+            _ => recognized = false,
+        }
+        if !recognized {
+            raw_mark_unsupported(&mut properties, element);
+        }
+    }
+    if let Some((target, value)) = special_indent {
+        properties.insert(target.to_owned(), points_value(value)?);
+    }
+    Ok(properties)
+}
+
+fn raw_string_property(
+    attributes: &BTreeMap<String, String>,
+    source: &str,
+    target: &str,
+    properties: &mut Map<String, Value>,
+) {
+    if let Some(value) = attributes.get(source) {
+        properties.insert(target.to_owned(), Value::String(value.clone()));
+    }
+    if attributes.keys().any(|key| key != source) {
+        raw_mark_unsupported(properties, target);
+    }
+}
+
+fn raw_number_property(
+    attributes: &BTreeMap<String, String>,
+    source: &str,
+    target: &str,
+    properties: &mut Map<String, Value>,
+) -> Result<()> {
+    if let Some(value) = attributes.get(source) {
+        properties.insert(
+            target.to_owned(),
+            Value::from(parse_raw_i64(value, source)?),
+        );
+    }
+    if attributes.keys().any(|key| key != source) {
+        raw_mark_unsupported(properties, target);
+    }
+    Ok(())
+}
+
+fn parse_raw_i64(value: &str, property: &str) -> Result<i64> {
+    value.parse::<i64>().map_err(|_| {
+        Error::Reverse(format!(
+            "index field paragraph `{property}` value `{value}` is not an integer; repair the OOXML value"
+        ))
+    })
+}
+
+fn raw_mark_unsupported(properties: &mut Map<String, Value>, property: &str) {
+    let unsupported = properties
+        .entry("__unsupported".to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(unsupported) = unsupported.as_array_mut() {
+        unsupported.push(Value::String(property.to_owned()));
+    }
 }
 
 fn collect_style_character_indent_metadata(
@@ -9924,6 +10393,46 @@ mod tests {
     }
 
     #[test]
+    fn reverse_external_docx_should_restore_index_field_paragraph_properties() {
+        let toc = TableOfContents::new().paragraph_property(
+            ParagraphProperty::new()
+                .align(docx_rs::AlignmentType::Center)
+                .line_spacing(
+                    LineSpacing::new()
+                        .before(120)
+                        .line(560)
+                        .line_rule(docx_rs::LineSpacingType::Exact),
+                )
+                .indent(
+                    Some(80),
+                    Some(SpecialIndentType::FirstLine(640)),
+                    Some(60),
+                    None,
+                )
+                .keep_next(true),
+        );
+        let external = strip_ir_manifest(&pack_docx(Docx::new().add_table_of_contents(toc)));
+        let jsx = reverse_document(&external).expect("field paragraph properties should reverse");
+        assert!(
+            jsx.contains(
+                r#"fieldParagraph={{"align":"center","indentLeft":4,"indentRight":3,"spacingBefore":6,"lineSpacing":28,"lineRule":"exact","keepNext":true,"firstLine":32}}"#
+            ),
+            "index paragraph formatting should be restored as fieldParagraph: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unrepresentable_index_paragraph_properties() {
+        let toc = TableOfContents::new()
+            .paragraph_property(ParagraphProperty::new().character_spacing(20));
+        let external = strip_ir_manifest(&pack_docx(Docx::new().add_table_of_contents(toc)));
+        let error = reverse_document(&external)
+            .expect_err("unsupported field paragraph formatting must not be discarded");
+        assert!(error.to_string().contains("field paragraph property"));
+        assert!(error.to_string().contains("fieldParagraph"));
+    }
+
+    #[test]
     fn reverse_external_docx_should_restore_unwrapped_dynamic_toc_without_manifest() {
         let mut figures = TableOfContents::new();
         figures.instr = InstrToC::new().caption_label("Figure");
@@ -9935,6 +10444,9 @@ mod tests {
                     TableOfContents::new()
                         .heading_styles_range(1, 3)
                         .auto()
+                        .paragraph_property(
+                            ParagraphProperty::new().align(docx_rs::AlignmentType::Center),
+                        )
                         .without_sdt(),
                 )
                 .add_table_of_contents(figures.without_sdt())
@@ -9946,7 +10458,8 @@ mod tests {
             jsx.contains("<TableOfContents")
                 && jsx.contains("<TableOfFigures")
                 && jsx.contains("<TableOfEntries")
-                && jsx.matches("withoutSdt").count() == 3,
+                && jsx.matches("withoutSdt").count() == 3
+                && jsx.contains(r#"fieldParagraph={{"align":"center"}}"#),
             "unwrapped field paragraphs should reconstruct all index components: {jsx}"
         );
         assert!(

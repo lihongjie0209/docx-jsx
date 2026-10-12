@@ -32,6 +32,27 @@ fn strip_ir_manifest(bytes: &[u8]) -> Vec<u8> {
         .into_inner()
 }
 
+fn first_index_field_paragraph_properties(path: &std::path::Path) -> String {
+    let bytes = fs::read(path).expect("DOCX should exist");
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid ZIP");
+    let mut xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part")
+        .read_to_string(&mut xml)
+        .expect("XML should read");
+    let control = xml.find("<w:sdtContent>").expect("TOC SDT content");
+    let start = xml[control..]
+        .find("<w:pPr")
+        .map(|index| index + control)
+        .expect("field paragraph properties");
+    let end = xml[start..]
+        .find("</w:pPr>")
+        .map(|index| index + start + "</w:pPr>".len())
+        .expect("field paragraph property end");
+    xml[start..end].to_owned()
+}
+
 #[test]
 fn spec_should_output_agent_readable_markdown() {
     Command::cargo_bin("docx-jsx")
@@ -312,6 +333,61 @@ export default <Document><Section type="continuous" lineNumbering={{countBy:5,re
         .assert()
         .success();
     assert_eq!(embedded_ir(&docx), embedded_ir(&roundtrip));
+}
+
+#[test]
+fn cli_should_reverse_and_recompile_external_index_field_paragraph_formatting() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("index.tsx");
+    let compiled = directory.path().join("index.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, TableOfContents } from "docx-jsx";
+export default <Document><Section><TableOfContents fieldParagraph={{align:"center",spacingBefore:6,lineSpacing:28,lineRule:"exact",firstLine:32,keepNext:true,bidi:true,shading:"EEF2F7"}} /></Section></Document>;"#,
+    )
+    .expect("input should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        jsx.contains("fieldParagraph={{")
+            && jsx.contains(r#""lineSpacing":28"#)
+            && jsx.contains(r#""bidi":true"#),
+        "reverse should restore field paragraph properties without a manifest: {jsx}"
+    );
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+
+    assert_eq!(
+        first_index_field_paragraph_properties(&compiled),
+        first_index_field_paragraph_properties(&rebuilt)
+    );
 }
 
 #[test]

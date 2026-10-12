@@ -517,6 +517,18 @@ fn validate_style_references(node: &Node, path: &str, types: &HashMap<&str, &str
             ));
         }
     }
+    if matches!(
+        node.kind,
+        NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
+    ) && let Some(properties) = node.props.get("fieldParagraph").and_then(Value::as_object)
+    {
+        let field_paragraph = Node {
+            kind: NodeKind::Paragraph,
+            props: properties.clone(),
+            children: Vec::new(),
+        };
+        validate_style_references(&field_paragraph, &format!("{path}.fieldParagraph"), types)?;
+    }
     for (index, child) in node.children.iter().enumerate() {
         if let Child::Node(child) = child {
             validate_style_references(
@@ -1243,6 +1255,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "alias",
             "withoutSdt",
             "deletion",
+            "fieldParagraph",
         ],
         NodeKind::TableOfFigures => &[
             "label",
@@ -1262,6 +1275,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "alias",
             "withoutSdt",
             "deletion",
+            "fieldParagraph",
         ],
         NodeKind::TableOfEntries => &[
             "identifier",
@@ -1281,6 +1295,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "alias",
             "withoutSdt",
             "deletion",
+            "fieldParagraph",
         ],
         NodeKind::TocEntry => &["text", "level", "omitPageNumber", "identifier"],
         NodeKind::Index => index_props(),
@@ -4391,6 +4406,7 @@ fn validate_index_instruction_options(node: &Node, path: &str) -> Result<()> {
     ) {
         validate_without_sdt(node, path)?;
         validate_index_deletion(node, path)?;
+        validate_index_field_paragraph(node, path)?;
         for key in ["hyperlinks", "dirty", "withoutSdt"] {
             if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
                 return Err(validation(path, format!("`{key}` must be a boolean")));
@@ -4514,6 +4530,71 @@ fn validate_index_deletion(node: &Node, path: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_index_field_paragraph(node: &Node, path: &str) -> Result<()> {
+    let Some(value) = node.props.get("fieldParagraph") else {
+        return Ok(());
+    };
+    if node
+        .children
+        .iter()
+        .any(|child| matches!(child, Child::Node(child) if child.kind == NodeKind::TocItem))
+    {
+        return Err(validation(
+            path,
+            "`fieldParagraph` cannot be combined with static `TocItem` rows because docx-rs ignores it in that branch; remove the rows or omit `fieldParagraph`",
+        ));
+    }
+    let properties = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`fieldParagraph` must be an object"))?;
+    if properties.is_empty() {
+        return Err(validation(
+            path,
+            "`fieldParagraph` must contain at least one supported property; omit it for default formatting",
+        ));
+    }
+    let supported = [
+        "style",
+        "align",
+        "spacingBefore",
+        "spacingAfter",
+        "lineSpacing",
+        "spacingBeforeLines",
+        "spacingAfterLines",
+        "lineRule",
+        "indentLeft",
+        "indentRight",
+        "firstLine",
+        "hanging",
+        "keepNext",
+        "keepLines",
+        "pageBreakBefore",
+        "snapToGrid",
+        "widowControl",
+        "bidi",
+        "textAlign",
+        "shading",
+        "outlineLevel",
+    ];
+    validate_object_keys(properties, &format!("{path}.fieldParagraph"), &supported)?;
+    for key in ["keepNext", "keepLines", "pageBreakBefore"] {
+        if properties.get(key) == Some(&Value::Bool(false)) {
+            return Err(validation(
+                format!("{path}.fieldParagraph"),
+                format!(
+                    "`{key}: false` cannot be emitted on the generated index paragraph; omit `{key}` or set it to true"
+                ),
+            ));
+        }
+    }
+    let paragraph = Node {
+        kind: NodeKind::Paragraph,
+        props: properties.clone(),
+        children: Vec::new(),
+    };
+    validate_props(&paragraph, &format!("{path}.fieldParagraph"))
 }
 
 fn validate_styles_with_levels(value: &Value, path: &str) -> Result<()> {
@@ -5586,6 +5667,57 @@ mod tests {
             error
                 .to_string()
                 .contains("cannot be combined with `withoutSdt`")
+        );
+    }
+
+    #[test]
+    fn validate_should_accept_index_field_paragraph_formatting() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"align":"center","spacingBefore":6,"lineSpacing":28,"lineRule":"exact","firstLine":32,"keepNext":true,"bidi":true,"shading":"EEF2F7"}},"children":[]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("supported field paragraph formatting should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_index_field_paragraph_formatting_with_static_rows() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"align":"center"}},"children":[{"type":"TocItem","props":{"text":"Intro","bookmark":"intro"},"children":[]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("docx-rs ignores field paragraph property with static rows");
+        assert!(error.to_string().contains("fieldParagraph"));
+        assert!(error.to_string().contains("TocItem"));
+    }
+
+    #[test]
+    fn validate_should_reject_false_field_paragraph_flags_that_docx_rs_omits() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"keepNext":false}},"children":[]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("false field paragraph flag is not emitted by the writer");
+        assert!(
+            error
+                .to_string()
+                .contains("`keepNext: false` cannot be emitted")
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_empty_index_field_paragraph_object() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{}},"children":[]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("empty object has no reversible formatting semantics");
+        assert!(
+            error
+                .to_string()
+                .contains("at least one supported property")
         );
     }
 

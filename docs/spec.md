@@ -680,7 +680,8 @@ error instead of a silent drop.
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
   `dirty?: boolean`, `alias?: string`, `withoutSdt?: boolean`, and
-  `deletion?: {author:string,date:string}`. Defaults to
+  `deletion?: {author:string,date:string}`, and optional `fieldParagraph`
+  formatting. Defaults to
   levels 1–3, hyperlinks enabled, and automatic refresh requested. A section
   accepts at most one TOC, placed before its body content (headers and footers
   may precede it. Optional `TocItem` children provide a static entry row with
@@ -703,11 +704,21 @@ error instead of a silent drop.
   `delete` in its static-items serialization branch. Reverse restores the
   deletion author and date from the external DOCX. Unlike `withoutSdt`,
   deletion is not restricted to direct section children where the index
-  component is otherwise allowed. The `paragraph_property`
-  setter is also not exposed
-  because it applies only to the generated automatic-field
-  paragraph and arbitrary paragraph properties have no lossless index-property
-  representation. `withoutSdt?: boolean` omits the outer structured document
+  component is otherwise allowed. `fieldParagraph?: object` applies
+  formatting to the generated automatic-field paragraph. It accepts the
+  existing `Paragraph` formatting names and units: `style`, `align`,
+  `spacingBefore`, `spacingAfter`, `lineSpacing`, `spacingBeforeLines`,
+  `spacingAfterLines`, `lineRule`, `indentLeft`, `indentRight`, `firstLine`,
+  `hanging`, `keepNext`, `keepLines`, `pageBreakBefore`, `snapToGrid`,
+  `widowControl`, `bidi`, `textAlign`, `shading`, and `outlineLevel`. Point-
+  valued spacing and indentation use points. It is valid only without static
+  `TocItem` rows because docx-rs ignores paragraph properties in its static-
+  items branch. Character-unit indentation, `false` for `keepNext`,
+  `keepLines`, or `pageBreakBefore`, and properties not listed here are
+  rejected; reverse restores the listed values (including unwrapped indexes)
+  from external DOCX and errors on unsupported properties rather than
+  silently dropping them.
+  `withoutSdt?: boolean` omits the outer structured document
   tag and leaves only the native field paragraphs. It is valid only when the
   index is a direct `Section` child and has no `TocItem`, `TocBefore`, or
   `TocAfter` children; reverse recognizes the adjacent field-start and
@@ -722,7 +733,9 @@ error instead of a silent drop.
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
   `dirty?: boolean`, `alias?: string`, `withoutSdt?: boolean`, and
-  `deletion?: {author:string,date:string}`. It emits a native TOC field filtered
+  `deletion?: {author:string,date:string}`, and optional `fieldParagraph`
+  formatting with the same contract as `TableOfContents`. It emits a native
+  TOC field filtered
   by caption/SEQ label. It also accepts `TocItem` children with the same
   contract as `TableOfContents`. `withoutSdt` has the same direct `Section`
   child and no-child restrictions as `TableOfContents`; `deletion` has the
@@ -738,7 +751,9 @@ error instead of a silent drop.
   `preserveTab?: boolean`, `preserveNewLine?: boolean`,
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `dirty?`, `alias?`, and
-  `withoutSdt?: boolean`, and `deletion?: {author:string,date:string}`. It emits
+  `withoutSdt?: boolean`, `deletion?: {author:string,date:string}`, and
+  optional `fieldParagraph` formatting with the same contract as
+  `TableOfContents`. It emits
   a native custom TOC containing `TocEntry` fields with the same `identifier`.
   It also accepts `TocItem` children with the same contract as
   `TableOfContents`. `withoutSdt` uses the same direct `Section` child and
