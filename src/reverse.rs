@@ -8087,6 +8087,9 @@ fn reverse_settings_attributes(settings: &docx_rs::Settings, bytes: &[u8]) -> Re
             .map_err(|_| Error::Reverse("default tab stop exceeds supported range".to_owned()))?;
         attributes.push_str(&jsx_prop("defaultTabStop", &points_value(tab_stop)?)?);
     }
+    if let Some(zoom) = collect_document_zoom(bytes)? {
+        attributes.push_str(&jsx_prop("zoom", &Value::from(zoom))?);
+    }
     if let Some(protection) = collect_document_protection(bytes)? {
         attributes.push_str(&jsx_prop("documentProtection", &protection)?);
     }
@@ -8186,6 +8189,86 @@ fn collect_document_protection(bytes: &[u8]) -> Result<Option<Value>> {
             Ok(value)
         })
         .transpose()
+}
+
+fn collect_document_zoom(bytes: &[u8]) -> Result<Option<u64>> {
+    let Ok(xml) = read_zip_text(bytes, "word/settings.xml") else {
+        return Ok(None);
+    };
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut zoom = None;
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"zoom" => {
+                if zoom.is_some() {
+                    return Err(Error::Reverse(
+                        "word/settings.xml contains multiple `w:zoom` elements; keep exactly one before reverse conversion".to_owned(),
+                    ));
+                }
+                let mut percent = None;
+                for attribute in element.attributes().with_checks(true) {
+                    let attribute = attribute.map_err(|error| {
+                        Error::Reverse(format!("cannot parse `w:zoom` attributes: {error}"))
+                    })?;
+                    if attribute.key.local_name().as_ref() != b"percent" {
+                        let name = String::from_utf8_lossy(attribute.key.as_ref());
+                        if attribute.key.local_name().as_ref() == b"val" {
+                            let mode = attribute
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
+                                .map_err(|error| {
+                                    Error::Reverse(format!(
+                                        "cannot decode `w:zoom/@w:val`: {error}"
+                                    ))
+                                })?;
+                            return Err(Error::Reverse(format!(
+                                "`w:zoom/@w:val=\"{mode}\"` is a view mode not representable by the DSL; use a percentage zoom with `w:percent` (10 through 500)"
+                            )));
+                        }
+                        return Err(Error::Reverse(format!(
+                            "`w:zoom` uses unsupported attribute `{name}`; use a percentage zoom or remove the view-mode setting before reverse conversion"
+                        )));
+                    }
+                    let value = attribute
+                        .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                        .map_err(|error| {
+                            Error::Reverse(format!("invalid `w:zoom/@w:percent`: {error}"))
+                        })?;
+                    percent = Some(value.parse::<u64>().map_err(|_| {
+                        Error::Reverse(format!(
+                            "`w:zoom/@w:percent` has invalid value `{value}`; use an integer from 10 through 500"
+                        ))
+                    })?);
+                }
+                let value = percent.ok_or_else(|| Error::Reverse(
+                    "`w:zoom` has no `w:percent`; view modes such as `fullPage`, `bestFit`, or `textFit` are not representable, so use a percentage zoom".to_owned(),
+                ))?;
+                if !(10..=500).contains(&value) {
+                    return Err(Error::Reverse(format!(
+                        "`w:zoom/@w:percent` value `{value}` is outside the supported range 10 through 500; repair the value before reverse conversion"
+                    )));
+                }
+                zoom = Some(value);
+            }
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"zoom" => {
+                return Err(Error::Reverse(
+                    "`w:zoom` must be an empty element; remove child content before reverse conversion".to_owned(),
+                ));
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/settings.xml zoom: {error}"
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(zoom.filter(|value| *value != 100))
 }
 
 fn parse_document_protection_attributes(
@@ -12725,6 +12808,23 @@ mod tests {
                 && jsx.contains(r#"characterSpacingControl="compressPunctuation""#),
             "{jsx}"
         );
+    }
+
+    #[test]
+    fn reverse_should_reject_non_percentage_zoom_modes_with_repair_guidance() {
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let settings = read_zip_text(&bytes, "word/settings.xml").expect("settings should exist");
+        let settings = settings.replace(
+            r#"<w:zoom w:percent="100" />"#,
+            r#"<w:zoom w:val="fullPage" />"#,
+        );
+        let external = rewrite_package_parts(&bytes, &[("word/settings.xml", settings.as_bytes())]);
+        let error = reverse_document(&external).expect_err("view mode should not be lossy");
+        let message = error.to_string();
+        assert!(message.contains("not representable"), "{message}");
+        assert!(message.contains("percentage zoom"), "{message}");
     }
 
     #[test]

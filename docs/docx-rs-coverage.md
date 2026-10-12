@@ -30,6 +30,13 @@ Classification used in **Next gaps**:
 Reader-only docx-rs APIs and constructors marked private by docx-rs are not
 counted as build coverage until the backend exposes a public writer API.
 
+`Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
+has no public setter. The compiler normalizes the writer's schema-valid 100%
+default in `word/settings.xml` when `Document.zoom` is supplied; external
+reverse reads percentage zoom values without the IR manifest. `w:zoom` view
+modes (`fullPage`, `bestFit`, `textFit`) are explicitly rejected because the
+DSL currently models percentages only.
+
 Comment relationship and resolved-state compatibility: `Comment::parent_comment_id`
 is a public reader field but is omitted by `Comment::build_to`; `CommentExtended::done`
 is a public writer field. The compiler preserves `commentsExtended.xml` values by

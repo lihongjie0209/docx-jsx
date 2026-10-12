@@ -355,6 +355,7 @@ fn package_document(
     let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
     let bytes = patch_core_properties(bytes, &ir.document.props)?;
     let bytes = patch_document_protection(bytes, &ir.document.props)?;
+    let bytes = patch_document_zoom(bytes, &ir.document.props)?;
     let row_grid = collect_row_grid_properties(&ir.document);
     let mut bytes = bytes;
     for (part, rows) in row_grid {
@@ -777,6 +778,26 @@ fn patch_document_protection(bytes: Vec<u8>, props: &Map<String, Value>) -> Resu
         })?;
     let insertion = settings.find("<w:defaultTabStop").unwrap_or(root_end);
     settings.insert_str(insertion, &element);
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    replace_zip_text_entry(archive, "word/settings.xml", settings.as_bytes())
+}
+
+fn patch_document_zoom(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
+    let Some(zoom) = props.get("zoom") else {
+        return Ok(bytes);
+    };
+    let zoom = zoom
+        .as_u64()
+        .ok_or_else(|| validation("Document", "`zoom` must be an integer from 10 through 500"))?;
+    let mut settings = read_zip_text_entry(&bytes, "word/settings.xml")?;
+    let default_zoom = r#"<w:zoom w:percent="100" />"#;
+    if settings.matches(default_zoom).count() != 1 {
+        return Err(Error::Compile(
+            "docx-rs settings output changed: expected one default `<w:zoom w:percent=\"100\" />`; inspect `word/settings.xml` before updating the zoom patch".to_owned(),
+        ));
+    }
+    settings = settings.replace(default_zoom, &format!(r#"<w:zoom w:percent="{zoom}" />"#));
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
     replace_zip_text_entry(archive, "word/settings.xml", settings.as_bytes())

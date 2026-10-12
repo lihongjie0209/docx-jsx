@@ -1230,6 +1230,64 @@ export default <Document creator="Ada & Co" lastModifiedBy="Lin" description="We
 }
 
 #[test]
+fn cli_should_roundtrip_document_zoom_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("zoom.tsx");
+    let compiled = directory.path().join("zoom.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document zoom={125}><Section><Paragraph>body</Paragraph></Section></Document>;"#,
+    )
+    .expect("source should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    let external = directory.path().join("external.docx");
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("compiled DOCX should read")),
+    )
+    .expect("external DOCX should write");
+    let reversed = directory.path().join("reversed.jsx");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should read");
+    assert!(jsx.contains("zoom={125}"), "{jsx}");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    let bytes = fs::read(rebuilt).expect("rebuilt DOCX should read");
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .expect("rebuilt DOCX should remain a ZIP archive");
+    let mut settings = String::new();
+    archive
+        .by_name("word/settings.xml")
+        .expect("settings should exist")
+        .read_to_string(&mut settings)
+        .expect("settings should be UTF-8");
+    assert!(
+        settings.contains(r#"<w:zoom w:percent="125""#),
+        "{settings}"
+    );
+}
+
+#[test]
 fn cli_should_reverse_and_rebuild_external_simple_position_image() {
     let directory = tempdir().expect("tempdir should work");
     let mut png = std::io::Cursor::new(Vec::new());

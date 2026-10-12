@@ -211,6 +211,11 @@ error instead of a silent drop.
   `language?: string`, `revision?: integer`, `subject?: string`,
   `title?: string`,
   `documentId?: string`, positive `defaultTabStop?: number` (points),
+  `zoom?: integer` sets the Word document view zoom as `w:zoom/@w:percent`;
+  it must be between 10 and 500. Reverse conversion preserves explicit zoom
+  percentages without the IR manifest and omits the backend default of 100.
+  Non-percent zoom modes (`fullPage`, `bestFit`, and `textFit`) cannot be
+  represented and are rejected with repair guidance.
   `documentProtection?: {edit?,formatting?,enforcement?,cryptProviderType?,cryptAlgorithmClass?,cryptAlgorithmType?,cryptAlgorithmSid?,cryptSpinCount?,cryptProvider?,algIdExt?,algIdExtSource?,cryptProviderTypeExt?,cryptProviderTypeExtSource?,hash?,salt?,algorithmName?,hashValue?,saltValue?,spinCount?}`.
   `edit` is `none | readOnly | comments | trackedChanges | forms`; the two
   protection flags are booleans; cryptographic enums follow the OOXML values

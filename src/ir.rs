@@ -1387,6 +1387,7 @@ fn document_props() -> &'static [&'static str] {
         "customProperties",
         "documentId",
         "defaultTabStop",
+        "zoom",
         "documentVariables",
         "evenAndOddHeaders",
         "adjustLineHeightInTable",
@@ -2138,6 +2139,16 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
     }
     if let Some(value) = node.props.get("defaultTabStop") {
         require_number(value, path, "defaultTabStop", true)?;
+    }
+    if let Some(value) = node.props.get("zoom")
+        && !value
+            .as_u64()
+            .is_some_and(|zoom| (10..=500).contains(&zoom))
+    {
+        return Err(validation(
+            path,
+            "`zoom` must be an integer from 10 through 500",
+        ));
     }
     validate_document_core_metadata(&node.props, path)?;
     if let Some(value) = node.props.get("documentProtection") {
@@ -7630,6 +7641,9 @@ mod tests {
                 "names must be non-empty",
             ),
             (r#""defaultTabStop":0"#, "positive"),
+            (r#""zoom":9"#, "10 through 500"),
+            (r#""zoom":501"#, "10 through 500"),
+            (r#""zoom":125.5"#, "10 through 500"),
             (r#""evenAndOddHeaders":"yes""#, "boolean"),
             (
                 r#""characterSpacingControl":"compressAll""#,
