@@ -417,7 +417,9 @@ error instead of a silent drop.
   `none`, `background1`, `text1`, `background2`, or `text2`. `themeShade?` and
   `themeTint?` are two-digit hex modifiers. Boolean `bold`, `italic`, `strike`,
   and `doubleStrike` emit explicit on/off OOXML; enabled strike modes are
-  mutually exclusive. `RunProperty::insert` and `RunProperty::delete` are not
+  mutually exclusive. `verticalAlign?` accepts `baseline`, `superscript`, or
+  `subscript` and maps to `w:vertAlign`; the `Superscript` and `Subscript`
+  components remain composable shorthand. `RunProperty::insert` and `RunProperty::delete` are not
   exposed as JSX properties: docx-rs 0.4.22 writes `w:ins` / `w:del` inside
   `w:rPr`, which the Open XML SDK identifies as invalid there. Use the
   `Inserted`/`Deleted` components for tracked text revisions.
@@ -428,7 +430,8 @@ error instead of a silent drop.
   defaults to `: `. It emits a styled paragraph containing the visible label,
   a native `SEQ` field, the separator, and its inline children.
 - `Run`: `font?`, `fonts?`, `size?`, `bold?`, `italic?`, `strike?`, `underline?`,
-  `color?`, `highlight?`, `style?`.
+  `color?`, `highlight?`, `style?`, and `verticalAlign?: "baseline" | "superscript" |
+  "subscript"`.
 - `fonts` on `Run`, `Paragraph`, `Heading`, and `StyleDefinition.run` has the
   same nine optional fields as `Document.defaultFonts`. It is mutually
   exclusive with `font`, must not be empty, and preserves distinct physical,

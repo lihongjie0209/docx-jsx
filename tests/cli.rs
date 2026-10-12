@@ -593,6 +593,96 @@ export default <Document><Section><Paragraph inserted={{author:"Ada",date:"2026-
 }
 
 #[test]
+fn cli_should_roundtrip_run_vertical_alignment_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("run-alignment.tsx");
+    let compiled = directory.path().join("run-alignment.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    let rebuilt_external = directory.path().join("rebuilt-external.docx");
+    let rebuilt_jsx = directory.path().join("rebuilt.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph, Run } from "docx-jsx";
+export default <Document><Section><Paragraph><Run verticalAlign="baseline">baseline</Run><Run verticalAlign="superscript">superscript</Run><Run verticalAlign="subscript">subscript</Run></Paragraph></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+        fs::read(&compiled).expect("DOCX should exist"),
+    ))
+    .expect("compiled DOCX should be ZIP");
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part should exist")
+        .read_to_string(&mut document_xml)
+        .expect("document XML should read");
+    for alignment in ["baseline", "superscript", "subscript"] {
+        assert!(
+            document_xml.contains(&format!("<w:vertAlign w:val=\"{alignment}\"")),
+            "writer should emit the {alignment} OOXML value: {document_xml}"
+        );
+    }
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    for alignment in ["baseline", "superscript", "subscript"] {
+        assert!(
+            jsx.contains(&format!("verticalAlign=\"{alignment}\"")),
+            "external reverse should preserve {alignment}: {jsx}"
+        );
+    }
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    fs::write(
+        &rebuilt_external,
+        strip_ir_manifest(&fs::read(&rebuilt).expect("rebuilt DOCX should exist")),
+    )
+    .expect("rebuilt manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&rebuilt_external)
+        .args(["-o"])
+        .arg(&rebuilt_jsx)
+        .assert()
+        .success();
+    let rebuilt_jsx = fs::read_to_string(&rebuilt_jsx).expect("second reverse JSX should exist");
+    assert!(
+        rebuilt_jsx.contains("verticalAlign")
+            && rebuilt_jsx.contains("baseline")
+            && rebuilt_jsx.contains("superscript")
+            && rebuilt_jsx.contains("subscript"),
+        "all explicit vertical alignment values should survive recompilation: {rebuilt_jsx}"
+    );
+}
+
+#[test]
 fn cli_should_reverse_style_line_number_suppression_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("style.tsx");

@@ -5207,6 +5207,15 @@ fn compile_run_properties(props: &Map<String, Value>, path: &str) -> Result<Run>
     if bool_prop(props, "underline", path)?.unwrap_or(false) {
         run = run.underline("single");
     }
+    if let Some(value) = string_prop(props, "verticalAlign", path)? {
+        let alignment = match value {
+            "baseline" => VertAlignType::Baseline,
+            "superscript" => VertAlignType::SuperScript,
+            "subscript" => VertAlignType::SubScript,
+            _ => return Err(validation(path, "invalid `verticalAlign` value")),
+        };
+        run.run_property = std::mem::take(&mut run.run_property).vert_align(alignment);
+    }
     if let Some(color) = string_prop(props, "color", path)? {
         run = run.color(color.to_ascii_uppercase());
     }

@@ -130,6 +130,7 @@ export default (
       <Paragraph deleted={{ author: "Editor", date: "2026-10-12T00:00:00Z" }}>Deleted paragraph mark</Paragraph>
       <Paragraph><Deleted author="Open XML SDK"><Comment text="Deleted text review" author="Agent">removed</Comment></Deleted></Paragraph>
       <Paragraph><Deleted author="Open XML SDK"><Run><DeletedInstruction instruction={'HYPERLINK "https://example.com"'} /></Run></Deleted></Paragraph>
+      <Paragraph><Run verticalAlign="baseline">Baseline alignment</Run><Run verticalAlign="superscript">Superscript alignment</Run><Run verticalAlign="subscript">Subscript alignment</Run></Paragraph>
       <Bookmark name="validation-heading"><Heading level={1}>Open XML validation fixture</Heading></Bookmark>
       <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.

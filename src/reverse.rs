@@ -1606,6 +1606,14 @@ impl Writer {
         {
             attrs.push(attr("style", value));
         }
+        if let Some(value) = property.get("vertAlign").and_then(scalar_string) {
+            if !["baseline", "superscript", "subscript"].contains(&value) {
+                return Err(Error::Reverse(format!(
+                    "run has unsupported vertical alignment `{value}`; use baseline, superscript, or subscript"
+                )));
+            }
+            attrs.push(attr("verticalAlign", value));
+        }
         self.line(depth, &format!("<Run{}>", attrs.concat()));
         for child in &run.children {
             match child {

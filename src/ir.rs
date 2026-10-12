@@ -1160,6 +1160,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "themeShade",
             "themeTint",
             "doubleStrike",
+            "verticalAlign",
         ],
         NodeKind::Text => &["value"],
         NodeKind::Break | NodeKind::Header | NodeKind::Footer => &["type"],
@@ -3889,6 +3890,14 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
         return Ok(());
     }
     validate_font_choice(&node.props, path, "font", "fonts")?;
+    if node.props.contains_key("verticalAlign") {
+        validate_optional_enum_prop(
+            node,
+            path,
+            "verticalAlign",
+            &["baseline", "superscript", "subscript"],
+        )?;
+    }
     if node.props.contains_key("themeColor") {
         validate_optional_enum_prop(
             node,
@@ -6107,6 +6116,20 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"color":"2E74B5","themeColor":"accent1","themeShade":"BF","themeTint":"99","bold":false,"italic":false,"strike":false,"doubleStrike":true},"children":["themed"]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_unknown_run_vertical_alignment() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"verticalAlign":"middle"},"children":["text"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("run verticalAlign must be a Word run alignment");
+        assert!(
+            error.to_string().contains("invalid `verticalAlign`"),
+            "{error}"
+        );
     }
 
     #[test]
