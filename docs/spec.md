@@ -83,12 +83,13 @@ children are text. Pure whitespace between structural elements is ignored.
 | `Paragraph` | `Run`, `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Hyperlink`, `ContentControl`, `Field`, `DateField`, `TimeField`, `FileNameField`, `AuthorField`, `TitleField`, `SubjectField`, `SequenceField`, `ReferenceField`, `MergeField`, `DocumentPropertyField`, `FormulaField`, `IndexEntry`, `Comment`, `InlineBookmark`, `Inserted`, `Deleted`, `MovedFrom`, `MovedTo`, `Footnote`, `Tab`, `TabStop`, `PositionalTab`, `Symbol`, `Bold`, `Italic`, `Underline`, `StrikeThrough`, `Superscript`, `Subscript`, `AllCaps`, `HiddenText`, `SpecialHiddenText`, `DoubleStrike`, `SpacedText`, `ScaledText`, `FitText`, `BorderedText`, `ShadedText`, `PageNumber`, `TotalPages`, `PageReference`, `TocEntry`, string, number |
 | `Heading` | same inline children as `Paragraph` |
 | `Caption` | same inline children as `Paragraph` |
-| `Run` | `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Footnote`, `Tab`, `Symbol`, string, number |
+| `Run` | `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Footnote`, `Tab`, `Symbol`, `DeletedInstruction` (only inside `Deleted`), string, number |
 | `Comment` | inline children selected by the comment |
 | `InlineBookmark` | same inline children as `Paragraph` |
 | `Footnote` | `Run`, `Text`, `Break`, `Image`, `Tab`, `Symbol`, string, number |
 | `Inserted` | run-level inline content |
 | `Deleted` | `Run`, `Text`, `Comment`, string, number |
+| `DeletedInstruction` | none |
 | `MovedFrom`, `MovedTo` | run-level inline content |
 | `Hyperlink` | `Run`, `Text`, `Break`, `Image`, `ContentControl`, `Inserted`, `Deleted`, `InlineBookmark`, `Comment`, string, number |
 | `ContentControl` | inline: `Run`, `Text`, `Break`, `CarriageReturn`, `Image`, `Footnote`, `Tab`, `PositionalTab`, `Symbol`, `PageReference`, string, number. block (`Section`, `Header`, or `Footer` child): `Paragraph`, `Heading`, `Caption`, `Table`, `List` |
@@ -552,8 +553,15 @@ error instead of a silent drop.
 - `Inserted`, `Deleted`: `author?: string`, `date?: string`; both require
   content. They emit native tracked revisions (`w:ins`/`w:del`). Deleted text
   is serialized as `w:delText`, preserving optional `Run` formatting. A
-  `Comment` inside `Deleted` creates a matching comment range inside `w:del`,
+  `DeletedInstruction` is only accepted inside a `Run` that is nested in
+  `Deleted`. It serializes as `w:delInstrText` and preserves the exact field
+  instruction. `Comment` inside `Deleted` creates a matching comment range inside `w:del`,
   wraps the selected deleted text, and preserves its annotation in `comments.xml`.
+- `DeletedInstruction`: required `instruction: string`, legal only inside a
+  `Run` nested within `Deleted`. It emits `w:delInstrText` inside the tracked deletion. External
+  reverse preserves this element separately from ordinary `w:delText`; the
+  pinned docx-rs reader does not parse `w:delInstrText`, so reverse normalizes it
+  only in a temporary in-memory package and retains its exact instruction text.
 - `MovedFrom`, `MovedTo`: `author?: string`, `date?: string`; both require
   content and emit native move revision containers (`w:moveFrom`/`w:moveTo`).
 - `TocEntry`: required non-empty `text`, optional `level?: 1..9`,

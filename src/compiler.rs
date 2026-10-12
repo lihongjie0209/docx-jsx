@@ -5,12 +5,12 @@ use std::path::Path;
 
 use docx_rs::{
     AbstractNumbering, AlignmentType, BorderType, BreakType, Caps, CellMargins,
-    CharacterSpacingValues, Comment, DataBinding, Delete, DocGrid, DocGridType, Docx,
-    DrawingPosition, FieldCharType, Footer, FooterChild, Footnote, Header, HeaderChild, HeightRule,
-    Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC,
-    Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing, LineSpacingType,
-    MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin, PageNum,
-    PageNumType, PageOrientationType, PageSize, Paragraph, ParagraphBorder,
+    CharacterSpacingValues, Comment, DataBinding, Delete, DeleteInstrText, DocGrid, DocGridType,
+    Docx, DrawingPosition, FieldCharType, Footer, FooterChild, Footnote, Header, HeaderChild,
+    HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText,
+    InstrToC, Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing,
+    LineSpacingType, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin,
+    PageNum, PageNumType, PageOrientationType, PageSize, Paragraph, ParagraphBorder,
     ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic, PicAlign,
     PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo, RelativeFromHType,
     RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
@@ -4373,6 +4373,10 @@ fn add_deleted_text(mut run: Run, child: &Child, path: &str) -> Result<Run> {
             }
             Ok(run)
         }
+        Child::Node(node) if node.kind == NodeKind::DeletedInstruction => {
+            let instruction = required_string(&node.props, "instruction", path)?;
+            Ok(run.add_delete_instr_text(DeleteInstrText::Unsupported(instruction.to_owned())))
+        }
         Child::Node(_) => Err(validation(path, "Deleted only accepts text content")),
     }
 }
@@ -8152,6 +8156,38 @@ mod tests {
                 && deleted.contains("<w:commentRangeEnd w:id=\"1\" />")
                 && deleted.contains("<w:commentReference w:id=\"1\" />"),
             "comment range should enclose deleted text: {deleted}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_deleted_field_instruction() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [{
+                    "type": "Paragraph", "props": {}, "children": [{
+                        "type": "Deleted", "props": {"author": "Editor"}, "children": [{
+                            "type": "Run", "props": {}, "children": [
+                            {"type": "DeletedInstruction", "props": {
+                                "instruction": "HYPERLINK \"https://example.com\""
+                            }, "children": []}]
+                        }]
+                    }]
+                }]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(
+            document.contains("<w:delInstrText>HYPERLINK \"https://example.com\"</w:delInstrText>"),
+            "{document}"
         );
     }
 

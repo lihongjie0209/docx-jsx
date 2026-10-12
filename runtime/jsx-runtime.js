@@ -64,6 +64,7 @@ export const BorderedText = host("BorderedText");
 export const ShadedText = host("ShadedText");
 export const Inserted = host("Inserted");
 export const Deleted = host("Deleted");
+export const DeletedInstruction = host("DeletedInstruction");
 export const MovedFrom = host("MovedFrom");
 export const MovedTo = host("MovedTo");
 export const PageReference = host("PageReference");

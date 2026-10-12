@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt::Write as _;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use docx_rs::{
@@ -74,7 +74,9 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_paragraph_properties = collect_style_paragraph_xml_metadata(bytes)?;
     let style_run_properties = collect_style_run_xml_metadata(bytes)?;
     let hyperlink_histories = collect_hyperlink_histories(bytes)?;
-    let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
+    let (reader_bytes, deleted_instructions) = normalize_deleted_instruction_parts(bytes)?;
+    let docx =
+        docx_rs::read_docx(&reader_bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
         images.by_id.entry(id).or_insert(asset);
@@ -99,6 +101,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         style_suppress_line_numbers,
         style_paragraph_properties,
         style_run_properties,
+        deleted_instructions,
         hyperlink_histories,
         ..Writer::default()
     };
@@ -138,6 +141,154 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         ),
         assets: writer.assets,
     })
+}
+
+fn normalize_deleted_instruction_parts(bytes: &[u8]) -> Result<(Vec<u8>, HashMap<String, String>)> {
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Reverse(format!("invalid DOCX archive: {error}")))?;
+    let mut entries = Vec::with_capacity(source.len());
+    let mut instructions = HashMap::new();
+    let mut sequence = 0_u64;
+    for index in 0..source.len() {
+        let mut file = source
+            .by_index(index)
+            .map_err(|error| Error::Reverse(format!("cannot read DOCX part: {error}")))?;
+        let name = file.name().to_owned();
+        if name.starts_with("word/")
+            && Path::new(&name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data)
+                .map_err(|error| Error::Reverse(format!("cannot read `{name}`: {error}")))?;
+            if data
+                .windows(b"delInstrText".len())
+                .any(|window| window == b"delInstrText")
+            {
+                let xml = String::from_utf8(data).map_err(|error| {
+                    Error::Reverse(format!("`{name}` is not UTF-8 XML: {error}"))
+                })?;
+                let (normalized, found) =
+                    normalize_deleted_instruction_xml(&xml, &name, &mut sequence)?;
+                if found.is_empty() {
+                    entries.push((name, xml.into_bytes()));
+                } else {
+                    instructions.extend(found);
+                    entries.push((name, normalized.into_bytes()));
+                }
+            } else {
+                entries.push((name, data));
+            }
+        } else {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data)
+                .map_err(|error| Error::Reverse(format!("cannot read `{name}`: {error}")))?;
+            entries.push((name, data));
+        }
+    }
+    if instructions.is_empty() {
+        return Ok((bytes.to_vec(), instructions));
+    }
+    let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, data) in entries {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        if name.ends_with('/') {
+            output.add_directory(name, options).map_err(|error| {
+                Error::Reverse(format!("cannot rewrite DOCX directory: {error}"))
+            })?;
+        } else {
+            output
+                .start_file(name, options)
+                .map_err(|error| Error::Reverse(format!("cannot rewrite DOCX part: {error}")))?;
+            output.write_all(&data).map_err(|error| {
+                Error::Reverse(format!("cannot write normalized DOCX part: {error}"))
+            })?;
+        }
+    }
+    let normalized = output
+        .finish()
+        .map_err(|error| Error::Reverse(format!("cannot finish normalized DOCX: {error}")))?
+        .into_inner();
+    Ok((normalized, instructions))
+}
+
+fn normalize_deleted_instruction_xml(
+    xml: &str,
+    part: &str,
+    sequence: &mut u64,
+) -> Result<(String, HashMap<String, String>)> {
+    let mut output = String::with_capacity(xml.len());
+    let mut instructions = HashMap::new();
+    let mut scan_cursor = 0;
+    let mut output_cursor = 0;
+    while let Some(relative_start) = xml[scan_cursor..].find('<') {
+        let start = scan_cursor + relative_start;
+        let name_start = start + 1;
+        if xml.as_bytes().get(name_start) == Some(&b'/') {
+            scan_cursor = name_start + 1;
+            continue;
+        }
+        let name_end = xml[name_start..]
+            .find(|character: char| {
+                character.is_whitespace() || character == '>' || character == '/'
+            })
+            .map_or(xml.len(), |offset| name_start + offset);
+        let qualified_name = &xml[name_start..name_end];
+        if qualified_name.rsplit(':').next() != Some("delInstrText") {
+            scan_cursor = name_end;
+            continue;
+        }
+        let open_end = xml[name_end..]
+            .find('>')
+            .map(|offset| name_end + offset + 1)
+            .ok_or_else(|| Error::Reverse(format!("`{part}` contains an unterminated w:delInstrText start tag; repair the XML element")))?;
+        let closing = format!("</{qualified_name}>");
+        let close_start = xml[open_end..]
+            .find(&closing)
+            .map(|offset| open_end + offset)
+            .ok_or_else(|| Error::Reverse(format!("`{part}` contains w:delInstrText without a matching end tag; repair the revision markup")))?;
+        let instruction = quick_xml::escape::unescape(&xml[open_end..close_start])
+            .map_err(|error| {
+                Error::Reverse(format!(
+                    "`{part}` has invalid w:delInstrText content: {error}"
+                ))
+            })?
+            .into_owned();
+        if instruction.is_empty() {
+            return Err(Error::Reverse(format!(
+                "`{part}` contains empty w:delInstrText; provide a non-empty instruction or remove the empty element"
+            )));
+        }
+        let marker = loop {
+            let candidate = format!("Z{sequence}Q");
+            *sequence += 1;
+            if !xml.contains(&candidate) {
+                break candidate;
+            }
+        };
+        let prefix = qualified_name
+            .rsplit_once(':')
+            .map_or("", |(prefix, _)| prefix);
+        let normalized_name = if prefix.is_empty() {
+            "delText".to_owned()
+        } else {
+            format!("{prefix}:delText")
+        };
+        output.push_str(&xml[output_cursor..name_start]);
+        output.push_str(&normalized_name);
+        output.push_str(&xml[name_end..open_end]);
+        output.push_str(&marker);
+        output.push_str("</");
+        output.push_str(&normalized_name);
+        output.push('>');
+        instructions.insert(marker, instruction);
+        output_cursor = close_start + closing.len();
+        scan_cursor = output_cursor;
+    }
+    output.push_str(&xml[output_cursor..]);
+    Ok((output, instructions))
 }
 
 fn read_ir_manifest(bytes: &[u8]) -> Result<Option<IrEnvelope>> {
@@ -269,6 +420,8 @@ struct Writer {
     style_suppress_line_numbers: HashMap<String, bool>,
     style_paragraph_properties: HashMap<String, Map<String, Value>>,
     style_run_properties: HashMap<String, Map<String, Value>>,
+    deleted_instructions: HashMap<String, String>,
+    in_deleted_revision: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1031,9 +1184,15 @@ impl Writer {
                 attr("date", &value.date)
             ),
         );
-        for child in nest_deleted_ranges(&value.children, &self.comments)? {
-            self.emit_deleted_inline(&child, depth + 1)?;
-        }
+        let was_in_deleted_revision = std::mem::replace(&mut self.in_deleted_revision, true);
+        let result = (|| {
+            for child in nest_deleted_ranges(&value.children, &self.comments)? {
+                self.emit_deleted_inline(&child, depth + 1)?;
+            }
+            Ok(())
+        })();
+        self.in_deleted_revision = was_in_deleted_revision;
+        result?;
         self.line(depth, "</Deleted>");
         Ok(())
     }
@@ -1148,7 +1307,21 @@ impl Writer {
                 RunChild::DeleteText(value) => {
                     let data = json(value)?;
                     let text = data.get("text").and_then(Value::as_str).unwrap_or_default();
-                    self.line(depth + 1, &jsx_string(text)?);
+                    if let Some(instruction) = self.deleted_instructions.remove(text) {
+                        if !self.in_deleted_revision {
+                            return Err(Error::Reverse(
+                                "w:delInstrText was found outside a tracked deletion; move it inside w:del and retry".to_owned(),
+                            ));
+                        }
+                        self.components.insert("DeletedInstruction");
+                        self.empty(
+                            "DeletedInstruction",
+                            depth + 1,
+                            &attr("instruction", &instruction),
+                        );
+                    } else {
+                        self.line(depth + 1, &jsx_string(text)?);
+                    }
                 }
                 RunChild::Tab(_) => self.empty("Tab", depth + 1, ""),
                 RunChild::PTab(tab) => self.positional_tab(tab, depth + 1)?,
@@ -8331,6 +8504,43 @@ mod tests {
                 && jsx.contains("</Comment>")
                 && jsx.contains("</Deleted>"),
             "comment range should remain nested inside deleted text: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_deleted_field_instruction() {
+        let packed = pack_docx(Docx::new().add_paragraph(Paragraph::new().add_delete(
+            Delete::new().add_run(Run::new().add_delete_text("HYPERLINK \"https://example.com\"")),
+        )));
+        let baseline = docx_rs::read_docx(&packed).expect("baseline DOCX should parse");
+        assert!(!baseline.document.children.is_empty(), "{baseline:?}");
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        document = document.replace("w:delText", "w:delInstrText");
+        let external =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let (normalized, markers) =
+            normalize_deleted_instruction_parts(&external).expect("normalization should work");
+        assert_eq!(markers.len(), 1, "{markers:?}");
+        let normalized_document =
+            read_zip_text(&normalized, "word/document.xml").expect("normalized part should read");
+        assert!(
+            normalized_document.contains("<w:delText xml:space=\"preserve\">Z0Q</w:delText>"),
+            "{normalized_document}"
+        );
+        let parsed = docx_rs::read_docx(&normalized).expect("normalized DOCX should parse");
+        assert!(format!("{parsed:?}").contains("Z0Q"), "{parsed:?}");
+        let jsx = reverse_document(&external).expect("deleted field instruction should reverse");
+        assert!(
+            jsx.contains(
+                "<DeletedInstruction instruction=\"HYPERLINK &quot;https://example.com&quot;\" />"
+            ),
+            "{jsx}\n{document}"
         );
     }
 

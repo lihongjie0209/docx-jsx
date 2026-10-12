@@ -4,6 +4,7 @@ import {
   Document,
   Comment,
   Deleted,
+  DeletedInstruction,
   Footer,
   Header,
   Heading,
@@ -99,6 +100,7 @@ export default (
       <TableOfFigures label="Figure" separator="-" dirty={false} />
       <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} />
       <Paragraph><Deleted author="Open XML SDK"><Comment text="Deleted text review" author="Agent">removed</Comment></Deleted></Paragraph>
+      <Paragraph><Deleted author="Open XML SDK"><Run><DeletedInstruction instruction={'HYPERLINK "https://example.com"'} /></Run></Deleted></Paragraph>
       <Heading level={1}>Open XML validation fixture</Heading>
       <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.

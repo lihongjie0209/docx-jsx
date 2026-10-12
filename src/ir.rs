@@ -183,6 +183,7 @@ pub enum NodeKind {
     ShadedText,
     Inserted,
     Deleted,
+    DeletedInstruction,
     MovedFrom,
     MovedTo,
     PageReference,
@@ -259,6 +260,7 @@ impl NodeKind {
             Self::ShadedText => "ShadedText",
             Self::Inserted => "Inserted",
             Self::Deleted => "Deleted",
+            Self::DeletedInstruction => "DeletedInstruction",
             Self::MovedFrom => "MovedFrom",
             Self::MovedTo => "MovedTo",
             Self::PageReference => "PageReference",
@@ -351,6 +353,7 @@ impl IrEnvelope {
             return Err(validation("Document", "root must be Document"));
         }
         validate_node(&self.document, "Document")?;
+        validate_deleted_instruction_context(&self.document, false, "Document")?;
         validate_bookmark_references(&self.document)?;
         validate_style_relationships(&self.document)
     }
@@ -615,6 +618,22 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
     if node.kind == NodeKind::Deleted {
         validate_deleted_children(node, path)?;
     }
+    if node.kind == NodeKind::DeletedInstruction {
+        if node
+            .props
+            .get("instruction")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(validation(
+                path,
+                "DeletedInstruction requires a non-empty `instruction` string",
+            ));
+        }
+        if !node.children.is_empty() {
+            return Err(validation(path, "DeletedInstruction cannot have children"));
+        }
+    }
 
     for (index, child) in node.children.iter().enumerate() {
         match child {
@@ -661,6 +680,30 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_deleted_instruction_context(
+    node: &Node,
+    inside_deleted: bool,
+    path: &str,
+) -> Result<()> {
+    let inside_deleted = inside_deleted || node.kind == NodeKind::Deleted;
+    if node.kind == NodeKind::DeletedInstruction && !inside_deleted {
+        return Err(validation(
+            path,
+            "DeletedInstruction must be inside a Run nested within Deleted",
+        ));
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        if let Child::Node(child_node) = child {
+            validate_deleted_instruction_context(
+                child_node,
+                inside_deleted,
+                &format!("{path}/{}[{index}]", child_node.kind.name()),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_deleted_children(node: &Node, path: &str) -> Result<()> {
     for child in &node.children {
         if let Child::Node(run) = child
@@ -668,7 +711,7 @@ fn validate_deleted_children(node: &Node, path: &str) -> Result<()> {
             && run
                 .children
                 .iter()
-                .any(|child| matches!(child, Child::Node(node) if node.kind != NodeKind::Text))
+                .any(|child| matches!(child, Child::Node(node) if !matches!(node.kind, NodeKind::Text | NodeKind::DeletedInstruction)))
         {
             return Err(validation(path, "Deleted Run only accepts text content"));
         }
@@ -752,7 +795,8 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         | NodeKind::TabStop
         | NodeKind::Symbol
         | NodeKind::PageReference
-        | NodeKind::PositionalTab => false,
+        | NodeKind::PositionalTab
+        | NodeKind::DeletedInstruction => false,
         NodeKind::Bold
         | NodeKind::Italic
         | NodeKind::Underline
@@ -918,6 +962,7 @@ fn allows_run_child(child: NodeKind) -> bool {
                 | NodeKind::PageReference
                 | NodeKind::PositionalTab
                 | NodeKind::TocEntry
+                | NodeKind::DeletedInstruction
         )
 }
 
@@ -1060,6 +1105,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "hangingChars",
         ],
         NodeKind::Bookmark | NodeKind::InlineBookmark => &["name"],
+        NodeKind::DeletedInstruction => &["instruction"],
         NodeKind::TableOfContents => &[
             "startLevel",
             "endLevel",
@@ -6616,6 +6662,47 @@ mod tests {
                 .expect_err("fixture should be rejected");
             assert!(error.to_string().contains(expected), "{error}");
         }
+    }
+
+    #[test]
+    fn validate_should_accept_deleted_field_instruction() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{},"children":[{"type":"Run","props":{},"children":[{"type":"DeletedInstruction","props":{"instruction":"HYPERLINK \"https://example.com\""},"children":[]}]}]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("deleted field instruction should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_deleted_instruction_outside_revision() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"DeletedInstruction","props":{"instruction":"HYPERLINK target"},"children":[]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("DeletedInstruction must be inside Deleted");
+        assert!(
+            error
+                .to_string()
+                .contains("must be inside a Run nested within Deleted"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_empty_deleted_instruction_with_repair() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Deleted","props":{},"children":[{"type":"Run","props":{},"children":[{"type":"DeletedInstruction","props":{"instruction":""},"children":[]}]}]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("empty field instructions should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("requires a non-empty `instruction` string"),
+            "{error}"
+        );
     }
 
     #[test]
