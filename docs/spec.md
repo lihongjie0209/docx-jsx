@@ -488,7 +488,10 @@ error instead of a silent drop.
   `description` supplies accessible alternative text and maps to
   `wp:docPr/@descr`; `title` maps to `wp:docPr/@title`. Both must be non-empty
   strings when supplied and are preserved by external DOCX reverse without
-  relying on the embedded IR manifest. `relationshipId` overrides the generated
+  relying on the embedded IR manifest. `decorative?: boolean` marks an image
+  as decorative by writing an explicitly empty `wp:docPr/@descr`; it cannot be
+  combined with `description` or `title`. External reverse maps an empty
+  `wp:docPr/@descr` to `decorative`. `relationshipId` overrides the generated
   image relationship identifier and must be non-empty. `rotate` is an integer
   angle from 0 through 65535 degrees.
   `floating` switches from inline layout to an anchored drawing. Anchored

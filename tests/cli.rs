@@ -84,6 +84,7 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("docx-jsx pdf"))
         .stdout(predicate::str::contains("-o <OUTPUT.docx|pdf>"))
         .stdout(predicate::str::contains("wp:docPr/@descr"))
+        .stdout(predicate::str::contains("decorative?: boolean"))
         .stdout(predicate::str::contains("inferred from the `-o` suffix"))
         .stdout(predicate::str::contains("DOCX_JSX_SOFFICE"))
         .stdout(predicate::str::contains("--engine"));
@@ -1648,7 +1649,7 @@ fn cli_should_roundtrip_image_accessibility_metadata_without_manifest() {
     fs::write(
         &input,
         r#"import { Document, Section, Paragraph, Image } from "docx-jsx";
-export default <Document><Section><Paragraph><Image src="figure.png" width={24} height={24} description="Revenue &amp; profit &lt;forecast&gt;" title={'Quarterly "Revenue"'} /></Paragraph></Section></Document>;"#,
+export default <Document><Section><Paragraph><Image src="figure.png" width={24} height={24} description="Revenue &amp; profit &lt;forecast&gt;" title={'Quarterly "Revenue"'} /><Image src="figure.png" width={12} height={12} decorative /></Paragraph></Section></Document>;"#,
     )
     .expect("JSX should write");
 
@@ -1669,6 +1670,7 @@ export default <Document><Section><Paragraph><Image src="figure.png" width={24} 
         .expect("document XML should read");
     assert!(
         document_xml.contains(r#"descr="Revenue &amp; profit &lt;forecast&gt;""#)
+            && document_xml.contains(r#"descr="""#)
             && document_xml.contains(r#"title="Quarterly &quot;Revenue&quot;""#),
         "writer should emit image accessibility metadata in wp:docPr: {document_xml}"
     );
@@ -1685,6 +1687,7 @@ export default <Document><Section><Paragraph><Image src="figure.png" width={24} 
     let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
     assert!(
         jsx.contains("description=\"Revenue &amp; profit &lt;forecast&gt;\"")
+            && jsx.contains("decorative")
             && jsx.contains("title=\"Quarterly &quot;Revenue&quot;\""),
         "external reverse should preserve image accessibility metadata: {jsx}"
     );
@@ -1707,6 +1710,7 @@ export default <Document><Section><Paragraph><Image src="figure.png" width={24} 
         .expect("rebuilt document XML should read");
     assert!(
         rebuilt_xml.contains(r#"descr="Revenue &amp; profit &lt;forecast&gt;""#)
+            && rebuilt_xml.contains(r#"descr="""#)
             && rebuilt_xml.contains(r#"title="Quarterly &quot;Revenue&quot;""#),
         "recompiled DOCX should retain image accessibility metadata: {rebuilt_xml}"
     );

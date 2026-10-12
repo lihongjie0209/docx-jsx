@@ -390,6 +390,7 @@ fn package_document(
     let bytes = patch_toc_item_tabs(bytes, toc_item_tab_patches)?;
     let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_image_metadata(bytes)?;
+    let bytes = patch_image_accessibility_metadata(bytes, &ir.document)?;
     let bytes = patch_complex_script_toggle_markers(bytes)?;
     embed_ir_manifest(bytes, ir)
 }
@@ -5990,12 +5991,16 @@ fn compile_image(node: &Node, entry_dir: &Path, path: &str) -> Result<Pic> {
     if node.props.contains_key("simplePosition")
         || node.props.contains_key("description")
         || node.props.contains_key("title")
+        || node.props.get("decorative").and_then(Value::as_bool) == Some(true)
     {
         let final_id = node
             .props
             .get("relationshipId")
             .and_then(Value::as_str)
-            .unwrap_or(&picture.id);
+            .map_or_else(
+                || generated_image_relationship_id(node, path),
+                |id| Ok(id.to_owned()),
+            )?;
         let payload = serde_json::json!({
             "path": path,
             "relationshipId": final_id,
@@ -6003,12 +6008,37 @@ fn compile_image(node: &Node, entry_dir: &Path, path: &str) -> Result<Pic> {
             "simplePosition": node.props.get("simplePosition"),
             "description": node.props.get("description"),
             "title": node.props.get("title"),
+            "decorative": node.props.get("decorative").and_then(Value::as_bool).unwrap_or(false),
         });
         let payload = serde_json::to_vec(&payload)
             .map_err(|error| Error::Compile(format!("cannot encode image metadata: {error}")))?;
         picture.id = format!("rIdDocxJsxImage_{}", hex_encode(&payload));
     }
     Ok(picture)
+}
+
+fn generated_image_relationship_id(node: &Node, path: &str) -> Result<String> {
+    let identity = serde_json::json!({
+        "path": path,
+        "src": node.props.get("src"),
+        "width": node.props.get("width"),
+        "height": node.props.get("height"),
+        "description": node.props.get("description"),
+        "title": node.props.get("title"),
+        "decorative": node.props.get("decorative"),
+        "simplePosition": node.props.get("simplePosition"),
+    });
+    let identity = serde_json::to_vec(&identity).map_err(|error| {
+        Error::Compile(format!(
+            "cannot encode image relationship identity: {error}"
+        ))
+    })?;
+    let hash = identity
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    Ok(format!("rIdDocxJsxGeneratedImage{hash:016X}"))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -6019,12 +6049,14 @@ fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
+#[derive(PartialEq)]
 struct ImageNormalization {
     final_relationship_id: String,
     allow_overlap: bool,
     simple_position: Option<(i32, i32)>,
     description: Option<String>,
     title: Option<String>,
+    decorative: bool,
 }
 
 #[expect(
@@ -6064,10 +6096,22 @@ fn patch_image_metadata(bytes: Vec<u8>) -> Result<Vec<u8>> {
             .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
         for marker in find_image_markers(&xml)? {
             let normalization = parse_image_marker(&marker)?;
-            if targets.insert(marker.clone(), normalization).is_some() {
-                return Err(Error::Compile(format!(
-                    "duplicate internal image relationship marker `{marker}`; use distinct image component paths"
-                )));
+            if let Some(existing) = targets.get(&marker) {
+                if existing != &normalization {
+                    return Err(Error::Compile(format!(
+                        "image relationship marker `{marker}` has conflicting metadata in `{name}`; give each image a distinct relationship id"
+                    )));
+                }
+            } else {
+                if targets.values().any(|existing: &ImageNormalization| {
+                    existing.final_relationship_id == normalization.final_relationship_id
+                }) {
+                    return Err(Error::Compile(format!(
+                        "multiple image markers resolve to relationship id `{}` in `{name}`; use a unique `relationshipId` for each image",
+                        normalization.final_relationship_id
+                    )));
+                }
+                targets.insert(marker, normalization);
             }
         }
     }
@@ -6166,6 +6210,112 @@ fn patch_image_metadata(bytes: Vec<u8>) -> Result<Vec<u8>> {
         .map_err(|error| Error::Compile(format!("cannot finalize simple-position DOCX: {error}")))
 }
 
+fn patch_image_accessibility_metadata(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> {
+    let mut metadata = Vec::new();
+    collect_body_image_accessibility(document, &mut metadata, false);
+    if metadata.iter().all(|(description, title, decorative)| {
+        description.is_none() && title.is_none() && !decorative
+    }) {
+        return Ok(bytes);
+    }
+    let mut xml = read_zip_text_entry(&bytes, "word/document.xml")?;
+    let mut image_index = 0;
+    let mut search_from = 0;
+    while let Some(relative_drawing) = xml[search_from..].find("<w:drawing") {
+        let drawing_start = search_from + relative_drawing;
+        let drawing_end = xml[drawing_start..]
+            .find("</w:drawing>")
+            .map(|offset| drawing_start + offset + "</w:drawing>".len())
+            .ok_or_else(|| {
+                Error::Compile("unterminated w:drawing in word/document.xml".to_owned())
+            })?;
+        let Some((description, title, decorative)) = metadata.get(image_index) else {
+            return Err(Error::Compile("generated DOCX contains more image drawings than the JSX document; image accessibility metadata cannot be mapped safely".to_owned()));
+        };
+        let mut drawing = xml[drawing_start..drawing_end].to_owned();
+        let doc_pr_start = drawing.find("<wp:docPr").ok_or_else(|| {
+            Error::Compile(format!(
+                "image drawing {image_index} has no wp:docPr element"
+            ))
+        })?;
+        let tag_end = drawing[doc_pr_start..]
+            .find('>')
+            .map(|offset| doc_pr_start + offset)
+            .ok_or_else(|| {
+                Error::Compile("unterminated wp:docPr in generated document".to_owned())
+            })?;
+        let mut tag = drawing[doc_pr_start..=tag_end].to_owned();
+        tag = set_xml_attribute(&tag, "id", &(image_index + 1).to_string())?;
+        if let Some(description) = description {
+            tag = set_xml_attribute(&tag, "descr", &xml_escape(description))?;
+        }
+        if let Some(title) = title {
+            tag = set_xml_attribute(&tag, "title", &xml_escape(title))?;
+        }
+        if *decorative {
+            tag = set_xml_attribute(&tag, "descr", "")?;
+            tag = remove_xml_attribute(&tag, "title")?;
+        }
+        drawing.replace_range(doc_pr_start..=tag_end, &tag);
+        xml.replace_range(drawing_start..drawing_end, &drawing);
+        image_index += 1;
+        search_from = drawing_start + drawing.len();
+    }
+    if image_index != metadata.len() {
+        return Err(Error::Compile(format!(
+            "JSX contains {} image nodes with accessibility metadata but generated word/document.xml contains {image_index} image drawings; cannot preserve metadata without an exact mapping",
+            metadata.len()
+        )));
+    }
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
+}
+
+fn remove_xml_attribute(tag: &str, name: &str) -> Result<String> {
+    let attribute = format!(" {name}=\"");
+    let Some(start) = tag.find(&attribute) else {
+        return Ok(tag.to_owned());
+    };
+    let value_start = start + attribute.len();
+    let value_end = tag[value_start..]
+        .find('"')
+        .map(|offset| value_start + offset)
+        .ok_or_else(|| {
+            Error::Compile(format!("unterminated `{name}` attribute in generated XML"))
+        })?;
+    let mut output = tag.to_owned();
+    output.replace_range(start..=value_end, "");
+    Ok(output)
+}
+
+fn collect_body_image_accessibility(
+    node: &Node,
+    output: &mut Vec<(Option<String>, Option<String>, bool)>,
+    in_header_footer: bool,
+) {
+    let in_header_footer =
+        in_header_footer || matches!(node.kind, NodeKind::Header | NodeKind::Footer);
+    if !in_header_footer && node.kind == NodeKind::Image {
+        output.push((
+            node.props
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            node.props
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            node.props.get("decorative").and_then(Value::as_bool) == Some(true),
+        ));
+    }
+    for child in &node.children {
+        if let Child::Node(child) = child {
+            collect_body_image_accessibility(child, output, in_header_footer);
+        }
+    }
+}
+
 fn find_image_markers(xml: &str) -> Result<Vec<String>> {
     const PREFIX: &str = "rIdDocxJsxImage_";
     let mut markers = Vec::new();
@@ -6238,6 +6388,7 @@ fn parse_image_marker(marker: &str) -> Result<ImageNormalization> {
             .get("title")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        decorative: value.get("decorative").and_then(Value::as_bool) == Some(true),
     })
 }
 
@@ -6274,6 +6425,7 @@ fn normalize_image_drawings(
         }
         let mut search_from = 0;
         let mut occurrences = 0;
+        let mut positioned_occurrences = 0;
         while let Some(relative_embed) = xml[search_from..].find(&embed) {
             let embed_start = search_from + relative_embed;
             let drawing_start = xml[..embed_start].rfind("<w:drawing").ok_or_else(|| {
@@ -6291,12 +6443,9 @@ fn normalize_image_drawings(
                     "image relationship `{marker}` is not inside its expected w:drawing in `{part}`"
                 )));
             }
-            if let Some((x, y)) = target.simple_position {
-                let anchor_start = drawing.find("<wp:anchor").ok_or_else(|| {
-                    Error::Compile(format!(
-                        "simple-position image `{marker}` in `{part}` is not inside a floating anchor"
-                    ))
-                })?;
+            if let Some((x, y)) = target.simple_position
+                && let Some(anchor_start) = drawing.find("<wp:anchor")
+            {
                 let tag_end = drawing[anchor_start..]
                     .find('>')
                     .map(|offset| anchor_start + offset)
@@ -6324,8 +6473,9 @@ fn normalize_image_drawings(
                     )?;
                     drawing.replace_range(position_start..=tag_end, &tag);
                 }
+                positioned_occurrences += 1;
             }
-            if target.description.is_some() || target.title.is_some() {
+            if target.description.is_some() || target.title.is_some() || target.decorative {
                 let doc_pr_start = drawing.find("<wp:docPr").ok_or_else(|| {
                     Error::Compile(format!(
                         "image `{marker}` in `{part}` has no wp:docPr element"
@@ -6342,6 +6492,9 @@ fn normalize_image_drawings(
                 if let Some(title) = &target.title {
                     tag = set_xml_attribute(&tag, "title", &xml_escape(title))?;
                 }
+                if target.decorative {
+                    tag = set_xml_attribute(&tag, "descr", "")?;
+                }
                 drawing.replace_range(doc_pr_start..=tag_end, &tag);
             }
             let patched_embed = format!("r:embed=\"{}\"", target.final_relationship_id);
@@ -6350,9 +6503,14 @@ fn normalize_image_drawings(
             search_from = drawing_start + drawing.len();
             occurrences += 1;
         }
-        if occurrences != 1 {
+        if occurrences == 0 {
             return Err(Error::Compile(format!(
-                "expected one drawing reference for simple-position image `{marker}` in `{part}`, found {occurrences}"
+                "expected a drawing reference for image `{marker}` in `{part}`, found none"
+            )));
+        }
+        if target.simple_position.is_some() && positioned_occurrences == 0 {
+            return Err(Error::Compile(format!(
+                "simple-position image `{marker}` in `{part}` has no floating anchor; set `floating={{true}}` and ensure its drawing remains anchored"
             )));
         }
         found.insert(marker.clone());

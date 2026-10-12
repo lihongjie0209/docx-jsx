@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 - 2026-10-13
+
+- Add `Image.decorative` to explicitly mark an image as decorative, compiling
+  an empty `wp:docPr/@descr` and restoring the property on external reverse.
+- Preserve per-drawing accessibility metadata when identical image media is
+  reused, and assign unique drawing property IDs required by Open XML.
+- Validate decorative-image property combinations and add same-media,
+  manifest-free round-trip and Microsoft Open XML SDK coverage.
+
 ## 0.7.0 - 2026-10-13
 
 - Add `Image.description` and `Image.title` for accessible image metadata,

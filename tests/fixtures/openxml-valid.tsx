@@ -225,6 +225,7 @@ export default (
       </Table>
       <Paragraph>
         <Image src="pixel.ppm" width={24} height={24} description="Open XML validation image" title="Pixel fixture" floating layoutInCell simplePosition={{ x: 25400, y: -12700 }} />
+        <Image src="pixel.ppm" width={12} height={12} decorative />
       </Paragraph>
     </Section>
     <Section columns={{ count: 2, spacing: 18, separator: true }}>

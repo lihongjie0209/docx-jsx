@@ -1337,6 +1337,7 @@ fn image_props() -> &'static [&'static str] {
         "height",
         "description",
         "title",
+        "decorative",
         "relationshipId",
         "rotate",
         "floating",
@@ -1697,6 +1698,21 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
     }
     if node
         .props
+        .get("decorative")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(validation(path, "Image `decorative` must be a boolean"));
+    }
+    if node.props.get("decorative").and_then(Value::as_bool) == Some(true)
+        && (node.props.contains_key("description") || node.props.contains_key("title"))
+    {
+        return Err(validation(
+            path,
+            "Image `decorative` cannot be combined with `description` or `title`; remove those properties for a decorative image",
+        ));
+    }
+    if node
+        .props
         .get("relationshipId")
         .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
     {
@@ -1707,7 +1723,8 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
     }
     if (node.props.contains_key("simplePosition")
         || node.props.contains_key("description")
-        || node.props.contains_key("title"))
+        || node.props.contains_key("title")
+        || node.props.get("decorative").and_then(Value::as_bool) == Some(true))
         && let Some(id) = node.props.get("relationshipId").and_then(Value::as_str)
     {
         if !is_xml_ncname(id) {
@@ -6394,6 +6411,14 @@ mod tests {
             (
                 r#"{"src":"x.png","width":1,"height":1,"title":42}"#,
                 "title` must be a non-empty string",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"decorative":"yes"}"#,
+                "decorative` must be a boolean",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"decorative":true,"description":"Chart"}"#,
+                "cannot be combined with `description`",
             ),
         ] {
             let ir = parse(&format!(

@@ -959,6 +959,7 @@ struct ImageAsset {
 struct ImageAccessibility {
     description: Option<String>,
     title: Option<String>,
+    decorative: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2187,6 +2188,9 @@ impl Writer {
         }
         if let Some(title) = accessibility.title {
             attrs.push_str(&attr("title", &title));
+        }
+        if accessibility.decorative {
+            attrs.push_str(" decorative");
         }
         if !picture.id.is_empty() {
             attrs.push_str(&attr("relationshipId", &picture.id));
@@ -7554,19 +7558,25 @@ fn collect_drawing_accessibility(
             .map(|offset| doc_pr_start + offset + 1)
             .ok_or_else(|| Error::Reverse("unterminated wp:docPr element".to_owned()))?;
         let attributes = reverse_xml_attributes(&drawing[doc_pr_start..tag_end])?;
-        let description = attributes.get("descr").cloned();
+        let raw_description = attributes.get("descr").cloned();
         let title = attributes.get("title").cloned();
-        for (name, value) in [("descr", &description), ("title", &title)] {
+        for (name, value) in [("title", &title)] {
             if value.as_deref() == Some("") {
                 return Err(Error::Reverse(format!(
                     "image relationship `{relationship_id}` has an empty wp:docPr `{name}` value; use non-empty text or remove the attribute before reverse conversion"
                 )));
             }
         }
+        let decorative = raw_description.as_deref() == Some("");
+        let description = raw_description.filter(|value| !value.is_empty());
         output
             .entry(relationship_id.to_owned())
             .or_default()
-            .push_back(ImageAccessibility { description, title });
+            .push_back(ImageAccessibility {
+                description,
+                title,
+                decorative,
+            });
     }
     Ok(output)
 }
