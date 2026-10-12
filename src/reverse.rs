@@ -1564,6 +1564,13 @@ impl Writer {
     fn run(&mut self, run: &docx_rs::Run, depth: usize) -> Result<()> {
         self.components.insert("Run");
         let property = json(&run.run_property)?;
+        if property.get("ins").is_some_and(|value| !value.is_null())
+            || property.get("del").is_some_and(|value| !value.is_null())
+        {
+            return Err(Error::Reverse(
+                "run properties contain `w:rPr/w:ins` or `w:rPr/w:del`, which is schema-invalid in this location and cannot be represented safely; use `<Inserted>` or `<Deleted>` for tracked text, or preserve the original DOCX until run-format revision support is available".to_owned(),
+            ));
+        }
         let mut attrs = Vec::new();
         for (key, name) in [("bold", "bold"), ("italic", "italic"), ("strike", "strike")] {
             if property_enabled(&property, key) {
@@ -8795,12 +8802,20 @@ fn append_paragraph_mark_revision_attributes(
     let run_property = paragraph_property
         .get("runProperty")
         .unwrap_or(&Value::Null);
+    append_run_revision_attributes(attributes, run_property, "paragraph mark")
+}
+
+fn append_run_revision_attributes(
+    attributes: &mut Vec<String>,
+    run_property: &Value,
+    subject: &str,
+) -> Result<()> {
     let inserted = run_property.get("ins").filter(|value| !value.is_null());
     let deleted = run_property.get("del").filter(|value| !value.is_null());
     if inserted.is_some() && deleted.is_some() {
-        return Err(Error::Reverse(
-            "paragraph mark has both insertion and deletion revisions, which cannot be represented together; keep only one `w:ins` or `w:del` revision".to_owned(),
-        ));
+        return Err(Error::Reverse(format!(
+            "{subject} has both insertion and deletion revision markers, which cannot be represented together; keep only one `w:ins` or `w:del` revision"
+        )));
     }
     for (source_key, target_key, revision) in
         [("ins", "inserted", inserted), ("del", "deleted", deleted)]
@@ -8810,7 +8825,7 @@ fn append_paragraph_mark_revision_attributes(
         };
         let revision = revision.as_object().ok_or_else(|| {
             Error::Reverse(format!(
-                "paragraph mark `{source_key}` revision metadata is malformed; repair its author/date or remove the revision"
+                "{subject} `{source_key}` revision metadata is malformed; repair its author/date or remove the revision"
             ))
         })?;
         if revision
@@ -8819,12 +8834,17 @@ fn append_paragraph_mark_revision_attributes(
             .is_some_and(|children| !children.is_empty())
         {
             return Err(Error::Reverse(format!(
-                "paragraph mark `{source_key}` contains nested revision content not modeled by JSX; preserve the original DOCX or remove the nested paragraph-mark revision"
+                "{subject} `{source_key}` contains nested revision content not modeled by JSX; preserve the original DOCX or remove the nested revision content"
             )));
         }
         let mut metadata = Map::new();
         for key in ["author", "date"] {
-            if let Some(value) = revision.get(key).and_then(Value::as_str) {
+            if let Some(value) = revision.get(key) {
+                let value = value.as_str().filter(|value| !value.is_empty()).ok_or_else(|| {
+                    Error::Reverse(format!(
+                        "{subject} `{source_key}.{key}` must be a non-empty string; repair the revision metadata or remove the revision"
+                    ))
+                })?;
                 metadata.insert(key.to_owned(), Value::String(value.to_owned()));
             }
         }
@@ -10472,6 +10492,25 @@ mod tests {
         assert!(
             jsx.contains(r#"deleted={{"author":"Lin","date":"2026-08-15T00:00:00Z"}}"#),
             "paragraph mark deletion metadata should survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_schema_invalid_run_property_revisions() {
+        let mut run = Run::new().add_text("invalid revision");
+        run.run_property = run
+            .run_property
+            .delete(Delete::new().author("Lin").date("2026-08-15T00:00:00Z"));
+        let bytes = external_docx(Paragraph::new().add_run(run));
+
+        let error = reverse_document(&bytes)
+            .expect_err("w:del inside w:rPr is invalid and must not be silently dropped");
+
+        assert!(
+            error
+                .to_string()
+                .contains("schema-invalid in this location"),
+            "{error}"
         );
     }
 

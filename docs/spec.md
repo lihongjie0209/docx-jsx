@@ -417,7 +417,10 @@ error instead of a silent drop.
   `none`, `background1`, `text1`, `background2`, or `text2`. `themeShade?` and
   `themeTint?` are two-digit hex modifiers. Boolean `bold`, `italic`, `strike`,
   and `doubleStrike` emit explicit on/off OOXML; enabled strike modes are
-  mutually exclusive.
+  mutually exclusive. `RunProperty::insert` and `RunProperty::delete` are not
+  exposed as JSX properties: docx-rs 0.4.22 writes `w:ins` / `w:del` inside
+  `w:rPr`, which the Open XML SDK identifies as invalid there. Use the
+  `Inserted`/`Deleted` components for tracked text revisions.
 - `Caption`: required Word identifier `label`; optional Word identifier
   `identifier?` defaults to `label`. `format?`, `restart?`, `placeholder?`, and
   `dirty?` have the same meaning as on `SequenceField`; `style?` defaults to
