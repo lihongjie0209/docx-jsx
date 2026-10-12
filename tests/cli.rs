@@ -523,6 +523,76 @@ export default <Document><Section><Paragraph><Comment text="Automatic">automatic
 }
 
 #[test]
+fn cli_should_roundtrip_external_paragraph_mark_revisions_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("paragraph-revisions.tsx");
+    let compiled = directory.path().join("paragraph-revisions.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    let rebuilt_external = directory.path().join("rebuilt-external.docx");
+    let rebuilt_jsx = directory.path().join("rebuilt.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document><Section><Paragraph inserted={{author:"Ada",date:"2026-08-14T00:00:00Z"}}>inserted paragraph</Paragraph><Paragraph deleted={{author:"Lin",date:"2026-08-15T00:00:00Z"}}>deleted paragraph</Paragraph></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        jsx.contains(r#"inserted={{"author":"Ada","date":"2026-08-14T00:00:00Z"}}"#)
+            && jsx.contains(r#"deleted={{"author":"Lin","date":"2026-08-15T00:00:00Z"}}"#),
+        "paragraph mark revisions should be restored from external DOCX: {jsx}"
+    );
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    fs::write(
+        &rebuilt_external,
+        strip_ir_manifest(&fs::read(&rebuilt).expect("rebuilt DOCX should exist")),
+    )
+    .expect("rebuilt external DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&rebuilt_external)
+        .args(["-o"])
+        .arg(&rebuilt_jsx)
+        .assert()
+        .success();
+    let rebuilt_jsx = fs::read_to_string(rebuilt_jsx).expect("second reverse JSX should exist");
+    assert!(
+        rebuilt_jsx.contains(r#"inserted={{"author":"Ada","date":"2026-08-14T00:00:00Z"}}"#)
+            && rebuilt_jsx.contains(r#"deleted={{"author":"Lin","date":"2026-08-15T00:00:00Z"}}"#),
+        "paragraph mark revisions should survive recompilation: {rebuilt_jsx}"
+    );
+}
+
+#[test]
 fn cli_should_reverse_style_line_number_suppression_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("style.tsx");

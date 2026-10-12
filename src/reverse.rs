@@ -1209,6 +1209,7 @@ impl Writer {
                 }
             }
         }
+        append_paragraph_mark_revision_attributes(&mut attrs, &property)?;
         if property.get("keepNext").and_then(Value::as_bool) == Some(true) {
             attrs.push(" keepNext".to_owned());
         }
@@ -8787,6 +8788,51 @@ fn reverse_run_properties(source: &Value) -> Result<Option<Map<String, Value>>> 
     Ok((!output.is_empty()).then_some(output))
 }
 
+fn append_paragraph_mark_revision_attributes(
+    attributes: &mut Vec<String>,
+    paragraph_property: &Value,
+) -> Result<()> {
+    let run_property = paragraph_property
+        .get("runProperty")
+        .unwrap_or(&Value::Null);
+    let inserted = run_property.get("ins").filter(|value| !value.is_null());
+    let deleted = run_property.get("del").filter(|value| !value.is_null());
+    if inserted.is_some() && deleted.is_some() {
+        return Err(Error::Reverse(
+            "paragraph mark has both insertion and deletion revisions, which cannot be represented together; keep only one `w:ins` or `w:del` revision".to_owned(),
+        ));
+    }
+    for (source_key, target_key, revision) in
+        [("ins", "inserted", inserted), ("del", "deleted", deleted)]
+    {
+        let Some(revision) = revision else {
+            continue;
+        };
+        let revision = revision.as_object().ok_or_else(|| {
+            Error::Reverse(format!(
+                "paragraph mark `{source_key}` revision metadata is malformed; repair its author/date or remove the revision"
+            ))
+        })?;
+        if revision
+            .get("children")
+            .and_then(Value::as_array)
+            .is_some_and(|children| !children.is_empty())
+        {
+            return Err(Error::Reverse(format!(
+                "paragraph mark `{source_key}` contains nested revision content not modeled by JSX; preserve the original DOCX or remove the nested paragraph-mark revision"
+            )));
+        }
+        let mut metadata = Map::new();
+        for key in ["author", "date"] {
+            if let Some(value) = revision.get(key).and_then(Value::as_str) {
+                metadata.insert(key.to_owned(), Value::String(value.to_owned()));
+            }
+        }
+        attributes.push(jsx_prop(target_key, &Value::Object(metadata))?);
+    }
+    Ok(())
+}
+
 fn apply_theme_color_to_map(target: &mut Map<String, Value>, theme: Option<&ThemeColorInfo>) {
     let Some(theme) = theme else {
         return;
@@ -10394,6 +10440,38 @@ mod tests {
         assert!(
             jsx.contains(r#"<TableRow height={28} heightRule="exact" cantSplit>"#),
             "row height, rule, and cantSplit must survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_paragraph_mark_insertion() {
+        let paragraph = Paragraph::new()
+            .insert("Ada", "2026-08-14T00:00:00Z")
+            .add_run(Run::new().add_text("inserted paragraph"));
+        let bytes = pack_docx(Docx::new().add_paragraph(paragraph));
+
+        let jsx =
+            reverse_document(&bytes).expect("external paragraph mark insertion should reverse");
+
+        assert!(
+            jsx.contains(r#"inserted={{"author":"Ada","date":"2026-08-14T00:00:00Z"}}"#),
+            "paragraph mark insertion metadata should survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_paragraph_mark_deletion() {
+        let paragraph = Paragraph::new()
+            .delete("Lin", "2026-08-15T00:00:00Z")
+            .add_run(Run::new().add_text("deleted paragraph"));
+        let bytes = pack_docx(Docx::new().add_paragraph(paragraph));
+
+        let jsx =
+            reverse_document(&bytes).expect("external paragraph mark deletion should reverse");
+
+        assert!(
+            jsx.contains(r#"deleted={{"author":"Lin","date":"2026-08-15T00:00:00Z"}}"#),
+            "paragraph mark deletion metadata should survive external reverse: {jsx}"
         );
     }
 

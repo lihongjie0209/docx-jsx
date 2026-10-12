@@ -380,9 +380,10 @@ error instead of a silent drop.
   `adjustRightIndent?: 0 | 1`, six-digit RGB `shading?`, and integer
   `outlineLevel?: 0..9`. `frame?` has the same shape, units, enumerations, and
   coordinate/alignment conflicts as `Document.styles[].paragraph.frame`.
-  Optional `inserted?` and `deleted?` objects mark the paragraph's default run
-  formatting as revised and are mutually exclusive; both accept non-empty
-  `author?` and `date?` strings. `propertyChange?` records previous paragraph
+  Optional `inserted?` and `deleted?` objects mark the paragraph mark as
+  inserted or deleted (OOXML `w:pPr/w:rPr/w:ins` or `w:del`) and are mutually
+  exclusive; both accept non-empty `author?` and `date?` strings.
+  `propertyChange?` records previous paragraph
   formatting as `{author?, date?, previous}`. `previous` is non-empty and
   accepts the same paragraph formatting properties except `inserted`,
   `deleted`, and `propertyChange`.
