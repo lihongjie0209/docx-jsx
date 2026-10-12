@@ -1196,12 +1196,22 @@ impl Writer {
         for (name, value) in &raw_indent.values {
             attrs.push(jsx_prop(name, &Value::from(*value))?);
         }
-        if let Some((name, value)) = reverse_fonts_property(
-            property.get("runProperty").unwrap_or(&Value::Null),
-            "font",
-            "fonts",
-        ) {
-            attrs.push(jsx_prop(&name, &value)?);
+        if let Some(run_properties) =
+            reverse_run_properties(property.get("runProperty").unwrap_or(&Value::Null))?
+        {
+            for name in [
+                "font",
+                "fonts",
+                "size",
+                "bold",
+                "italic",
+                "color",
+                "characterSpacing",
+            ] {
+                if let Some(value) = run_properties.get(name) {
+                    attrs.push(jsx_prop(name, value)?);
+                }
+            }
         }
         if property.get("keepNext").and_then(Value::as_bool) == Some(true) {
             attrs.push(" keepNext".to_owned());
@@ -5084,6 +5094,7 @@ fn collect_index_field_paragraph_metadata(
     let mut result: HashMap<String, Vec<Map<String, Value>>> = HashMap::new();
     let mut paragraph: Option<RawIndexFieldParagraph> = None;
     let mut paragraph_properties_depth = 0_usize;
+    let mut in_paragraph_run_properties = false;
     let mut in_instruction = false;
     let mut instruction_seen = false;
     loop {
@@ -5091,6 +5102,7 @@ fn collect_index_field_paragraph_metadata(
             Ok(Event::Start(element)) if element.local_name().as_ref() == b"p" => {
                 paragraph = Some((String::new(), Vec::new()));
                 paragraph_properties_depth = 0;
+                in_paragraph_run_properties = false;
                 in_instruction = false;
                 instruction_seen = false;
             }
@@ -5098,6 +5110,13 @@ fn collect_index_field_paragraph_metadata(
                 let name = element.local_name();
                 if name.as_ref() == b"pPr" {
                     paragraph_properties_depth = 1;
+                } else if paragraph_properties_depth > 0 && name.as_ref() == b"rPr" {
+                    let attributes = raw_xml_attributes(&reader, &element)?;
+                    if let Some((_, entries)) = paragraph.as_mut() {
+                        entries.push(("rPr".to_owned(), attributes));
+                    }
+                    in_paragraph_run_properties = true;
+                    paragraph_properties_depth += 1;
                 } else if !instruction_seen
                     && (name.as_ref() == b"instrText" || name.as_ref() == b"delInstrText")
                 {
@@ -5105,8 +5124,13 @@ fn collect_index_field_paragraph_metadata(
                 } else if paragraph_properties_depth > 0 {
                     let attributes = raw_xml_attributes(&reader, &element)?;
                     if let Some((_, entries)) = paragraph.as_mut() {
+                        let name = String::from_utf8_lossy(name.as_ref()).into_owned();
                         entries.push((
-                            String::from_utf8_lossy(name.as_ref()).into_owned(),
+                            if in_paragraph_run_properties {
+                                format!("rPr/{name}")
+                            } else {
+                                name
+                            },
                             attributes,
                         ));
                     }
@@ -5117,14 +5141,25 @@ fn collect_index_field_paragraph_metadata(
                 let name = element.local_name();
                 if name.as_ref() == b"pPr" {
                     paragraph_properties_depth = 0;
+                } else if paragraph_properties_depth > 0 && name.as_ref() == b"rPr" {
+                    let attributes = raw_xml_attributes(&reader, &element)?;
+                    if let Some((_, entries)) = paragraph.as_mut() {
+                        entries.push(("rPr".to_owned(), attributes));
+                    }
+                    paragraph_properties_depth += 1;
                 } else if name.as_ref() == b"instrText" || name.as_ref() == b"delInstrText" {
                     in_instruction = false;
                     instruction_seen = true;
                 } else if paragraph_properties_depth > 0 {
                     let attributes = raw_xml_attributes(&reader, &element)?;
                     if let Some((_, entries)) = paragraph.as_mut() {
+                        let name = String::from_utf8_lossy(name.as_ref()).into_owned();
                         entries.push((
-                            String::from_utf8_lossy(name.as_ref()).into_owned(),
+                            if in_paragraph_run_properties {
+                                format!("rPr/{name}")
+                            } else {
+                                name
+                            },
                             attributes,
                         ));
                     }
@@ -5183,6 +5218,10 @@ fn collect_index_field_paragraph_metadata(
                     instruction_seen = true;
                 } else if name.as_ref() == b"pPr" {
                     paragraph_properties_depth = 0;
+                    in_paragraph_run_properties = false;
+                } else if name.as_ref() == b"rPr" {
+                    in_paragraph_run_properties = false;
+                    paragraph_properties_depth = paragraph_properties_depth.saturating_sub(1);
                 } else if paragraph_properties_depth > 1 {
                     paragraph_properties_depth -= 1;
                 }
@@ -5234,6 +5273,10 @@ fn raw_index_field_paragraph_properties(
     let mut special_indent = None;
     let mut character_indents = BTreeMap::new();
     for (element, attributes) in entries {
+        if let Some(run_element) = element.strip_prefix("rPr/") {
+            raw_index_run_property(run_element, attributes, &mut properties)?;
+            continue;
+        }
         let mut recognized = true;
         match element.as_str() {
             "rPr" | "tabs" if attributes.is_empty() => continue,
@@ -5392,7 +5435,131 @@ fn raw_index_field_paragraph_properties(
             "index field paragraph has conflicting first-line and hanging indents; retain only one indentation mode".to_owned(),
         ));
     }
+    if let Some((name, value)) =
+        reverse_fonts_property(&Value::Object(properties.clone()), "font", "fonts")
+    {
+        properties.remove("fonts");
+        properties.insert(name, value);
+    }
     Ok(properties)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "The explicit run-property whitelist keeps unsupported OOXML from being silently discarded."
+)]
+fn raw_index_run_property(
+    element: &str,
+    attributes: &BTreeMap<String, String>,
+    properties: &mut Map<String, Value>,
+) -> Result<()> {
+    match element {
+        "b" | "bCs" | "i" | "iCs" => {
+            let key = if element.starts_with('b') {
+                "bold"
+            } else {
+                "italic"
+            };
+            let value = attributes
+                .get("val")
+                .map(|value| parse_on_off(value))
+                .transpose()?
+                .unwrap_or(true);
+            if attributes.keys().any(|attribute| attribute != "val") {
+                raw_mark_unsupported(properties, &format!("{element} attributes"));
+            }
+            if let Some(previous) = properties.get(key).and_then(Value::as_bool)
+                && previous != value
+            {
+                raw_mark_unsupported(properties, &format!("conflicting {key} run defaults"));
+            } else {
+                properties.insert(key.to_owned(), Value::Bool(value));
+            }
+        }
+        "sz" | "szCs" => {
+            let Some(value) = attributes.get("val") else {
+                raw_mark_unsupported(properties, "run font size without w:val");
+                return Ok(());
+            };
+            if attributes.keys().any(|attribute| attribute != "val") {
+                raw_mark_unsupported(properties, "run font size attributes");
+            }
+            let half_points = parse_raw_i64(value, "run font size")?;
+            if half_points < 0 {
+                return Err(Error::Reverse(format!(
+                    "index field paragraph run font size `{value}` is negative; use a non-negative w:sz value"
+                )));
+            }
+            let size = scaled_decimal_value(half_points, 2)?;
+            if let Some(previous) = properties.get("size")
+                && previous != &size
+            {
+                raw_mark_unsupported(properties, "conflicting sz and szCs run defaults");
+            } else {
+                properties.insert("size".to_owned(), size);
+            }
+        }
+        "color" => {
+            if attributes.keys().any(|attribute| attribute != "val") {
+                raw_mark_unsupported(properties, "run color attributes");
+            }
+            if let Some(value) = attributes.get("val") {
+                if value.len() == 6 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    properties.insert(
+                        "color".to_owned(),
+                        Value::String(value.to_ascii_uppercase()),
+                    );
+                } else {
+                    raw_mark_unsupported(properties, "non-RGB run color");
+                }
+            }
+        }
+        "spacing" => {
+            if attributes.keys().any(|attribute| attribute != "val") {
+                raw_mark_unsupported(properties, "run character-spacing attributes");
+            }
+            if let Some(value) = attributes.get("val") {
+                properties.insert(
+                    "characterSpacing".to_owned(),
+                    points_value(parse_raw_i64(value, "character spacing")?)?,
+                );
+            }
+        }
+        "rFonts" => {
+            let names = [
+                ("ascii", "ascii"),
+                ("hAnsi", "hiAnsi"),
+                ("eastAsia", "eastAsia"),
+                ("cs", "cs"),
+                ("asciiTheme", "asciiTheme"),
+                ("hAnsiTheme", "hiAnsiTheme"),
+                ("eastAsiaTheme", "eastAsiaTheme"),
+                ("cstheme", "csTheme"),
+                ("csTheme", "csTheme"),
+                ("hint", "hint"),
+            ];
+            let mut fonts = Map::new();
+            for &(source, target) in &names {
+                if let Some(value) = attributes.get(source) {
+                    if fonts.get(target).is_some_and(|previous| previous != value) {
+                        raw_mark_unsupported(properties, "conflicting complex-script theme fonts");
+                    }
+                    fonts.insert(target.to_owned(), Value::String(value.clone()));
+                }
+            }
+            if attributes
+                .keys()
+                .any(|attribute| !names.iter().any(|(source, _)| source == attribute))
+            {
+                raw_mark_unsupported(properties, "run font attributes");
+            }
+            if !fonts.is_empty() {
+                properties.insert("fonts".to_owned(), Value::Object(fonts));
+            }
+        }
+        _ => raw_mark_unsupported(properties, &format!("run property {element}")),
+    }
+    Ok(())
 }
 
 fn raw_string_property(
@@ -10552,8 +10719,9 @@ mod tests {
 
     #[test]
     fn reverse_external_docx_should_reject_unrepresentable_index_paragraph_properties() {
-        let toc = TableOfContents::new()
-            .paragraph_property(ParagraphProperty::new().character_spacing(20));
+        let toc = TableOfContents::new().paragraph_property(
+            ParagraphProperty::new().run_property(docx_rs::RunProperty::new().caps()),
+        );
         let external = strip_ir_manifest(&pack_docx(Docx::new().add_table_of_contents(toc)));
         let error = reverse_document(&external)
             .expect_err("unsupported field paragraph formatting must not be discarded");

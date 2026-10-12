@@ -345,8 +345,8 @@ fn cli_should_reverse_and_recompile_external_index_field_paragraph_formatting() 
     let rebuilt = directory.path().join("rebuilt.docx");
     fs::write(
         &input,
-        r#"import { Document, Section, TableOfContents, TableOfFigures } from "docx-jsx";
-export default <Document><Section><TableOfContents fieldParagraph={{align:"center",spacingBefore:6,lineSpacing:28,lineRule:"exact",keepNext:true,bidi:true,shading:"EEF2F7",suppressLineNumbers:true,indentLeftChars:-100,indentRightChars:200,firstLineChars:640}} /><TableOfFigures label="Figure" fieldParagraph={{suppressLineNumbers:false,indentStartChars:120,indentEndChars:80,hangingChars:20}} /></Section></Document>;"#,
+        r#"import { Document, Section, Paragraph, TableOfContents, TableOfFigures } from "docx-jsx";
+export default <Document><Section><TableOfContents fieldParagraph={{align:"center",spacingBefore:6,lineSpacing:28,lineRule:"exact",keepNext:true,bidi:true,shading:"EEF2F7",suppressLineNumbers:true,indentLeftChars:-100,indentRightChars:200,firstLineChars:640,font:"Arial",size:12,bold:false,italic:true,color:"336699",characterSpacing:1.25}} /><TableOfFigures label="Figure" fieldParagraph={{suppressLineNumbers:false,indentStartChars:120,indentEndChars:80,hangingChars:20,fonts:{ascii:"A",hiAnsi:"H",eastAsia:"E",cs:"C",asciiTheme:"majorAscii",hiAnsiTheme:"majorHAnsi",eastAsiaTheme:"majorEastAsia",csTheme:"majorBidi",hint:"eastAsia"}}} /><Paragraph bold={false} italic={false}>ordinary paragraph</Paragraph></Section></Document>;"#,
     )
     .expect("input should write");
     Command::cargo_bin("docx-jsx")
@@ -356,6 +356,15 @@ export default <Document><Section><TableOfContents fieldParagraph={{align:"cente
         .arg(&compiled)
         .assert()
         .success();
+    let field_paragraph = first_index_field_paragraph_properties(&compiled);
+    assert!(
+        field_paragraph.contains("<w:b w:val=\"false\" /><w:bCs w:val=\"0\" />")
+            && field_paragraph.contains("<w:i />")
+            && field_paragraph.contains("<w:iCs />")
+            && field_paragraph.contains("<w:sz w:val=\"24\" />")
+            && field_paragraph.contains("<w:spacing w:val=\"25\" />"),
+        "writer output should preserve run defaults and normalize explicit complex-script off values: {field_paragraph}"
+    );
     fs::write(
         &external,
         strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
@@ -373,13 +382,29 @@ export default <Document><Section><TableOfContents fieldParagraph={{align:"cente
     assert!(
         jsx.contains("fieldParagraph={{")
             && jsx.contains(r#""lineSpacing":28"#)
-            && jsx.contains(r#""bidi":true"#),
+            && jsx.contains(r#""bidi":true"#)
+            && jsx.contains(r#""font":"Arial""#)
+            && jsx.contains(r#""size":12"#)
+            && jsx.contains(r#""bold":false"#)
+            && jsx.contains(r#""italic":true"#)
+            && jsx.contains(r#""color":"336699""#)
+            && jsx.contains(r#""characterSpacing":1.25"#),
         "reverse should restore field paragraph properties without a manifest: {jsx}"
     );
     assert!(
         jsx.contains(r#""suppressLineNumbers":true"#)
             && jsx.contains(r#""suppressLineNumbers":false"#),
         "reverse should restore both line-number suppression values from external XML: {jsx}"
+    );
+    assert!(
+        jsx.contains("ordinary paragraph")
+            && jsx.contains("bold={false}")
+            && jsx.contains("italic={false}"),
+        "ordinary paragraph explicit run-default off values should survive external reverse: {jsx}"
+    );
+    assert!(
+        jsx.contains(r#""csTheme":"majorBidi""#) && jsx.contains(r#""hint":"eastAsia""#),
+        "external reverse should restore independent complex-script theme font and hint slots: {jsx}"
     );
     for indentation in [
         r#""indentLeftChars":-100"#,

@@ -123,7 +123,7 @@ export default (
           <Paragraph>Directory note</Paragraph>
         </TocAfter>
       </TableOfContents>
-      <TableOfFigures label="Figure" separator="-" dirty={false} deletion={{ author: "Editor", date: "2026-10-12T00:00:00Z" }} fieldParagraph={{ align: "center", spacingBefore: 6, lineSpacing: 28, lineRule: "exact", indentLeftChars: -100, indentRightChars: 200, firstLineChars: 640, keepNext: true, bidi: true, shading: "EEF2F7", suppressLineNumbers: true }} />
+      <TableOfFigures label="Figure" separator="-" dirty={false} deletion={{ author: "Editor", date: "2026-10-12T00:00:00Z" }} fieldParagraph={{ align: "center", spacingBefore: 6, lineSpacing: 28, lineRule: "exact", indentLeftChars: -100, indentRightChars: 200, firstLineChars: 640, keepNext: true, bidi: true, shading: "EEF2F7", suppressLineNumbers: true, fonts: { ascii: "Aptos", hiAnsi: "Arial", eastAsia: "Yu Gothic", cs: "Traditional Arabic", asciiTheme: "majorAscii", hiAnsiTheme: "majorHAnsi", eastAsiaTheme: "majorEastAsia", csTheme: "majorBidi", hint: "eastAsia" }, size: 11, bold: false, italic: true, color: "336699", characterSpacing: 0.5 }} />
       <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} withoutSdt />
       <Paragraph><Deleted author="Open XML SDK"><Comment text="Deleted text review" author="Agent">removed</Comment></Deleted></Paragraph>
       <Paragraph><Deleted author="Open XML SDK"><Run><DeletedInstruction instruction={'HYPERLINK "https://example.com"'} /></Run></Deleted></Paragraph>

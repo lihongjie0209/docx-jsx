@@ -713,8 +713,12 @@ error instead of a silent drop.
   `widowControl`, `bidi`, `textAlign`, `shading`, `outlineLevel`, and
   `suppressLineNumbers`, `indentLeftChars`, `indentStartChars`,
   `indentRightChars`, `indentEndChars`, `firstLineChars`, and
-  `hangingChars`. Point-
-  valued spacing and indentation use points. It is valid only without static
+  `hangingChars`, plus paragraph run defaults `font`, `fonts`, `size`, `bold`,
+  `italic`, `color`, and `characterSpacing`. Point-valued spacing, indentation,
+  font size, and character spacing use points. `font` sets all four physical
+  font slots; `fonts` can configure the nine physical/theme/hint slots
+  independently. `bold` and `italic` preserve both explicit true and false
+  values. It is valid only without static
   `TocItem` rows because docx-rs ignores paragraph properties in its static-
   items branch. Character-unit indentation values are integers mapped
   directly to the corresponding OOXML `w:*Chars` attributes without point

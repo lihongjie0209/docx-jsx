@@ -4584,6 +4584,13 @@ fn validate_index_field_paragraph(node: &Node, path: &str) -> Result<()> {
         "indentEndChars",
         "firstLineChars",
         "hangingChars",
+        "font",
+        "fonts",
+        "size",
+        "bold",
+        "italic",
+        "color",
+        "characterSpacing",
     ];
     validate_object_keys(properties, &format!("{path}.fieldParagraph"), &supported)?;
     for key in ["keepNext", "keepLines", "pageBreakBefore"] {
@@ -5684,6 +5691,15 @@ mod tests {
         );
         ir.validate()
             .expect("supported field paragraph formatting should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_index_field_paragraph_run_defaults() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"font":"Arial","size":12,"bold":false,"italic":true,"color":"336699","characterSpacing":1.25}},"children":[]},{"type":"TableOfFigures","props":{"label":"Figure","fieldParagraph":{"fonts":{"eastAsia":"宋体"},"bold":true,"italic":false}},"children":[]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("supported field paragraph run defaults should validate");
     }
 
     #[test]

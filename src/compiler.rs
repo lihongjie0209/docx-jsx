@@ -2993,6 +2993,7 @@ fn normalize_word_xml(xml: &mut String, name: &str) -> Result<()> {
         reorder_element_children(xml, "w:lvl", numbering_level_rank)?;
         reorder_element_children(xml, "w:lvlOverride", numbering_override_rank)?;
     }
+    normalize_complex_script_toggle_values(xml)?;
     reorder_element_children(xml, "w:numPr", numbering_property_rank)?;
     reorder_element_children(xml, "w:pPr", paragraph_property_rank)?;
     reorder_element_children(xml, "w:rPr", run_property_rank)?;
@@ -3001,6 +3002,32 @@ fn normalize_word_xml(xml: &mut String, name: &str) -> Result<()> {
     reorder_element_children(xml, "w:sectPr", section_property_rank)?;
     reorder_element_children(xml, "w:style", style_child_rank)?;
     reorder_element_children(xml, "w:settings", settings_child_rank)
+}
+
+fn normalize_complex_script_toggle_values(xml: &mut String) -> Result<()> {
+    for (start, end) in element_content_ranges(xml, "w:rPr")?.into_iter().rev() {
+        let children = split_element_children(&xml[start..end])?;
+        let bold_disabled = children
+            .iter()
+            .any(|child| child_name(child) == "w:b" && child.contains("w:val=\"false\""));
+        let italic_disabled = children
+            .iter()
+            .any(|child| child_name(child) == "w:i" && child.contains("w:val=\"false\""));
+        let normalized = children
+            .into_iter()
+            .map(|child| match child_name(child) {
+                "w:bCs" if bold_disabled && child.trim() == "<w:bCs />" => {
+                    "<w:bCs w:val=\"0\" />".to_owned()
+                }
+                "w:iCs" if italic_disabled && child.trim() == "<w:iCs />" => {
+                    "<w:iCs w:val=\"0\" />".to_owned()
+                }
+                _ => child.to_owned(),
+            })
+            .collect::<String>();
+        xml.replace_range(start..end, &normalized);
+    }
+    Ok(())
 }
 
 fn remove_table_grid_column_type(xml: &mut String) {
@@ -4123,11 +4150,21 @@ fn compile_paragraph(
     if let Some(size) = number_prop(&node.props, "size", path)? {
         paragraph = paragraph.size(to_half_points(size, &format!("{path}/size"))?);
     }
-    if bool_prop(&node.props, "bold", path)?.unwrap_or(false) {
-        paragraph = paragraph.bold();
+    if let Some(value) = bool_prop(&node.props, "bold", path)? {
+        if value {
+            paragraph = paragraph.bold();
+        } else {
+            paragraph.property.run_property =
+                std::mem::take(&mut paragraph.property.run_property).disable_bold();
+        }
     }
-    if bool_prop(&node.props, "italic", path)?.unwrap_or(false) {
-        paragraph = paragraph.italic();
+    if let Some(value) = bool_prop(&node.props, "italic", path)? {
+        if value {
+            paragraph = paragraph.italic();
+        } else {
+            paragraph.property.run_property =
+                std::mem::take(&mut paragraph.property.run_property).disable_italic();
+        }
     }
     if let Some(color) = string_prop(&node.props, "color", path)? {
         paragraph = paragraph.color(color.to_ascii_uppercase());
