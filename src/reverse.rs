@@ -883,8 +883,8 @@ impl Writer {
         depth: usize,
         attributes: &str,
         items: &[TocItemField],
-        before: &[docx_rs::Paragraph],
-        after: &[docx_rs::Paragraph],
+        before: &[IndexContentBlock],
+        after: &[IndexContentBlock],
     ) -> Result<()> {
         if items.is_empty() && before.is_empty() && after.is_empty() {
             self.empty(component, depth, attributes);
@@ -895,8 +895,13 @@ impl Writer {
         if !before.is_empty() {
             self.components.insert("TocBefore");
             self.line(depth + 1, "<TocBefore>");
-            for paragraph in before {
-                self.paragraph(paragraph, depth + 2)?;
+            for content in before {
+                match content {
+                    IndexContentBlock::Paragraph(paragraph) => {
+                        self.paragraph(paragraph, depth + 2)?;
+                    }
+                    IndexContentBlock::Table(table) => self.table(table, depth + 2)?,
+                }
             }
             self.line(depth + 1, "</TocBefore>");
         }
@@ -922,8 +927,13 @@ impl Writer {
         if !after.is_empty() {
             self.components.insert("TocAfter");
             self.line(depth + 1, "<TocAfter>");
-            for paragraph in after {
-                self.paragraph(paragraph, depth + 2)?;
+            for content in after {
+                match content {
+                    IndexContentBlock::Paragraph(paragraph) => {
+                        self.paragraph(paragraph, depth + 2)?;
+                    }
+                    IndexContentBlock::Table(table) => self.table(table, depth + 2)?,
+                }
             }
             self.line(depth + 1, "</TocAfter>");
         }
@@ -2624,8 +2634,8 @@ enum IndexField {
         end: u64,
         attributes: String,
         items: Vec<TocItemField>,
-        before: Vec<docx_rs::Paragraph>,
-        after: Vec<docx_rs::Paragraph>,
+        before: Vec<IndexContentBlock>,
+        after: Vec<IndexContentBlock>,
     },
     Figures {
         label: String,
@@ -2633,16 +2643,21 @@ enum IndexField {
         separator: Option<String>,
         attributes: String,
         items: Vec<TocItemField>,
-        before: Vec<docx_rs::Paragraph>,
-        after: Vec<docx_rs::Paragraph>,
+        before: Vec<IndexContentBlock>,
+        after: Vec<IndexContentBlock>,
     },
     Entries {
         identifier: String,
         attributes: String,
         items: Vec<TocItemField>,
-        before: Vec<docx_rs::Paragraph>,
-        after: Vec<docx_rs::Paragraph>,
+        before: Vec<IndexContentBlock>,
+        after: Vec<IndexContentBlock>,
     },
+}
+
+enum IndexContentBlock {
+    Paragraph(Box<docx_rs::Paragraph>),
+    Table(Box<docx_rs::Table>),
 }
 
 #[derive(Debug)]
@@ -2707,15 +2722,15 @@ fn toc_content_from_sdt(
     tag: &StructuredDataTag,
 ) -> Result<(
     Vec<TocItemField>,
-    Vec<docx_rs::Paragraph>,
-    Vec<docx_rs::Paragraph>,
+    Vec<IndexContentBlock>,
+    Vec<IndexContentBlock>,
 )> {
     let mut items = Vec::new();
     let mut before = Vec::new();
     let mut after = Vec::new();
     let mut field_started = false;
     let mut field_ended = false;
-    for child in &tag.children {
+    for (index, child) in tag.children.iter().enumerate() {
         match child {
             StructuredDataTagChild::Paragraph(paragraph) => {
                 let flags = toc_field_paragraph_flags(paragraph);
@@ -2736,7 +2751,7 @@ fn toc_content_from_sdt(
                 if flags.1 {
                     field_ended = true;
                     if let Some(paragraph) = paragraph_without_field_end(paragraph) {
-                        after.push(paragraph);
+                        after.push(IndexContentBlock::Paragraph(Box::new(paragraph)));
                     }
                     continue;
                 }
@@ -2746,16 +2761,33 @@ fn toc_content_from_sdt(
                             .to_owned(),
                     ));
                 } else if field_ended {
-                    after.push((**paragraph).clone());
+                    let next_is_table = matches!(
+                        tag.children.get(index + 1),
+                        Some(StructuredDataTagChild::Table(_))
+                    );
+                    if !(after.is_empty() && next_is_table && paragraph_is_empty(paragraph)) {
+                        after.push(IndexContentBlock::Paragraph(Box::new(
+                            (**paragraph).clone(),
+                        )));
+                    }
                 } else {
-                    before.push((**paragraph).clone());
+                    before.push(IndexContentBlock::Paragraph(Box::new(
+                        (**paragraph).clone(),
+                    )));
                 }
             }
-            StructuredDataTagChild::Table(_) => {
-                return Err(Error::Reverse(
-                    "table content inside an index control cannot be represented as `TocItem`; remove the table or use only static TOC item rows"
-                        .to_owned(),
-                ));
+            StructuredDataTagChild::Table(table) => {
+                if field_started && !field_ended {
+                    return Err(Error::Reverse(
+                        "table appears inside the cached result of an index field; move it before or after the field, or use a PAGEREF row instead"
+                            .to_owned(),
+                    ));
+                }
+                if field_ended {
+                    after.push(IndexContentBlock::Table(Box::new((**table).clone())));
+                } else {
+                    before.push(IndexContentBlock::Table(Box::new((**table).clone())));
+                }
             }
             StructuredDataTagChild::StructuredDataTag(_)
             | StructuredDataTagChild::Run(_)
@@ -2771,6 +2803,17 @@ fn toc_content_from_sdt(
         }
     }
     Ok((items, before, after))
+}
+
+fn paragraph_is_empty(paragraph: &docx_rs::Paragraph) -> bool {
+    let mut runs = Vec::new();
+    let mut anchors = Vec::new();
+    collect_toc_item_runs(&paragraph.children, &mut runs, &mut anchors).is_ok()
+        && runs.iter().all(|run| {
+            run.children
+                .iter()
+                .all(|child| matches!(child, RunChild::Text(text) if text.text.is_empty()))
+        })
 }
 
 fn toc_field_paragraph_flags(paragraph: &docx_rs::Paragraph) -> (bool, bool, bool) {
@@ -9656,7 +9699,7 @@ mod tests {
     #[test]
     fn reverse_should_restore_toc_before_and_after_paragraphs_without_manifest() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocBefore","props":{},"children":[{"type":"Paragraph","props":{},"children":["before index"]}]},{"type":"TocItem","props":{"text":"Entry","bookmark":"entry","pageRef":"3"},"children":[]},{"type":"TocAfter","props":{},"children":[{"type":"Paragraph","props":{},"children":["after index"]}]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocBefore","props":{},"children":[{"type":"Paragraph","props":{},"children":["before index"]},{"type":"Table","props":{},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{},"children":[{"type":"Paragraph","props":{},"children":["before table"]}]}]}]}]},{"type":"TocItem","props":{"text":"Entry","bookmark":"entry","pageRef":"3"},"children":[]},{"type":"TocAfter","props":{},"children":[{"type":"Table","props":{},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{},"children":[{"type":"Paragraph","props":{},"children":["after table"]}]}]}]},{"type":"Paragraph","props":{},"children":["after index"]}]}]}]}]}}"#,
         )
         .expect("fixture should parse");
         let compiled =
@@ -9670,6 +9713,24 @@ mod tests {
         assert!(
             jsx.contains("<TocAfter>") && jsx.contains("after index"),
             "after content should reverse: {jsx}"
+        );
+        assert!(
+            jsx.contains("before table") && jsx.contains("after table"),
+            "before/after tables should reverse: {jsx}"
+        );
+        let after_content = jsx
+            .split("<TocAfter>")
+            .nth(1)
+            .and_then(|content| content.split("</TocAfter>").next())
+            .expect("TocAfter wrapper should be present");
+        assert!(
+            after_content.find("after table") < after_content.find("after index"),
+            "after-table order should be preserved: {jsx}"
+        );
+        assert_eq!(
+            after_content.matches("\n        <Paragraph").count(),
+            1,
+            "docx-rs table-spacing paragraph should not become user content: {jsx}"
         );
         assert!(
             jsx.contains("text=\"Entry\"") && jsx.contains("bookmark=\"entry\""),

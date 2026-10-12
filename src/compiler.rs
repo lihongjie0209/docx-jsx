@@ -6268,18 +6268,36 @@ fn add_index_items(
             continue;
         };
         if matches!(item.kind, NodeKind::TocBefore | NodeKind::TocAfter) {
-            for (paragraph_index, child) in item.children.iter().enumerate() {
-                let Child::Node(paragraph) = child else {
+            for (content_index, child) in item.children.iter().enumerate() {
+                let Child::Node(index_content) = child else {
                     continue;
                 };
-                let paragraph_path =
-                    format!("{path}/{}/Paragraph[{paragraph_index}]", item.kind.name());
-                let compiled = compile_paragraph(paragraph, entry_dir, &paragraph_path, context)?;
-                toc = if item.kind == NodeKind::TocBefore {
-                    toc.add_before_paragraph(compiled)
-                } else {
-                    toc.add_after_paragraph(compiled)
-                };
+                let content_path = format!(
+                    "{path}/{}/{}[{content_index}]",
+                    item.kind.name(),
+                    index_content.kind.name()
+                );
+                toc =
+                    match (item.kind, index_content.kind) {
+                        (NodeKind::TocBefore, NodeKind::Paragraph) => toc.add_before_paragraph(
+                            compile_paragraph(index_content, entry_dir, &content_path, context)?,
+                        ),
+                        (NodeKind::TocAfter, NodeKind::Paragraph) => toc.add_after_paragraph(
+                            compile_paragraph(index_content, entry_dir, &content_path, context)?,
+                        ),
+                        (NodeKind::TocBefore, NodeKind::Table) => toc.add_before_table(
+                            compile_table(index_content, entry_dir, &content_path, context)?,
+                        ),
+                        (NodeKind::TocAfter, NodeKind::Table) => toc.add_after_table(
+                            compile_table(index_content, entry_dir, &content_path, context)?,
+                        ),
+                        _ => {
+                            return Err(validation(
+                                &content_path,
+                                "TocBefore and TocAfter only accept Paragraph or Table",
+                            ));
+                        }
+                    };
             }
             continue;
         }
@@ -9003,9 +9021,11 @@ mod tests {
                 "type": "Section", "props": {}, "children": [{
                     "type": "TableOfContents", "props": {}, "children": [
                         {"type": "TocBefore", "props": {}, "children": [
-                            {"type": "Paragraph", "props": {}, "children": ["before index"]}
+                            {"type": "Paragraph", "props": {}, "children": ["before index"]},
+                            {"type": "Table", "props": {}, "children": [{"type": "TableRow", "props": {}, "children": [{"type": "TableCell", "props": {}, "children": [{"type": "Paragraph", "props": {}, "children": ["before table"]}]}]}]}
                         ]},
                         {"type": "TocAfter", "props": {}, "children": [
+                            {"type": "Table", "props": {}, "children": [{"type": "TableRow", "props": {}, "children": [{"type": "TableCell", "props": {}, "children": [{"type": "Paragraph", "props": {}, "children": ["after table"]}]}]}]},
                             {"type": "Paragraph", "props": {}, "children": ["after index"]}
                         ]}
                     ]
@@ -9022,9 +9042,17 @@ mod tests {
             .read_to_string(&mut document)
             .expect("UTF-8 XML");
         let before = document.find("before index").expect("before paragraph");
+        let before_table = document.find("before table").expect("before table");
         let field = document.find("TOC ").expect("TOC field");
+        let after_table = document.find("after table").expect("after table");
         let after = document.find("after index").expect("after paragraph");
-        assert!(before < field && field < after, "{document}");
+        assert!(
+            before < before_table
+                && before_table < field
+                && field < after_table
+                && after_table < after,
+            "{document}"
+        );
     }
 
     #[test]

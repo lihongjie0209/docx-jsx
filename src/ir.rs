@@ -845,6 +845,7 @@ fn validate_child_node(parent: NodeKind, child: &Node, path: &str, index: usize)
     validate_node(child, &child_path)
 }
 
+#[allow(clippy::too_many_lines)]
 fn allows(parent: NodeKind, child: NodeKind) -> bool {
     match parent {
         NodeKind::Document => child == NodeKind::Section,
@@ -867,7 +868,9 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries => {
             allows_index_child(child)
         }
-        NodeKind::TocBefore | NodeKind::TocAfter => child == NodeKind::Paragraph,
+        NodeKind::TocBefore | NodeKind::TocAfter => {
+            matches!(child, NodeKind::Paragraph | NodeKind::Table)
+        }
         NodeKind::Paragraph | NodeKind::Heading | NodeKind::Caption => {
             allows_paragraph_child(child)
         }
@@ -5470,7 +5473,7 @@ mod tests {
     #[test]
     fn validate_should_accept_toc_before_and_after_paragraph_wrappers() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocBefore","props":{},"children":[{"type":"Paragraph","props":{},"children":["before"]}]},{"type":"TocAfter","props":{},"children":[{"type":"Paragraph","props":{},"children":["after"]}]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocBefore","props":{},"children":[{"type":"Paragraph","props":{},"children":["before"]},{"type":"Table","props":{},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{},"children":[{"type":"Paragraph","props":{},"children":["before table"]}]}]}]}]},{"type":"TocAfter","props":{},"children":[{"type":"Paragraph","props":{},"children":["after"]},{"type":"Table","props":{},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{},"children":[{"type":"Paragraph","props":{},"children":["after table"]}]}]}]}]}]}]}]}}"#,
         );
         ir.validate()
             .expect("TOC before/after paragraph wrappers should validate");

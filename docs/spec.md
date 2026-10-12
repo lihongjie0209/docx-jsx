@@ -105,7 +105,7 @@ children are text. Pure whitespace between structural elements is ignored.
 | `Bookmark` | `Heading`, `Paragraph`, `Caption`, `Table`, `List` |
 | `TableOfContents`, `TableOfFigures`, `TableOfEntries` | `TocItem`, `TocBefore`, `TocAfter` |
 | `TocItem` | none |
-| `TocBefore`, `TocAfter` | `Paragraph` |
+| `TocBefore`, `TocAfter` | `Paragraph`, `Table` |
 | `Index`, `IndexEntry` | none |
 
 Text, breaks, and images placed directly in a paragraph are wrapped in an
@@ -690,11 +690,13 @@ error instead of a silent drop.
   a native `w:hyperlink` entry and a `PAGEREF` field targeting `bookmark`;
   reverse restores the item from the external DOCX without the IR manifest.
   Optional `TocBefore` and `TocAfter` wrappers map to docx-rs
-  `add_before_paragraph` and `add_after_paragraph`; each wrapper accepts one or
-  more `Paragraph` children and can appear at most once. They preserve content
-  around the generated field/static entries and are restored from external DOCX
-  without the IR manifest. Tables, deleted index fields, and custom field
-  paragraph properties are not part of this wrapper contract yet.
+  `add_before_paragraph` / `add_before_table` and their `add_after_*` variants;
+  each wrapper accepts one or more `Paragraph` or `Table` children and can
+  appear at most once. They preserve ordered content around the generated
+  field/static entries and are restored from external DOCX without the IR
+  manifest. The blank paragraph docx-rs inserts before a first after-table is
+  treated as a writer artifact. Deleted index fields, custom field paragraph
+  properties, and `withoutSdt` are not part of this wrapper contract yet.
 - `TableOfFigures`: required non-empty `label` (for example `Figure`),
   `includeLabelAndNumber?: boolean`, `separator?: string`,
   `entryBookmarkName?: string`, `entryAndPageNumberSeparator?: string`,

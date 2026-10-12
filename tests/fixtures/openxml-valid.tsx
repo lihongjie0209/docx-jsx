@@ -101,9 +101,27 @@ export default (
         useAppliedParagraphLineLevel
         hideTabAndPageNumbersInWebview
       >
-        <TocBefore><Paragraph>Directory introduction</Paragraph></TocBefore>
+        <TocBefore>
+          <Paragraph>Directory introduction</Paragraph>
+          <Table>
+            <TableRow>
+              <TableCell>
+                <Paragraph>Directory preface table</Paragraph>
+              </TableCell>
+            </TableRow>
+          </Table>
+        </TocBefore>
         <TocItem text="Open XML validation fixture" bookmark="validation-heading" />
-        <TocAfter><Paragraph>Directory note</Paragraph></TocAfter>
+        <TocAfter>
+          <Table>
+            <TableRow>
+              <TableCell>
+                <Paragraph>Directory appendix table</Paragraph>
+              </TableCell>
+            </TableRow>
+          </Table>
+          <Paragraph>Directory note</Paragraph>
+        </TocAfter>
       </TableOfContents>
       <TableOfFigures label="Figure" separator="-" dirty={false} />
       <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} />
