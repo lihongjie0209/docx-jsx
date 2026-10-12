@@ -1242,6 +1242,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "dirty",
             "alias",
             "withoutSdt",
+            "deletion",
         ],
         NodeKind::TableOfFigures => &[
             "label",
@@ -1260,6 +1261,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "dirty",
             "alias",
             "withoutSdt",
+            "deletion",
         ],
         NodeKind::TableOfEntries => &[
             "identifier",
@@ -1278,6 +1280,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "dirty",
             "alias",
             "withoutSdt",
+            "deletion",
         ],
         NodeKind::TocEntry => &["text", "level", "omitPageNumber", "identifier"],
         NodeKind::Index => index_props(),
@@ -4387,6 +4390,7 @@ fn validate_index_instruction_options(node: &Node, path: &str) -> Result<()> {
         NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
     ) {
         validate_without_sdt(node, path)?;
+        validate_index_deletion(node, path)?;
         for key in ["hyperlinks", "dirty", "withoutSdt"] {
             if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
                 return Err(validation(path, format!("`{key}` must be a boolean")));
@@ -4472,6 +4476,41 @@ fn validate_without_sdt(node: &Node, path: &str) -> Result<()> {
         return Err(validation(
             path,
             "`withoutSdt` currently requires an index with no children; remove `TocItem`, `TocBefore`, and `TocAfter` or omit `withoutSdt`",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_index_deletion(node: &Node, path: &str) -> Result<()> {
+    let Some(value) = node.props.get("deletion") else {
+        return Ok(());
+    };
+    let deletion = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`deletion` must be an object"))?;
+    validate_object_keys(deletion, path, &["author", "date"])?;
+    for key in ["author", "date"] {
+        if deletion
+            .get(key)
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(validation(
+                path,
+                format!("`deletion.{key}` must be a non-empty string"),
+            ));
+        }
+    }
+    if node.props.get("withoutSdt") == Some(&Value::Bool(true)) {
+        return Err(validation(
+            path,
+            "`deletion` cannot be combined with `withoutSdt`; keep the outer index control so revision metadata remains reversible",
+        ));
+    }
+    if !node.children.is_empty() {
+        return Err(validation(
+            path,
+            "`deletion` currently requires an index with no children; remove `TocItem`, `TocBefore`, and `TocAfter` or omit `deletion`",
         ));
     }
     Ok(())
@@ -5493,6 +5532,60 @@ mod tests {
             error
                 .to_string()
                 .contains("requires an index with no children")
+        );
+    }
+
+    #[test]
+    fn validate_should_accept_deleted_dynamic_toc_with_revision_metadata() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"deletion":{"author":"Editor","date":"2026-10-12T00:00:00Z"}},"children":[]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("deleted dynamic index metadata should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_deleted_toc_when_static_rows_would_be_ignored() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"deletion":{"author":"Editor","date":"2026-10-12T00:00:00Z"}},"children":[{"type":"TocItem","props":{"text":"Intro","bookmark":"intro"},"children":[]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("writer silently ignores delete when static rows exist");
+        assert!(
+            error
+                .to_string()
+                .contains("requires an index with no children")
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_deleted_toc_when_revision_author_is_missing() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"deletion":{"date":"2026-10-12T00:00:00Z"}},"children":[]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("deleted index needs explicit revision author");
+        assert!(
+            error
+                .to_string()
+                .contains("deletion.author` must be a non-empty string")
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_deleted_toc_without_sdt() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"withoutSdt":true,"deletion":{"author":"Editor","date":"2026-10-12T00:00:00Z"}},"children":[]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("deletion metadata requires an outer index control");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot be combined with `withoutSdt`")
         );
     }
 

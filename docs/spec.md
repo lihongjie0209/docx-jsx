@@ -679,7 +679,8 @@ error instead of a silent drop.
   `preserveTab?: boolean`, `preserveNewLine?: boolean`,
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
-  `dirty?: boolean`, `alias?: string`, and `withoutSdt?: boolean`. Defaults to
+  `dirty?: boolean`, `alias?: string`, `withoutSdt?: boolean`, and
+  `deletion?: {author:string,date:string}`. Defaults to
   levels 1–3, hyperlinks enabled, and automatic refresh requested. A section
   accepts at most one TOC, placed before its body content (headers and footers
   may precede it. Optional `TocItem` children provide a static entry row with
@@ -695,11 +696,16 @@ error instead of a silent drop.
   appear at most once. They preserve ordered content around the generated
   field/static entries and are restored from external DOCX without the IR
   manifest. The blank paragraph docx-rs inserts before a first after-table is
-  treated as a writer artifact. The public docx-rs `delete` setter is not
-  exposed: it is ignored when static `TocItem` rows are present, and its
-  empty-index output wraps field markers in a tracked deletion that the reverse
-  reader cannot currently reconstruct. The `paragraph_property` setter is
-  also not exposed because it applies only to the generated automatic-field
+  treated as a writer artifact. `deletion` maps to docx-rs `delete(author,
+  date)` and marks the generated field instruction as a tracked deletion. It
+  is valid only without index children and is mutually exclusive with
+  `withoutSdt`; static entries are rejected because docx-rs silently ignores
+  `delete` in its static-items serialization branch. Reverse restores the
+  deletion author and date from the external DOCX. Unlike `withoutSdt`,
+  deletion is not restricted to direct section children where the index
+  component is otherwise allowed. The `paragraph_property`
+  setter is also not exposed
+  because it applies only to the generated automatic-field
   paragraph and arbitrary paragraph properties have no lossless index-property
   representation. `withoutSdt?: boolean` omits the outer structured document
   tag and leaves only the native field paragraphs. It is valid only when the
@@ -715,10 +721,13 @@ error instead of a silent drop.
   `preserveTab?: boolean`, `preserveNewLine?: boolean`,
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
-  `dirty?: boolean`, `alias?: string`, and `withoutSdt?: boolean`. It emits a native TOC field filtered
+  `dirty?: boolean`, `alias?: string`, `withoutSdt?: boolean`, and
+  `deletion?: {author:string,date:string}`. It emits a native TOC field filtered
   by caption/SEQ label. It also accepts `TocItem` children with the same
-  contract as `TableOfContents`. `withoutSdt?: boolean` has the same direct
-  `Section` child and no-child restrictions as `TableOfContents`.
+  contract as `TableOfContents`. `withoutSdt` has the same direct `Section`
+  child and no-child restrictions as `TableOfContents`; `deletion` has the
+  same no-child and mutual-exclusion restrictions and is allowed in any
+  otherwise-valid index placement.
 - `TableOfEntries`: required non-empty `identifier`, plus `hyperlinks?`,
   `tcFieldLevelRange?: {start:1..9,end:1..9}`,
   `omitPageNumbersLevelRange?: {start:1..9,end:1..9}`,
@@ -729,12 +738,13 @@ error instead of a silent drop.
   `preserveTab?: boolean`, `preserveNewLine?: boolean`,
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `dirty?`, `alias?`, and
-  `withoutSdt?: boolean`. It emits
+  `withoutSdt?: boolean`, and `deletion?: {author:string,date:string}`. It emits
   a native custom TOC containing `TocEntry` fields with the same `identifier`.
   It also accepts `TocItem` children with the same contract as
-  `TableOfContents`. `withoutSdt` is valid only as a direct `Section` child
-  with no children and uses the same manifest-free field-paragraph reverse
-  behavior.
+  `TableOfContents`. `withoutSdt` uses the same direct `Section` child and
+  no-child restrictions as `TableOfContents`; `deletion` uses the same
+  no-child and mutual-exclusion restrictions and is allowed in any
+  otherwise-valid index placement.
   Range starts must be no greater than ends; levels are integers from 1 to 9.
   Style names are non-empty and cannot contain commas or quotes, matching the
   OOXML `\\t` field-argument syntax. The Boolean switches default to false at

@@ -123,7 +123,7 @@ export default (
           <Paragraph>Directory note</Paragraph>
         </TocAfter>
       </TableOfContents>
-      <TableOfFigures label="Figure" separator="-" dirty={false} />
+      <TableOfFigures label="Figure" separator="-" dirty={false} deletion={{ author: "Editor", date: "2026-10-12T00:00:00Z" }} />
       <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} withoutSdt />
       <Paragraph><Deleted author="Open XML SDK"><Comment text="Deleted text review" author="Agent">removed</Comment></Deleted></Paragraph>
       <Paragraph><Deleted author="Open XML SDK"><Run><DeletedInstruction instruction={'HYPERLINK "https://example.com"'} /></Run></Deleted></Paragraph>

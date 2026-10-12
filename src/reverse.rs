@@ -784,7 +784,7 @@ impl Writer {
     }
 
     fn body_structured_tag(&mut self, tag: &StructuredDataTag, depth: usize) -> Result<()> {
-        if let Some(mut index) = index_from_sdt(tag)? {
+        if let Some(mut index) = index_from_sdt(tag, &self.deleted_instructions)? {
             if self.apply_sdt {
                 if let Some(props) = self.sdt_plan.body_tags.get(self.body_sdt_index) {
                     add_index_sdt_properties(&mut index, props);
@@ -1948,7 +1948,7 @@ impl Writer {
                     index += 1;
                 }
                 TableCellContent::StructuredDataTag(tag) => {
-                    if let Some(mut kind) = index_from_sdt(tag)? {
+                    if let Some(mut kind) = index_from_sdt(tag, &self.deleted_instructions)? {
                         if self.apply_sdt {
                             if let Some(props) = self.sdt_plan.cell_tags.get(self.cell_sdt_index) {
                                 add_index_sdt_properties(&mut kind, props);
@@ -2675,12 +2675,29 @@ struct TocItemField {
     tab_position: u32,
 }
 
-fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
-    let instruction = collect_sdt_instruction(tag);
+#[derive(Debug)]
+struct DeletedIndexField {
+    paragraph_index: usize,
+    author: String,
+    date: String,
+    instruction: String,
+}
+
+fn index_from_sdt(
+    tag: &StructuredDataTag,
+    deleted_instructions: &HashMap<String, String>,
+) -> Result<Option<IndexField>> {
+    let deletion = deleted_index_field_from_sdt(tag, deleted_instructions)?;
+    let instruction = collect_sdt_instruction(tag, deletion.as_ref());
     let Some(mut index) = parse_toc_instruction(&instruction)? else {
         return Ok(None);
     };
-    let (items, before, after) = toc_content_from_sdt(tag)?;
+    let (items, before, after) = toc_content_from_sdt(tag, deletion.as_ref())?;
+    if deletion.is_some() && !items.is_empty() {
+        return Err(Error::Reverse(
+            "deleted index field also contains static PAGEREF rows, but docx-rs drops the deletion when compiling rows; remove the rows or keep the field automatic before reversing".to_owned(),
+        ));
+    }
     match &mut index {
         IndexField::Contents { items: target, .. }
         | IndexField::Figures { items: target, .. }
@@ -2721,7 +2738,87 @@ fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
             attributes.push_str(" dirty={false}");
         }
     }
+    if let Some(deletion) = deletion {
+        let value = serde_json::to_string(&serde_json::json!({
+            "author": deletion.author,
+            "date": deletion.date,
+        }))
+        .map_err(|error| {
+            Error::Reverse(format!("cannot encode index deletion metadata: {error}"))
+        })?;
+        let _ = write!(attributes, " deletion={{{value}}}");
+    }
     Ok(Some(index))
+}
+
+fn deleted_index_field_from_sdt(
+    tag: &StructuredDataTag,
+    deleted_instructions: &HashMap<String, String>,
+) -> Result<Option<DeletedIndexField>> {
+    let mut result = None;
+    for (paragraph_index, child) in tag.children.iter().enumerate() {
+        let StructuredDataTagChild::Paragraph(paragraph) = child else {
+            continue;
+        };
+        for child in &paragraph.children {
+            let ParagraphChild::Delete(deletion) = child else {
+                continue;
+            };
+            let mut instruction_marker = None;
+            for child in &deletion.children {
+                let DeleteChild::Run(run) = child else {
+                    continue;
+                };
+                for child in &run.children {
+                    let RunChild::DeleteText(text) = child else {
+                        continue;
+                    };
+                    let data = json(text)?;
+                    let Some(marker) = data.get("text").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    if deleted_instructions
+                        .get(marker)
+                        .is_some_and(|value| value.trim_start().starts_with("TOC"))
+                    {
+                        instruction_marker = Some((marker.to_owned(), data));
+                    }
+                }
+            }
+            let Some((marker, _)) = instruction_marker else {
+                continue;
+            };
+            let Some(instruction) = deleted_instructions.get(&marker).cloned() else {
+                continue;
+            };
+            let exact_field_shape = deletion.children.len() == 1
+                && matches!(
+                    deletion.children.first(),
+                    Some(DeleteChild::Run(run))
+                        if run.children.len() == 3
+                            && matches!(run.children.first(), Some(RunChild::FieldChar(field)) if field.field_char_type == docx_rs::FieldCharType::Begin)
+                            && matches!(run.children.get(1), Some(RunChild::DeleteText(text)) if json(text).ok().and_then(|value| value.get("text").and_then(Value::as_str).map(str::to_owned)).as_deref() == Some(marker.as_str()))
+                            && matches!(run.children.get(2), Some(RunChild::FieldChar(field)) if field.field_char_type == docx_rs::FieldCharType::Separate)
+                );
+            if !exact_field_shape {
+                return Err(Error::Reverse(
+                    "TOC instruction inside `w:del` has additional revision content that the index DSL cannot represent; keep only the field begin, instruction, and separator in the deletion".to_owned(),
+                ));
+            }
+            if result.is_some() {
+                return Err(Error::Reverse(
+                    "index control contains multiple deleted TOC field instructions; keep one deleted field per index control".to_owned(),
+                ));
+            }
+            result = Some(DeletedIndexField {
+                paragraph_index,
+                author: deletion.author.clone(),
+                date: deletion.date.clone(),
+                instruction,
+            });
+        }
+    }
+    Ok(result)
 }
 
 fn unwrapped_index_at(
@@ -2835,6 +2932,7 @@ fn paragraph_field_dirty(paragraph: &docx_rs::Paragraph) -> Option<bool> {
 
 fn toc_content_from_sdt(
     tag: &StructuredDataTag,
+    deletion: Option<&DeletedIndexField>,
 ) -> Result<(
     Vec<TocItemField>,
     Vec<IndexContentBlock>,
@@ -2848,6 +2946,10 @@ fn toc_content_from_sdt(
     for (index, child) in tag.children.iter().enumerate() {
         match child {
             StructuredDataTagChild::Paragraph(paragraph) => {
+                if deletion.is_some_and(|deletion| deletion.paragraph_index == index) {
+                    field_started = true;
+                    continue;
+                }
                 let flags = toc_field_paragraph_flags(paragraph);
                 if flags.2 && (flags.0 || (field_started && !field_ended)) {
                     let item = toc_item_from_paragraph(paragraph)?.ok_or_else(|| {
@@ -3210,7 +3312,13 @@ fn sdt_field_dirty(tag: &StructuredDataTag) -> Option<bool> {
     })
 }
 
-fn collect_sdt_instruction(tag: &StructuredDataTag) -> String {
+fn collect_sdt_instruction(
+    tag: &StructuredDataTag,
+    deletion: Option<&DeletedIndexField>,
+) -> String {
+    if let Some(deletion) = deletion {
+        return deletion.instruction.clone();
+    }
     let mut instruction = String::new();
     let mut in_first_field = false;
     let mut first_field_started = false;
@@ -9782,6 +9890,36 @@ mod tests {
         assert!(
             !toc_as_control,
             "TOC must not flatten to a nameless ContentControl: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_restore_deleted_index_field_metadata() {
+        let mut figures = TableOfContents::new();
+        figures.instr = InstrToC::new().caption_label("Figure");
+        let mut entries = TableOfContents::new();
+        entries.instr = InstrToC::new().tc_field_identifier(Some("legal".to_owned()));
+        let deletion_date = "2026-10-12T00:00:00Z";
+        let bytes = pack_docx(
+            Docx::new()
+                .add_table_of_contents(
+                    TableOfContents::new()
+                        .heading_styles_range(1, 3)
+                        .delete("Editor", deletion_date),
+                )
+                .add_table_of_contents(figures.delete("Editor", deletion_date))
+                .add_table_of_contents(entries.delete("Editor", deletion_date)),
+        );
+        let external = strip_ir_manifest(&bytes);
+        let jsx = reverse_document(&external).expect("deleted index field should reverse");
+        assert!(
+            jsx.matches(r#"deletion={{"author":"Editor","date":"2026-10-12T00:00:00Z"}}"#)
+                .count()
+                == 3
+                && jsx.contains("<TableOfContents")
+                && jsx.contains("<TableOfFigures")
+                && jsx.contains("<TableOfEntries"),
+            "all deleted index types should retain metadata: {jsx}"
         );
     }
 

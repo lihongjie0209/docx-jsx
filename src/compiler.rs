@@ -385,7 +385,8 @@ fn patch_index_dirty_values(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> 
     let mut xml = read_zip_text_entry(&bytes, "word/document.xml")?;
     let mut search_from = 0;
     let mut index_number = 0;
-    while let Some(relative_start) = xml[search_from..].find("<w:instrText>TOC ") {
+    while let Some((relative_start, instruction_prefix)) = next_toc_instruction(&xml[search_from..])
+    {
         let instruction_start = search_from + relative_start;
         let Some(dirty) = dirty_values.get(index_number) else {
             return Err(Error::Compile(
@@ -423,7 +424,7 @@ fn patch_index_dirty_values(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> 
             xml.replace_range(begin..tag_end, &patched);
         }
         index_number += 1;
-        search_from = instruction_start + "<w:instrText>TOC ".len();
+        search_from = instruction_start + instruction_prefix.len();
     }
     if index_number != dirty_values.len() {
         return Err(Error::Compile(format!(
@@ -434,6 +435,25 @@ fn patch_index_dirty_values(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> 
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
     replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
+}
+
+fn next_toc_instruction(xml: &str) -> Option<(usize, &'static str)> {
+    let regular = xml
+        .find("<w:instrText>TOC ")
+        .map(|index| (index, "<w:instrText>TOC "));
+    let deleted = xml
+        .find("<w:delInstrText>TOC ")
+        .map(|index| (index, "<w:delInstrText>TOC "));
+    match (regular, deleted) {
+        (Some(regular), Some(deleted)) => Some(if regular.0 < deleted.0 {
+            regular
+        } else {
+            deleted
+        }),
+        (Some(regular), None) => Some(regular),
+        (None, Some(deleted)) => Some(deleted),
+        (None, None) => None,
+    }
 }
 
 fn toc_item_marker(context: &mut CompileContext) -> String {
@@ -6248,6 +6268,20 @@ fn configure_index(
     if let Some(alias) = string_prop(&node.props, "alias", path)? {
         toc = toc.alias(alias);
     }
+    if let Some(deletion) = node.props.get("deletion") {
+        let deletion = deletion
+            .as_object()
+            .ok_or_else(|| validation(path, "`deletion` must be an object"))?;
+        let author = deletion
+            .get("author")
+            .and_then(Value::as_str)
+            .ok_or_else(|| validation(path, "`deletion.author` must be a non-empty string"))?;
+        let date = deletion
+            .get("date")
+            .and_then(Value::as_str)
+            .ok_or_else(|| validation(path, "`deletion.date` must be a non-empty string"))?;
+        toc = toc.delete(author, date);
+    }
     if bool_prop(&node.props, "withoutSdt", path)?.unwrap_or(false) {
         toc = toc.without_sdt();
     }
@@ -9036,6 +9070,39 @@ mod tests {
             "dirty state must patch the field marker even without an outer SDT: {document}"
         );
         assert!(!document.contains("<w:sdt>"), "{document}");
+    }
+
+    #[test]
+    fn compile_should_mark_dynamic_toc_field_as_deleted() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [
+                    {"type": "TableOfContents", "props": {"deletion": {"author": "Editor", "date": "2026-10-12T00:00:00Z"}, "dirty": false}, "children": []},
+                    {"type": "TableOfFigures", "props": {"label": "Figure", "deletion": {"author": "Editor", "date": "2026-10-12T00:00:00Z"}, "dirty": false}, "children": []},
+                    {"type": "TableOfEntries", "props": {"identifier": "legal", "deletion": {"author": "Editor", "date": "2026-10-12T00:00:00Z"}, "dirty": false}, "children": []}
+                ]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(
+            document.matches("<w:del ").count() == 3
+                && document.matches("<w:delInstrText>TOC ").count() == 3
+                && document.matches("w:author=\"Editor\"").count() == 3
+                && document
+                    .matches("w:fldCharType=\"begin\" w:dirty=\"false\"")
+                    .count()
+                    == 3,
+            "all index field codes should be wrapped in the requested deletion revision: {document}"
+        );
     }
 
     #[test]
