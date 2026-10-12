@@ -1561,21 +1561,18 @@ impl Writer {
         Ok(())
     }
 
-    fn run(&mut self, run: &docx_rs::Run, depth: usize) -> Result<()> {
-        self.components.insert("Run");
-        let property = json(&run.run_property)?;
-        if property.get("ins").is_some_and(|value| !value.is_null())
-            || property.get("del").is_some_and(|value| !value.is_null())
-        {
-            return Err(Error::Reverse(
-                "run properties contain `w:rPr/w:ins` or `w:rPr/w:del`, which is schema-invalid in this location and cannot be represented safely; use `<Inserted>` or `<Deleted>` for tracked text, or preserve the original DOCX until run-format revision support is available".to_owned(),
-            ));
-        }
+    fn run_attributes(&mut self, property: &Value) -> Result<Vec<String>> {
         let mut attrs = Vec::new();
         for (key, name) in [("bold", "bold"), ("italic", "italic"), ("strike", "strike")] {
-            if property_enabled(&property, key) {
+            if property_enabled(property, key) {
                 attrs.push(format!(" {name}"));
             }
+        }
+        if property.get("caps").is_some() {
+            attrs.push(jsx_prop(
+                "caps",
+                &Value::Bool(property_enabled(property, "caps")),
+            )?);
         }
         if property.get("underline").is_some() {
             attrs.push(" underline".to_owned());
@@ -1596,13 +1593,13 @@ impl Writer {
             };
             attrs.push(format!(" size={{{size}}}"));
         }
-        if let Some((name, value)) = reverse_fonts_property(&property, "font", "fonts") {
+        if let Some((name, value)) = reverse_fonts_property(property, "font", "fonts") {
             attrs.push(jsx_prop(&name, &value)?);
         }
         if let Some(value) = property
             .get("style")
             .and_then(scalar_string)
-            .or_else(|| nested_string(&property, &["style", "val"]))
+            .or_else(|| nested_string(property, &["style", "val"]))
         {
             attrs.push(attr("style", value));
         }
@@ -1614,6 +1611,20 @@ impl Writer {
             }
             attrs.push(attr("verticalAlign", value));
         }
+        Ok(attrs)
+    }
+
+    fn run(&mut self, run: &docx_rs::Run, depth: usize) -> Result<()> {
+        self.components.insert("Run");
+        let property = json(&run.run_property)?;
+        if property.get("ins").is_some_and(|value| !value.is_null())
+            || property.get("del").is_some_and(|value| !value.is_null())
+        {
+            return Err(Error::Reverse(
+                "run properties contain `w:rPr/w:ins` or `w:rPr/w:del`, which is schema-invalid in this location and cannot be represented safely; use `<Inserted>` or `<Deleted>` for tracked text, or preserve the original DOCX until run-format revision support is available".to_owned(),
+            ));
+        }
+        let attrs = self.run_attributes(&property)?;
         self.line(depth, &format!("<Run{}>", attrs.concat()));
         for child in &run.children {
             match child {

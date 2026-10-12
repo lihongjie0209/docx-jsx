@@ -1161,6 +1161,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "themeTint",
             "doubleStrike",
             "verticalAlign",
+            "caps",
         ],
         NodeKind::Text => &["value"],
         NodeKind::Break | NodeKind::Header | NodeKind::Footer => &["type"],
@@ -3934,7 +3935,7 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
             }
         }
     }
-    for key in ["bold", "italic", "strike", "doubleStrike"] {
+    for key in ["bold", "italic", "strike", "doubleStrike", "caps"] {
         if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(validation(path, format!("`{key}` must be a boolean")));
         }
@@ -6128,6 +6129,20 @@ mod tests {
             .expect_err("run verticalAlign must be a Word run alignment");
         assert!(
             error.to_string().contains("invalid `verticalAlign`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_non_boolean_run_caps() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"caps":"yes"},"children":["text"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("run caps must be an explicit boolean");
+        assert!(
+            error.to_string().contains("`caps` must be a boolean"),
             "{error}"
         );
     }

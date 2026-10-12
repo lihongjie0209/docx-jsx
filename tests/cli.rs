@@ -683,6 +683,61 @@ export default <Document><Section><Paragraph><Run verticalAlign="baseline">basel
 }
 
 #[test]
+fn cli_should_roundtrip_run_caps_on_and_off_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("run-caps.tsx");
+    let compiled = directory.path().join("run-caps.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    fs::write(
+        &input,
+        r#"import { AllCaps, Document, Section, Paragraph, Run } from "docx-jsx";
+export default <Document><Section><Paragraph><Run caps={true}>caps on</Run><Run caps={false}>caps off</Run><AllCaps>semantic caps</AllCaps></Paragraph></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+        fs::read(&compiled).expect("DOCX should exist"),
+    ))
+    .expect("compiled DOCX should be ZIP");
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part should exist")
+        .read_to_string(&mut document_xml)
+        .expect("document XML should read");
+    assert!(
+        document_xml.contains("<w:caps w:val=\"true\"")
+            && document_xml.contains("<w:caps w:val=\"false\""),
+        "writer should preserve explicit caps on/off values: {document_xml}"
+    );
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        jsx.contains("caps={true}") && jsx.contains("caps={false}"),
+        "external reverse should preserve explicit caps on/off: {jsx}"
+    );
+}
+
+#[test]
 fn cli_should_reverse_style_line_number_suppression_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("style.tsx");

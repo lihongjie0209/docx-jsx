@@ -5204,6 +5204,13 @@ fn compile_run_properties(props: &Map<String, Value>, path: &str) -> Result<Run>
     if double_strike == Some(false) {
         run.run_property = std::mem::take(&mut run.run_property).disable_dstrike();
     }
+    if let Some(value) = bool_prop(props, "caps", path)? {
+        run.run_property.caps = Some(if value {
+            Caps::new()
+        } else {
+            Caps::new().disable()
+        });
+    }
     if bool_prop(props, "underline", path)?.unwrap_or(false) {
         run = run.underline("single");
     }
