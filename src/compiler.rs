@@ -354,8 +354,7 @@ fn package_document(
     let bytes = patch_section_page_numbering(bytes, &section_page_numbering)?;
     let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
     let bytes = patch_core_properties(bytes, &ir.document.props)?;
-    let bytes = patch_document_protection(bytes, &ir.document.props)?;
-    let bytes = patch_document_zoom(bytes, &ir.document.props)?;
+    let bytes = patch_document_settings(bytes, &ir.document.props)?;
     let row_grid = collect_row_grid_properties(&ir.document);
     let mut bytes = bytes;
     for (part, rows) in row_grid {
@@ -783,6 +782,12 @@ fn patch_document_protection(bytes: Vec<u8>, props: &Map<String, Value>) -> Resu
     replace_zip_text_entry(archive, "word/settings.xml", settings.as_bytes())
 }
 
+fn patch_document_settings(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
+    let bytes = patch_document_protection(bytes, props)?;
+    let bytes = patch_document_zoom(bytes, props)?;
+    patch_track_revisions(bytes, props)
+}
+
 fn patch_document_zoom(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
     let Some(zoom) = props.get("zoom") else {
         return Ok(bytes);
@@ -798,6 +803,40 @@ fn patch_document_zoom(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec
         ));
     }
     settings = settings.replace(default_zoom, &format!(r#"<w:zoom w:percent="{zoom}" />"#));
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    replace_zip_text_entry(archive, "word/settings.xml", settings.as_bytes())
+}
+
+fn patch_track_revisions(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
+    let Some(enabled) = props.get("trackRevisions").and_then(Value::as_bool) else {
+        return Ok(bytes);
+    };
+    let element = if enabled {
+        "<w:trackRevisions />"
+    } else {
+        r#"<w:trackRevisions w:val="0" />"#
+    };
+    let mut settings = read_zip_text_entry(&bytes, "word/settings.xml")?;
+    if settings.contains("<w:trackRevisions") {
+        return Err(Error::Compile(
+            "docx-rs unexpectedly emitted `w:trackRevisions`; remove the duplicate settings element before compiling".to_owned(),
+        ));
+    }
+    let Some(root_start) = settings.find("<w:settings") else {
+        return Err(Error::Compile(
+            "word/settings.xml is missing its `w:settings` root; cannot insert revision tracking"
+                .to_owned(),
+        ));
+    };
+    let root_end = settings[root_start..]
+        .find('>')
+        .map(|position| root_start + position + 1)
+        .ok_or_else(|| {
+            Error::Compile("word/settings.xml has an unclosed `w:settings` root".to_owned())
+        })?;
+    let insertion = settings.find("<w:defaultTabStop").unwrap_or(root_end);
+    settings.insert_str(insertion, element);
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
     replace_zip_text_entry(archive, "word/settings.xml", settings.as_bytes())

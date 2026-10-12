@@ -37,6 +37,11 @@ reverse reads percentage zoom values without the IR manifest. `w:zoom` view
 modes (`fullPage`, `bestFit`, `textFit`) are explicitly rejected because the
 DSL currently models percentages only.
 
+Global edit tracking (`w:trackRevisions`) is not exposed by the 0.4.22
+`Settings` writer. The compiler adds the schema-valid on/off setting, while
+external reverse parses it without the IR manifest and preserves explicit
+false. This is an OOXML setting extension, not a docx-rs writer API wrapper.
+
 Comment relationship and resolved-state compatibility: `Comment::parent_comment_id`
 is a public reader field but is omitted by `Comment::build_to`; `CommentExtended::done`
 is a public writer field. The compiler preserves `commentsExtended.xml` values by

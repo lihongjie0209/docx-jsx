@@ -1390,6 +1390,7 @@ fn document_props() -> &'static [&'static str] {
         "zoom",
         "documentVariables",
         "evenAndOddHeaders",
+        "trackRevisions",
         "adjustLineHeightInTable",
         "characterSpacingControl",
         "styles",
@@ -2159,7 +2160,11 @@ fn validate_document_semantics(node: &Node, path: &str) -> Result<()> {
             validate_string_map(value, path, key)?;
         }
     }
-    for key in ["evenAndOddHeaders", "adjustLineHeightInTable"] {
+    for key in [
+        "evenAndOddHeaders",
+        "trackRevisions",
+        "adjustLineHeightInTable",
+    ] {
         if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(validation(path, format!("`{key}` must be a boolean")));
         }
@@ -7314,6 +7319,15 @@ mod tests {
     }
 
     #[test]
+    fn validate_should_accept_document_track_revisions_setting() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"trackRevisions":true},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        ir.validate()
+            .expect("document revision tracking should validate");
+    }
+
+    #[test]
     fn validate_should_accept_distinct_default_font_slots() {
         let ir = parse(
             r#"{"version":1,"document":{"type":"Document","props":{"defaultFonts":{"ascii":"Times New Roman","hiAnsi":"Times New Roman","eastAsia":"宋体","cs":"Times New Roman","asciiTheme":"minorHAnsi","eastAsiaTheme":"minorEastAsia","hint":"eastAsia"}},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
@@ -7645,6 +7659,7 @@ mod tests {
             (r#""zoom":501"#, "10 through 500"),
             (r#""zoom":125.5"#, "10 through 500"),
             (r#""evenAndOddHeaders":"yes""#, "boolean"),
+            (r#""trackRevisions":"yes""#, "boolean"),
             (
                 r#""characterSpacingControl":"compressAll""#,
                 "characterSpacingControl",

@@ -69,6 +69,7 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("`creator?: string`"))
         .stdout(predicate::str::contains("`revision?: integer`"))
         .stdout(predicate::str::contains("`documentProtection?:"))
+        .stdout(predicate::str::contains("`trackRevisions?: boolean`"))
         .stdout(predicate::str::contains(
             "`underline?: boolean | UnderlineStyle`",
         ))
@@ -1285,6 +1286,78 @@ export default <Document zoom={125}><Section><Paragraph>body</Paragraph></Sectio
         settings.contains(r#"<w:zoom w:percent="125""#),
         "{settings}"
     );
+}
+
+#[test]
+fn cli_should_roundtrip_document_revision_tracking_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    for enabled in [true, false] {
+        let input = directory.path().join(format!("tracking-{enabled}.tsx"));
+        let compiled = directory.path().join(format!("tracking-{enabled}.docx"));
+        let value = if enabled { "" } else { "={false}" };
+        fs::write(
+            &input,
+            format!(
+                r#"import {{ Document, Section, Paragraph }} from "docx-jsx";
+export default <Document trackRevisions{value}><Section><Paragraph>body</Paragraph></Section></Document>;"#
+            ),
+        )
+        .expect("source should write");
+        Command::cargo_bin("docx-jsx")
+            .expect("binary should build")
+            .arg(&input)
+            .args(["-o"])
+            .arg(&compiled)
+            .assert()
+            .success();
+        let external = directory.path().join(format!("external-{enabled}.docx"));
+        fs::write(
+            &external,
+            strip_ir_manifest(&fs::read(&compiled).expect("compiled DOCX should read")),
+        )
+        .expect("external DOCX should write");
+        let reversed = directory.path().join(format!("reversed-{enabled}.jsx"));
+        Command::cargo_bin("docx-jsx")
+            .expect("binary should build")
+            .args(["reverse"])
+            .arg(&external)
+            .args(["-o"])
+            .arg(&reversed)
+            .assert()
+            .success();
+        let jsx = fs::read_to_string(&reversed).expect("reverse JSX should read");
+        let expected = if enabled {
+            "trackRevisions"
+        } else {
+            "trackRevisions={false}"
+        };
+        assert!(jsx.contains(expected), "{jsx}");
+        let rebuilt = directory.path().join(format!("rebuilt-{enabled}.docx"));
+        Command::cargo_bin("docx-jsx")
+            .expect("binary should build")
+            .arg(&reversed)
+            .args(["-o"])
+            .arg(&rebuilt)
+            .assert()
+            .success();
+        let bytes = fs::read(rebuilt).expect("rebuilt DOCX should read");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+            .expect("rebuilt DOCX should remain a ZIP archive");
+        let mut settings = String::new();
+        archive
+            .by_name("word/settings.xml")
+            .expect("settings should exist")
+            .read_to_string(&mut settings)
+            .expect("settings should be UTF-8");
+        if enabled {
+            assert!(settings.contains("<w:trackRevisions />"), "{settings}");
+        } else {
+            assert!(
+                settings.contains(r#"<w:trackRevisions w:val="0" />"#),
+                "{settings}"
+            );
+        }
+    }
 }
 
 #[test]

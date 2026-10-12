@@ -28,6 +28,11 @@ cargo build --locked
   --output "${TEMP_DIR}/valid.docx"
 "${DOTNET}" run --project "${VALIDATOR_PROJECT}" --no-restore -- "${TEMP_DIR}/valid.docx"
 
+"${PROJECT_ROOT}/target/debug/docx-jsx" \
+  "${PROJECT_ROOT}/tests/fixtures/openxml-track-revisions-off.tsx" \
+  --output "${TEMP_DIR}/track-revisions-off.docx"
+"${DOTNET}" run --project "${VALIDATOR_PROJECT}" --no-restore -- "${TEMP_DIR}/track-revisions-off.docx"
+
 printf '%s' 'not a DOCX package' > "${TEMP_DIR}/invalid.docx"
 if "${DOTNET}" run --project "${VALIDATOR_PROJECT}" --no-restore -- "${TEMP_DIR}/invalid.docx" \
   2> "${TEMP_DIR}/invalid.jsonl"; then

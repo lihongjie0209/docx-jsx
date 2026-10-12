@@ -231,6 +231,9 @@ error instead of a silent drop.
   Reverse preserves the supported `w:documentProtection` attributes without
   the IR manifest and rejects unsupported attributes rather than dropping them.
   `documentVariables?: Record<string,string>`, `evenAndOddHeaders?: boolean`,
+  `trackRevisions?: boolean` enables/disables Word's document-wide tracking of
+  future edits. The setting is an on/off `w:trackRevisions` element and is
+  preserved in both directions, including explicit false values.
   `adjustLineHeightInTable?: boolean`, and
   `characterSpacingControl?: "doNotCompress" | "compressPunctuation" | "compressPunctuationAndJapaneseKana"`.
   Core-property strings, metadata strings, IDs, property names, and variable
