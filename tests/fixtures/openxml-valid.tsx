@@ -41,6 +41,8 @@ export default (
     revision={3}
     zoom={125}
     trackRevisions
+    doNotTrackMoves={false}
+    doNotTrackFormatting
     subject="Open XML validation"
     title="docx-jsx fixture"
     documentProtection={{ edit: "readOnly", formatting: false, enforcement: true, cryptProviderType: "rsaAES", cryptAlgorithmClass: "hash", cryptAlgorithmType: "typeAny", cryptAlgorithmSid: 14, cryptSpinCount: 100000, cryptProvider: "RSA AES Provider", algIdExt: "A1B2C3D4", algIdExtSource: "urn:example:alg", cryptProviderTypeExt: "01020304", cryptProviderTypeExtSource: "urn:example:provider", hash: "YWJjZA==", salt: "AQIDBA==", algorithmName: "SHA-512", hashValue: "YWJjZA==", saltValue: "AQIDBA==", spinCount: 100000 }}

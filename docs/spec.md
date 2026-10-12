@@ -234,6 +234,9 @@ error instead of a silent drop.
   `trackRevisions?: boolean` enables/disables Word's document-wide tracking of
   future edits. The setting is an on/off `w:trackRevisions` element and is
   preserved in both directions, including explicit false values.
+  `doNotTrackMoves?: boolean` and `doNotTrackFormatting?: boolean` configure
+  Word's revision behavior for moves and formatting changes; both are on/off
+  settings preserved from external DOCX, including explicit false values.
   `adjustLineHeightInTable?: boolean`, and
   `characterSpacingControl?: "doNotCompress" | "compressPunctuation" | "compressPunctuationAndJapaneseKana"`.
   Core-property strings, metadata strings, IDs, property names, and variable

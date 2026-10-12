@@ -785,7 +785,7 @@ fn patch_document_protection(bytes: Vec<u8>, props: &Map<String, Value>) -> Resu
 fn patch_document_settings(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
     let bytes = patch_document_protection(bytes, props)?;
     let bytes = patch_document_zoom(bytes, props)?;
-    patch_track_revisions(bytes, props)
+    patch_revision_tracking_settings(bytes, props)
 }
 
 fn patch_document_zoom(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
@@ -808,24 +808,40 @@ fn patch_document_zoom(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec
     replace_zip_text_entry(archive, "word/settings.xml", settings.as_bytes())
 }
 
-fn patch_track_revisions(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
-    let Some(enabled) = props.get("trackRevisions").and_then(Value::as_bool) else {
+fn patch_revision_tracking_settings(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<Vec<u8>> {
+    let mut elements = String::new();
+    for (property, element_name) in [
+        ("trackRevisions", "trackRevisions"),
+        ("doNotTrackMoves", "doNotTrackMoves"),
+        ("doNotTrackFormatting", "doNotTrackFormatting"),
+    ] {
+        let Some(value) = props.get(property) else {
+            continue;
+        };
+        let enabled = value
+            .as_bool()
+            .ok_or_else(|| validation("Document", format!("`{property}` must be a boolean")))?;
+        let element = if enabled {
+            format!("<w:{element_name} />")
+        } else {
+            format!(r#"<w:{element_name} w:val="0" />"#)
+        };
+        elements.push_str(&element);
+    }
+    if elements.is_empty() {
         return Ok(bytes);
-    };
-    let element = if enabled {
-        "<w:trackRevisions />"
-    } else {
-        r#"<w:trackRevisions w:val="0" />"#
-    };
+    }
     let mut settings = read_zip_text_entry(&bytes, "word/settings.xml")?;
-    if settings.contains("<w:trackRevisions") {
-        return Err(Error::Compile(
-            "docx-rs unexpectedly emitted `w:trackRevisions`; remove the duplicate settings element before compiling".to_owned(),
-        ));
+    for element_name in ["trackRevisions", "doNotTrackMoves", "doNotTrackFormatting"] {
+        if settings.contains(&format!("<w:{element_name}")) {
+            return Err(Error::Compile(format!(
+                "docx-rs unexpectedly emitted `w:{element_name}`; remove the duplicate settings element before compiling"
+            )));
+        }
     }
     let Some(root_start) = settings.find("<w:settings") else {
         return Err(Error::Compile(
-            "word/settings.xml is missing its `w:settings` root; cannot insert revision tracking"
+            "word/settings.xml is missing its `w:settings` root; cannot insert revision settings"
                 .to_owned(),
         ));
     };
@@ -836,7 +852,7 @@ fn patch_track_revisions(bytes: Vec<u8>, props: &Map<String, Value>) -> Result<V
             Error::Compile("word/settings.xml has an unclosed `w:settings` root".to_owned())
         })?;
     let insertion = settings.find("<w:defaultTabStop").unwrap_or(root_end);
-    settings.insert_str(insertion, element);
+    settings.insert_str(insertion, &elements);
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
     replace_zip_text_entry(archive, "word/settings.xml", settings.as_bytes())

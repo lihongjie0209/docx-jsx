@@ -1,7 +1,7 @@
 import { Document, Section, Paragraph } from "docx-jsx";
 
 export default (
-  <Document trackRevisions={false}>
+  <Document trackRevisions={false} doNotTrackMoves={false} doNotTrackFormatting={false}>
     <Section>
       <Paragraph>Revision tracking is explicitly disabled.</Paragraph>
     </Section>

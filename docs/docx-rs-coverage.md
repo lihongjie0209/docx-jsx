@@ -40,7 +40,9 @@ DSL currently models percentages only.
 Global edit tracking (`w:trackRevisions`) is not exposed by the 0.4.22
 `Settings` writer. The compiler adds the schema-valid on/off setting, while
 external reverse parses it without the IR manifest and preserves explicit
-false. This is an OOXML setting extension, not a docx-rs writer API wrapper.
+false. The adjacent `w:doNotTrackMoves` and `w:doNotTrackFormatting` settings
+are handled the same way. These are OOXML setting extensions, not docx-rs
+writer API wrappers.
 
 Comment relationship and resolved-state compatibility: `Comment::parent_comment_id`
 is a public reader field but is omitted by `Comment::build_to`; `CommentExtended::done`

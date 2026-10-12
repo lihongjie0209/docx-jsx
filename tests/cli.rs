@@ -1294,12 +1294,27 @@ fn cli_should_roundtrip_document_revision_tracking_without_manifest() {
     for enabled in [true, false] {
         let input = directory.path().join(format!("tracking-{enabled}.tsx"));
         let compiled = directory.path().join(format!("tracking-{enabled}.docx"));
-        let value = if enabled { "" } else { "={false}" };
+        let moves = !enabled;
+        let track_revisions = if enabled {
+            "trackRevisions"
+        } else {
+            "trackRevisions={false}"
+        };
+        let do_not_track_moves = if moves {
+            "doNotTrackMoves"
+        } else {
+            "doNotTrackMoves={false}"
+        };
+        let do_not_track_formatting = if enabled {
+            "doNotTrackFormatting"
+        } else {
+            "doNotTrackFormatting={false}"
+        };
         fs::write(
             &input,
             format!(
                 r#"import {{ Document, Section, Paragraph }} from "docx-jsx";
-export default <Document trackRevisions{value}><Section><Paragraph>body</Paragraph></Section></Document>;"#
+export default <Document {track_revisions} {do_not_track_moves} {do_not_track_formatting}><Section><Paragraph>body</Paragraph></Section></Document>;"#
             ),
         )
         .expect("source should write");
@@ -1326,12 +1341,18 @@ export default <Document trackRevisions{value}><Section><Paragraph>body</Paragra
             .assert()
             .success();
         let jsx = fs::read_to_string(&reversed).expect("reverse JSX should read");
-        let expected = if enabled {
-            "trackRevisions"
-        } else {
-            "trackRevisions={false}"
-        };
-        assert!(jsx.contains(expected), "{jsx}");
+        for (name, value) in [
+            ("trackRevisions", enabled),
+            ("doNotTrackMoves", moves),
+            ("doNotTrackFormatting", enabled),
+        ] {
+            let expected = if value {
+                name.to_owned()
+            } else {
+                format!("{name}={{false}}")
+            };
+            assert!(jsx.contains(&expected), "missing {expected} from {jsx}");
+        }
         let rebuilt = directory.path().join(format!("rebuilt-{enabled}.docx"));
         Command::cargo_bin("docx-jsx")
             .expect("binary should build")
@@ -1350,10 +1371,17 @@ export default <Document trackRevisions{value}><Section><Paragraph>body</Paragra
             .read_to_string(&mut settings)
             .expect("settings should be UTF-8");
         if enabled {
-            assert!(settings.contains("<w:trackRevisions />"), "{settings}");
+            assert!(
+                settings.contains("<w:trackRevisions />")
+                    && settings.contains(r#"<w:doNotTrackMoves w:val="0" />"#)
+                    && settings.contains("<w:doNotTrackFormatting />"),
+                "{settings}"
+            );
         } else {
             assert!(
-                settings.contains(r#"<w:trackRevisions w:val="0" />"#),
+                settings.contains(r#"<w:trackRevisions w:val="0" />"#)
+                    && settings.contains("<w:doNotTrackMoves />")
+                    && settings.contains(r#"<w:doNotTrackFormatting w:val="0" />"#),
                 "{settings}"
             );
         }

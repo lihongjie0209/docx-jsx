@@ -8090,8 +8090,8 @@ fn reverse_settings_attributes(settings: &docx_rs::Settings, bytes: &[u8]) -> Re
     if let Some(zoom) = collect_document_zoom(bytes)? {
         attributes.push_str(&jsx_prop("zoom", &Value::from(zoom))?);
     }
-    if let Some(enabled) = collect_track_revisions(bytes)? {
-        attributes.push_str(&jsx_prop("trackRevisions", &Value::from(enabled))?);
+    for (property, enabled) in collect_revision_tracking_settings(bytes)? {
+        attributes.push_str(&jsx_prop(&property, &Value::from(enabled))?);
     }
     if let Some(protection) = collect_document_protection(bytes)? {
         attributes.push_str(&jsx_prop("documentProtection", &protection)?);
@@ -8274,39 +8274,50 @@ fn collect_document_zoom(bytes: &[u8]) -> Result<Option<u64>> {
     Ok(zoom.filter(|value| *value != 100))
 }
 
-fn collect_track_revisions(bytes: &[u8]) -> Result<Option<bool>> {
+fn collect_revision_tracking_settings(bytes: &[u8]) -> Result<Vec<(String, bool)>> {
     let Ok(xml) = read_zip_text(bytes, "word/settings.xml") else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let mut reader = Reader::from_str(&xml);
     let mut buffer = Vec::new();
-    let mut tracking = None;
+    let mut settings = Vec::new();
     loop {
         match reader.read_event_into(&mut buffer) {
-            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"trackRevisions" => {
-                if tracking.is_some() {
-                    return Err(Error::Reverse(
-                        "word/settings.xml contains multiple `w:trackRevisions` elements; keep exactly one before reverse conversion".to_owned(),
-                    ));
+            Ok(Event::Empty(element))
+                if matches!(
+                    element.local_name().as_ref(),
+                    b"trackRevisions" | b"doNotTrackMoves" | b"doNotTrackFormatting"
+                ) =>
+            {
+                let local_name =
+                    String::from_utf8_lossy(element.local_name().as_ref()).into_owned();
+                let property = match local_name.as_str() {
+                    "trackRevisions" => "trackRevisions",
+                    "doNotTrackMoves" => "doNotTrackMoves",
+                    "doNotTrackFormatting" => "doNotTrackFormatting",
+                    _ => unreachable!(),
+                };
+                if settings.iter().any(|(name, _)| name == property) {
+                    return Err(Error::Reverse(format!(
+                        "word/settings.xml contains multiple `w:{local_name}` elements; keep exactly one before reverse conversion"
+                    )));
                 }
                 let mut value = true;
                 for attribute in element.attributes().with_checks(true) {
                     let attribute = attribute.map_err(|error| {
-                        Error::Reverse(format!(
-                            "cannot parse `w:trackRevisions` attributes: {error}"
-                        ))
+                        Error::Reverse(format!("cannot parse `w:{local_name}` attributes: {error}"))
                     })?;
                     if attribute.key.local_name().as_ref() != b"val" {
                         let name = String::from_utf8_lossy(attribute.key.as_ref());
                         return Err(Error::Reverse(format!(
-                            "`w:trackRevisions` uses unsupported attribute `{name}`; remove it or extend the revision-tracking spec"
+                            "`w:{local_name}` uses unsupported attribute `{name}`; remove it or extend the revision-settings spec"
                         )));
                     }
                     let raw = attribute
                         .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                         .map_err(|error| {
                             Error::Reverse(format!(
-                                "cannot decode `w:trackRevisions/@w:val`: {error}"
+                                "cannot decode `w:{local_name}/@w:val`: {error}"
                             ))
                         })?;
                     value = match raw.as_ref() {
@@ -8314,29 +8325,36 @@ fn collect_track_revisions(bytes: &[u8]) -> Result<Option<bool>> {
                         "0" | "false" | "off" => false,
                         _ => {
                             return Err(Error::Reverse(format!(
-                                "`w:trackRevisions/@w:val` has invalid on/off value `{raw}`; use true, false, 1, 0, on, or off"
+                                "`w:{local_name}/@w:val` has invalid on/off value `{raw}`; use true, false, 1, 0, on, or off"
                             )));
                         }
                     };
                 }
-                tracking = Some(value);
+                settings.push((property.to_owned(), value));
             }
-            Ok(Event::Start(element)) if element.local_name().as_ref() == b"trackRevisions" => {
-                return Err(Error::Reverse(
-                    "`w:trackRevisions` must be an empty leaf element; remove its child content before reverse conversion".to_owned(),
-                ));
+            Ok(Event::Start(element))
+                if matches!(
+                    element.local_name().as_ref(),
+                    b"trackRevisions" | b"doNotTrackMoves" | b"doNotTrackFormatting"
+                ) =>
+            {
+                let local_name =
+                    String::from_utf8_lossy(element.local_name().as_ref()).into_owned();
+                return Err(Error::Reverse(format!(
+                    "`w:{local_name}` must be an empty leaf element; remove its child content before reverse conversion"
+                )));
             }
             Ok(Event::Eof) => break,
             Err(error) => {
                 return Err(Error::Reverse(format!(
-                    "cannot parse word/settings.xml revision tracking: {error}"
+                    "cannot parse word/settings.xml revision settings: {error}"
                 )));
             }
             _ => {}
         }
         buffer.clear();
     }
-    Ok(tracking)
+    Ok(settings)
 }
 
 fn parse_document_protection_attributes(
@@ -12893,6 +12911,24 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("not representable"), "{message}");
         assert!(message.contains("percentage zoom"), "{message}");
+    }
+
+    #[test]
+    fn reverse_should_reject_invalid_revision_setting_values_with_guidance() {
+        let bytes = pack_docx(
+            Docx::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let settings = read_zip_text(&bytes, "word/settings.xml").expect("settings should exist");
+        let settings = settings.replace(
+            "<w:defaultTabStop",
+            r#"<w:doNotTrackMoves w:val="sometimes" /><w:defaultTabStop"#,
+        );
+        let external = rewrite_package_parts(&bytes, &[("word/settings.xml", settings.as_bytes())]);
+        let error = reverse_document(&external).expect_err("invalid on/off values must not vanish");
+        let message = error.to_string();
+        assert!(message.contains("doNotTrackMoves/@w:val"), "{message}");
+        assert!(message.contains("sometimes"), "{message}");
+        assert!(message.contains("use true, false"), "{message}");
     }
 
     #[test]
