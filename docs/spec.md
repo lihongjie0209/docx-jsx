@@ -259,8 +259,12 @@ error instead of a silent drop.
   definition requires unique non-empty `id`, non-empty `name`, and `type` of
   `paragraph`, `character`, `numbering`, or `table`. Optional metadata is
   `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
-  `unhideWhenUsed`. `run?: {font,fonts,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden,textBorder}`
-  uses the same units and color rules as `Run`.
+  `unhideWhenUsed`. `run?: {font,fonts,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,strike,doubleStrike,caps,underline,hidden,verticalAlign,characterSpacing,textBorder}`
+  uses the same units and color rules as `Run`. `strike` and
+  `doubleStrike` cannot both be true; `verticalAlign` is `baseline`,
+  `superscript`, or `subscript`; `characterSpacing` is a signed point value.
+  False `bold`, `italic`, `strike`, `doubleStrike`, and `caps` values are
+  retained as explicit off properties, rather than omitted from the style.
   `paragraph?: {align,textAlign,snapToGrid,keepNext,keepLines,pageBreakBefore,widowControl,bidi,shading,suppressLineNumbers,spacingBefore,spacingAfter,lineSpacing,spacingBeforeLines,spacingAfterLines,lineRule,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
   uses point dimensions; `firstLine` and `hanging` are mutually exclusive.
   `keepNext`, `keepLines`, `pageBreakBefore`, `widowControl`, `bidi`, and

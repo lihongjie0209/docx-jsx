@@ -2471,8 +2471,13 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
             "highlight",
             "bold",
             "italic",
+            "strike",
+            "doubleStrike",
+            "caps",
             "underline",
             "hidden",
+            "verticalAlign",
+            "characterSpacing",
             "textBorder",
         ],
     )?;
@@ -2501,13 +2506,35 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
         "underline",
         &["single", "double", "dotted", "dash", "wave"],
     )?;
-    for key in ["bold", "italic", "hidden"] {
+    for key in ["bold", "italic", "strike", "doubleStrike", "caps", "hidden"] {
         if run.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(validation(
                 path,
                 format!("style run `{key}` must be a boolean"),
             ));
         }
+    }
+    if run.get("strike").and_then(Value::as_bool) == Some(true)
+        && run.get("doubleStrike").and_then(Value::as_bool) == Some(true)
+    {
+        return Err(validation(
+            path,
+            "enabled style run `strike` and `doubleStrike` are mutually exclusive",
+        ));
+    }
+    validate_map_enum(
+        run,
+        path,
+        "verticalAlign",
+        &["baseline", "superscript", "subscript"],
+    )?;
+    if let Some(value) = run.get("characterSpacing") {
+        value
+            .as_f64()
+            .filter(|number| number.is_finite())
+            .ok_or_else(|| {
+                validation(path, "style run `characterSpacing` must be a finite number")
+            })?;
     }
     if let Some(border) = run.get("textBorder") {
         validate_style_border(border, path, true)?;
@@ -6421,6 +6448,18 @@ mod tests {
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","run":{"color":"red"}}]"#,
                 "six-digit RGB",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"character","run":{"strike":true,"doubleStrike":true}}]"#,
+                "mutually exclusive",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"character","run":{"verticalAlign":"middle"}}]"#,
+                "invalid `verticalAlign`",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"character","run":{"characterSpacing":"wide"}}]"#,
+                "finite number",
             ),
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"firstLine":1,"hanging":1}}]"#,

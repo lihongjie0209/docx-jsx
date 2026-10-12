@@ -4,22 +4,22 @@ use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use docx_rs::{
-    AbstractNumbering, AlignmentType, BorderType, BreakType, CellMargins, CharacterSpacingValues,
-    Comment, DataBinding, Delete, DocGrid, DocGridType, Docx, DrawingPosition, FieldCharType,
-    Footer, FooterChild, Footnote, Header, HeaderChild, HeightRule, Hyperlink, HyperlinkType,
-    IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC, Level, LevelJc, LevelOverride,
-    LevelSuffixType, LevelText, LineSpacing, LineSpacingType, MoveFrom, MoveTo, NumPages,
-    NumberFormat, Numbering, NumberingId, PageMargin, PageNum, PageNumType, PageOrientationType,
-    PageSize, Paragraph, ParagraphBorder, ParagraphBorderPosition, ParagraphBorders,
-    ParagraphPropertyChange, Pic, PicAlign, PositionalTab, PositionalTabAlignmentType,
-    PositionalTabRelativeTo, RelativeFromHType, RelativeFromVType, Run, RunFonts, Section,
-    Settings, Shading, ShdType, SpecialIndentType, Start, StructuredDataTag, Style, StyleType,
-    StyleWithLevel, Sym, Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType,
-    TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
-    TableCellBorderPosition, TableCellBorders, TableCellMargins, TableCellProperty,
-    TableLayoutType, TableOfContents, TablePositionProperty, TableRow, TextAlignmentType,
-    TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType, VertAlignType, WebExtension,
-    WidthType,
+    AbstractNumbering, AlignmentType, BorderType, BreakType, Caps, CellMargins,
+    CharacterSpacingValues, Comment, DataBinding, Delete, DocGrid, DocGridType, Docx,
+    DrawingPosition, FieldCharType, Footer, FooterChild, Footnote, Header, HeaderChild, HeightRule,
+    Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText, InstrToC,
+    Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing, LineSpacingType,
+    MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin, PageNum,
+    PageNumType, PageOrientationType, PageSize, Paragraph, ParagraphBorder,
+    ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic, PicAlign,
+    PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo, RelativeFromHType,
+    RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
+    Start, StructuredDataTag, Style, StyleType, StyleWithLevel, Sym, Tab as DocxTab, TabLeaderType,
+    TabValueType, Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders,
+    TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
+    TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
+    TextAlignmentType, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
+    VertAlignType, WebExtension, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -1613,18 +1613,7 @@ fn compile_style_run(mut style: Style, value: &Value, path: &str) -> Result<Styl
     if let Some(value) = string_prop(run, "highlight", path)? {
         style = style.highlight(value);
     }
-    if bool_prop(run, "bold", path)? == Some(true) {
-        style = style.bold();
-    }
-    if bool_prop(run, "italic", path)? == Some(true) {
-        style = style.italic();
-    }
-    if let Some(value) = string_prop(run, "underline", path)? {
-        style = style.underline(value);
-    }
-    if bool_prop(run, "hidden", path)? == Some(true) {
-        style = style.vanish();
-    }
+    style = compile_style_run_emphasis(style, run, path)?;
     if let Some(value) = run.get("textBorder") {
         let spec = parse_border_spec(value, path, true)?;
         let space = value
@@ -1642,6 +1631,72 @@ fn compile_style_run(mut style: Style, value: &Value, path: &str) -> Result<Styl
                 .color(spec.color)
                 .space(space),
         );
+    }
+    Ok(style)
+}
+
+fn compile_style_run_emphasis(
+    mut style: Style,
+    run: &Map<String, Value>,
+    path: &str,
+) -> Result<Style> {
+    if let Some(value) = bool_prop(run, "bold", path)? {
+        style = if value {
+            style.bold()
+        } else {
+            style.run_property = std::mem::take(&mut style.run_property).disable_bold();
+            style
+        };
+    }
+    if let Some(value) = bool_prop(run, "italic", path)? {
+        style = if value {
+            style.italic()
+        } else {
+            style.run_property = std::mem::take(&mut style.run_property).disable_italic();
+            style
+        };
+    }
+    if let Some(value) = bool_prop(run, "strike", path)? {
+        style.run_property = if value {
+            std::mem::take(&mut style.run_property).strike()
+        } else {
+            std::mem::take(&mut style.run_property).disable_strike()
+        };
+    }
+    if let Some(value) = bool_prop(run, "doubleStrike", path)? {
+        style.run_property = if value {
+            std::mem::take(&mut style.run_property).dstrike()
+        } else {
+            std::mem::take(&mut style.run_property).disable_dstrike()
+        };
+    }
+    if let Some(value) = bool_prop(run, "caps", path)? {
+        style.run_property.caps = Some(if value {
+            Caps::new()
+        } else {
+            Caps::new().disable()
+        });
+    }
+    if let Some(value) = string_prop(run, "underline", path)? {
+        style = style.underline(value);
+    }
+    if bool_prop(run, "hidden", path)? == Some(true) {
+        style = style.vanish();
+    }
+    if let Some(value) = string_prop(run, "verticalAlign", path)? {
+        let alignment = match value {
+            "baseline" => VertAlignType::Baseline,
+            "superscript" => VertAlignType::SuperScript,
+            "subscript" => VertAlignType::SubScript,
+            _ => return Err(validation(path, "invalid `verticalAlign` value")),
+        };
+        style.run_property = std::mem::take(&mut style.run_property).vert_align(alignment);
+    }
+    if let Some(spacing) = number_prop(run, "characterSpacing", path)? {
+        style.run_property = std::mem::take(&mut style.run_property).spacing(to_twips_i32(
+            spacing,
+            &format!("{path}/run/characterSpacing"),
+        )?);
     }
     Ok(style)
 }
@@ -7511,6 +7566,43 @@ mod tests {
         assert!(body.contains("<w:bidi />"), "{body}");
         assert!(body.contains(r#"<w:adjustRightInd w:val="1" />"#), "{body}");
         assert!(body.contains(r#"w:fill="DDEEFF""#), "{body}");
+    }
+
+    #[test]
+    fn compile_should_render_extended_style_run_properties() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Emphasis","name":"Emphasis","type":"character","run":{"bold":false,"italic":false,"strike":true,"doubleStrike":false,"caps":true,"verticalAlign":"superscript","characterSpacing":-1.5}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part should exist")
+            .read_to_string(&mut styles)
+            .expect("styles XML should be UTF-8");
+
+        let emphasis = styles
+            .split(r#"w:styleId="Emphasis""#)
+            .nth(1)
+            .and_then(|value| value.split("</w:style>").next())
+            .expect("Emphasis style should exist");
+        for expected in [
+            r#"<w:b w:val="false" />"#,
+            r#"<w:i w:val="false" />"#,
+            "<w:strike />",
+            r#"<w:dstrike w:val="false" />"#,
+            r#"<w:caps w:val="true" />"#,
+            r#"<w:vertAlign w:val="superscript" />"#,
+            r#"<w:spacing w:val="-30" />"#,
+        ] {
+            assert!(
+                emphasis.contains(expected),
+                "missing {expected} in {emphasis}"
+            );
+        }
     }
 
     #[test]

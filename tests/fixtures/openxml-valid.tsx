@@ -75,6 +75,7 @@ export default (
       { id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: { italic: true } },
       { id: "NoLineNumbers", name: "No Line Numbers", type: "paragraph", paragraph: { suppressLineNumbers: true } },
       { id: "StyleAllProps", name: "Extended Paragraph Properties", type: "paragraph", paragraph: { pageBreakBefore: true, widowControl: false, bidi: true, shading: "DDEEFF", adjustRightIndent: 1 } },
+      { id: "RunStyleAllProps", name: "Extended Run Properties", type: "character", run: { bold: false, italic: false, strike: true, doubleStrike: false, caps: true, verticalAlign: "superscript", characterSpacing: -1.5 } },
       { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center", indent: 6 }, cell: { verticalAlign: "center", shading: "EAF2F8", margins: { top: 1, right: 1, bottom: 1, left: 1 } } },
     ]}
   >

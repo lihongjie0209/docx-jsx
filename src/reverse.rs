@@ -6843,7 +6843,14 @@ fn xml_attribute(
 
 fn reverse_run_properties(source: &Value) -> Result<Option<Map<String, Value>>> {
     let mut output = Map::new();
-    for (source_key, target_key) in [("bold", "bold"), ("italic", "italic"), ("vanish", "hidden")] {
+    for (source_key, target_key) in [
+        ("bold", "bold"),
+        ("italic", "italic"),
+        ("strike", "strike"),
+        ("dstrike", "doubleStrike"),
+        ("caps", "caps"),
+        ("vanish", "hidden"),
+    ] {
         if source.get(source_key).is_some() {
             output.insert(
                 target_key.to_owned(),
@@ -6868,6 +6875,17 @@ fn reverse_run_properties(source: &Value) -> Result<Option<Map<String, Value>>> 
     }
     if let Some(value) = source.get("underline").and_then(scalar_string) {
         output.insert("underline".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = source.get("vertAlign").and_then(scalar_string) {
+        if !["baseline", "superscript", "subscript"].contains(&value) {
+            return Err(Error::Reverse(format!(
+                "style run has unsupported vertical alignment `{value}`; use baseline, superscript, or subscript"
+            )));
+        }
+        output.insert("verticalAlign".to_owned(), Value::String(value.to_owned()));
+    }
+    if let Some(value) = source.get("characterSpacing").and_then(scalar_i64) {
+        output.insert("characterSpacing".to_owned(), points_value(value)?);
     }
     Ok((!output.is_empty()).then_some(output))
 }
@@ -7093,7 +7111,7 @@ fn scaled_decimal_value(value: i64, divisor: i64) -> Result<Value> {
     } else if divisor == 2 {
         format!("{whole}.5")
     } else {
-        let sign = if value < 0 && whole == 0 { "-" } else { "" };
+        let sign = if value < 0 { "-" } else { "" };
         let absolute = value.unsigned_abs();
         format!("{sign}{}.{:02}", absolute / 20, absolute % 20 * 5)
     };
@@ -7787,6 +7805,34 @@ mod tests {
                 && jsx.contains(r#""widowControl":false"#),
             "paragraph style properties must survive external DOCX reverse: {jsx}"
         );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_extended_style_run_properties() {
+        let style = Style::new("Emphasis", StyleType::Character).name("Emphasis");
+        let mut style = style;
+        style.run_property = docx_rs::RunProperty::new()
+            .disable_bold()
+            .disable_italic()
+            .strike()
+            .disable_dstrike()
+            .caps()
+            .vert_align(docx_rs::VertAlignType::SuperScript)
+            .spacing(-30);
+        let bytes = pack_docx(Docx::new().add_style(style));
+
+        let jsx = reverse_document(&bytes).expect("external style should reverse");
+        for expected in [
+            r#""bold":false"#,
+            r#""italic":false"#,
+            r#""strike":true"#,
+            r#""doubleStrike":false"#,
+            r#""caps":true"#,
+            r#""verticalAlign":"superscript""#,
+            r#""characterSpacing":-1.5"#,
+        ] {
+            assert!(jsx.contains(expected), "missing {expected} in {jsx}");
+        }
     }
 
     #[test]
