@@ -1632,6 +1632,64 @@ fn compile_style_run(mut style: Style, value: &Value, path: &str) -> Result<Styl
                 .space(space),
         );
     }
+    style = compile_style_run_effects(style, run, path)?;
+    Ok(style)
+}
+
+fn compile_style_run_effects(
+    mut style: Style,
+    run: &Map<String, Value>,
+    path: &str,
+) -> Result<Style> {
+    if let Some(value) = run.get("fitText") {
+        let fit_text = value
+            .as_object()
+            .ok_or_else(|| validation(path, "style run `fitText` must be an object"))?;
+        let width = fit_text
+            .get("width")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| validation(path, "style run `fitText.width` must be a number"))?;
+        let width = to_twips_usize(width, path)?;
+        let id = fit_text
+            .get("id")
+            .and_then(Value::as_u64)
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| validation(path, "style run `fitText.id` is out of range"))?;
+        style.run_property = std::mem::take(&mut style.run_property).fit_text(width, id);
+    }
+    if let Some(value) = run.get("stretch") {
+        let stretch = value
+            .as_i64()
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| validation(path, "style run `stretch` is out of range"))?;
+        style.run_property = std::mem::take(&mut style.run_property).stretch(stretch);
+    }
+    if run.get("specVanish").and_then(Value::as_bool) == Some(true) {
+        style.run_property = std::mem::take(&mut style.run_property).spec_vanish();
+    }
+    if let Some(value) = run.get("shading") {
+        let shading = value
+            .as_object()
+            .ok_or_else(|| validation(path, "style run `shading` must be an object"))?;
+        let fill = string_prop(shading, "fill", path)?
+            .ok_or_else(|| validation(path, "style run `shading` requires `fill`"))?;
+        let mut property = Shading::new().fill(fill.to_ascii_uppercase());
+        if let Some(color) = string_prop(shading, "color", path)? {
+            property = property.color(if color == "auto" {
+                "auto".to_owned()
+            } else {
+                color.to_ascii_uppercase()
+            });
+        }
+        if let Some(pattern) = string_prop(shading, "pattern", path)? {
+            let pattern = pattern
+                .parse::<ShdType>()
+                .map_err(|_| validation(path, "style run shading pattern is invalid"))?;
+            property = property.shd_type(pattern);
+        }
+        style.run_property = std::mem::take(&mut style.run_property).shading(property);
+    }
     Ok(style)
 }
 
@@ -8843,6 +8901,36 @@ mod tests {
                     .contains("<w:shd w:val=\"pct20\" w:color=\"336699\" w:fill=\"FFF2CC\" />")
                 && document.contains("<w:specVanish />"),
             "{document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_render_extended_style_run_effects() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {"styles": [{
+                "id": "Effects", "name": "Effects", "type": "character",
+                "run": {"fitText": {"width": 42, "id": 9}, "stretch": 125,
+                    "specVanish": true,
+                    "shading": {"fill": "FFF2CC", "color": "336699", "pattern": "pct20"}}
+            }]}, "children": [{"type": "Section", "props": {}, "children": []}]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part")
+            .read_to_string(&mut styles)
+            .expect("UTF-8 XML");
+        assert!(
+            styles.contains("<w:fitText w:val=\"840\" w:id=\"9\" />")
+                && styles.contains("<w:w w:val=\"125\" />")
+                && styles.contains("<w:specVanish />")
+                && styles
+                    .contains("<w:shd w:val=\"pct20\" w:color=\"336699\" w:fill=\"FFF2CC\" />"),
+            "{styles}"
         );
     }
 }

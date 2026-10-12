@@ -19,7 +19,9 @@ use quick_xml::{Reader, XmlVersion};
 use serde::Serialize;
 use serde_json::{Map, Number, Value};
 
-use crate::ir::{Child, IrEnvelope, Node, PAGE_NUMBER_CHAPTER_SEPARATORS, PAGE_NUMBER_FORMATS};
+use crate::ir::{
+    Child, IrEnvelope, Node, PAGE_NUMBER_CHAPTER_SEPARATORS, PAGE_NUMBER_FORMATS, SHADING_PATTERNS,
+};
 use crate::{Error, Result};
 
 /// JSX module plus sidecar files produced by external DOCX reverse conversion.
@@ -70,6 +72,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_character_indents = collect_style_character_indent_metadata(bytes)?;
     let style_suppress_line_numbers = collect_style_line_number_suppression_metadata(bytes)?;
     let style_paragraph_properties = collect_style_paragraph_xml_metadata(bytes)?;
+    let style_run_properties = collect_style_run_xml_metadata(bytes)?;
     let hyperlink_histories = collect_hyperlink_histories(bytes)?;
     let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let mut images = collect_package_images(bytes)?;
@@ -95,6 +98,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         style_character_indents,
         style_suppress_line_numbers,
         style_paragraph_properties,
+        style_run_properties,
         hyperlink_histories,
         ..Writer::default()
     };
@@ -264,6 +268,7 @@ struct Writer {
     style_character_indents: HashMap<String, BTreeMap<String, i64>>,
     style_suppress_line_numbers: HashMap<String, bool>,
     style_paragraph_properties: HashMap<String, Map<String, Value>>,
+    style_run_properties: HashMap<String, Map<String, Value>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -4135,6 +4140,157 @@ fn collect_style_paragraph_xml_metadata(
     Ok(result)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the event-state parser keeps style/run scope and strict diagnostics together"
+)]
+fn collect_style_run_xml_metadata(bytes: &[u8]) -> Result<HashMap<String, Map<String, Value>>> {
+    let xml = read_zip_text(bytes, "word/styles.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut current_style: Option<String> = None;
+    let mut in_paragraph_properties = false;
+    let mut in_run_properties = false;
+    let mut in_run_properties_change = false;
+    let mut result = HashMap::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"style" => {
+                current_style = xml_attribute(&reader, &element, b"styleId")?;
+            }
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"pPr" => {
+                in_paragraph_properties = current_style.is_some();
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"pPr" => {
+                in_paragraph_properties = false;
+            }
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"rPrChange" => {
+                in_run_properties_change = true;
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"rPrChange" => {
+                in_run_properties_change = false;
+            }
+            Ok(Event::Start(element))
+                if element.local_name().as_ref() == b"rPr" && !in_run_properties_change =>
+            {
+                in_run_properties = current_style.is_some() && !in_paragraph_properties;
+            }
+            Ok(Event::End(element))
+                if element.local_name().as_ref() == b"rPr" && !in_run_properties_change =>
+            {
+                in_run_properties = false;
+            }
+            Ok(Event::Start(element) | Event::Empty(element))
+                if in_run_properties && !in_run_properties_change && current_style.is_some() =>
+            {
+                let style_id = current_style.as_deref().unwrap_or_default();
+                let entry = result.entry(style_id.to_owned()).or_insert_with(Map::new);
+                match element.local_name().as_ref() {
+                    b"fitText" => {
+                        validate_style_xml_attributes(
+                            &element,
+                            &[b"val", b"id"],
+                            style_id,
+                            "fitText",
+                        )?;
+                        let raw_width = xml_attribute(&reader, &element, b"val")?
+                            .ok_or_else(|| Error::Reverse(format!("style `{style_id}` has w:fitText without w:val; add a positive twip width")))?;
+                        let width = raw_width.parse::<i64>().ok().filter(|value| *value > 0).ok_or_else(|| Error::Reverse(format!("style `{style_id}` has invalid w:fitText width `{raw_width}`; use a positive integer twip width")))?;
+                        let mut fit_text = Map::new();
+                        fit_text.insert("width".to_owned(), points_value(width)?);
+                        if let Some(id) = xml_attribute(&reader, &element, b"id")? {
+                            let id = id.parse::<u32>().map_err(|_| Error::Reverse(format!("style `{style_id}` has invalid w:fitText id `{id}`; use an unsigned 32-bit integer")))?;
+                            fit_text.insert("id".to_owned(), Value::Number(id.into()));
+                        }
+                        entry.insert("fitText".to_owned(), Value::Object(fit_text));
+                    }
+                    b"w" => {
+                        validate_style_xml_attributes(&element, &[b"val"], style_id, "w")?;
+                        let raw = xml_attribute(&reader, &element, b"val")?.ok_or_else(|| {
+                            Error::Reverse(format!(
+                                "style `{style_id}` has w:w without w:val; add a stretch percentage"
+                            ))
+                        })?;
+                        let value = raw.parse::<u32>().ok().filter(|value| (1..=600).contains(value)).ok_or_else(|| Error::Reverse(format!("style `{style_id}` has unsupported w:w value `{raw}`; use a stretch percentage from 1 through 600")))?;
+                        entry.insert("stretch".to_owned(), Value::Number(value.into()));
+                    }
+                    b"specVanish" => {
+                        validate_style_xml_attributes(&element, &[b"val"], style_id, "specVanish")?;
+                        let enabled = xml_on_off(&reader, &element)?;
+                        if !enabled {
+                            return Err(Error::Reverse(format!(
+                                "style `{style_id}` has disabled w:specVanish, which docx-jsx cannot represent because docx-rs exposes no explicit-off writer value; remove the property or preserve it outside the JSX round trip"
+                            )));
+                        }
+                        entry.insert("specVanish".to_owned(), Value::Bool(true));
+                    }
+                    b"shd" => {
+                        validate_style_xml_attributes(
+                            &element,
+                            &[b"val", b"color", b"fill"],
+                            style_id,
+                            "shd",
+                        )?;
+                        let fill = xml_attribute(&reader, &element, b"fill")?
+                            .ok_or_else(|| Error::Reverse(format!("style `{style_id}` has w:shd without w:fill; add a six-digit RGB fill")))?;
+                        if fill.len() != 6 || !fill.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                            return Err(Error::Reverse(format!(
+                                "style `{style_id}` has unrepresentable w:shd fill `{fill}`; use six-digit RGB"
+                            )));
+                        }
+                        let mut shading = Map::new();
+                        shading.insert("fill".to_owned(), Value::String(fill.to_ascii_uppercase()));
+                        if let Some(color) = xml_attribute(&reader, &element, b"color")? {
+                            if color != "auto"
+                                && (color.len() != 6
+                                    || !color.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                            {
+                                return Err(Error::Reverse(format!(
+                                    "style `{style_id}` has unrepresentable w:shd color `{color}`; use `auto` or six-digit RGB"
+                                )));
+                            }
+                            shading.insert(
+                                "color".to_owned(),
+                                Value::String(if color == "auto" {
+                                    color
+                                } else {
+                                    color.to_ascii_uppercase()
+                                }),
+                            );
+                        }
+                        if let Some(pattern) = xml_attribute(&reader, &element, b"val")? {
+                            if !SHADING_PATTERNS.contains(&pattern.as_str()) {
+                                return Err(Error::Reverse(format!(
+                                    "style `{style_id}` has unsupported w:shd pattern `{pattern}`; use one of the documented ShadedText patterns"
+                                )));
+                            }
+                            shading.insert("pattern".to_owned(), Value::String(pattern));
+                        }
+                        entry.insert("shading".to_owned(), Value::Object(shading));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"style" => {
+                current_style = None;
+                in_paragraph_properties = false;
+                in_run_properties = false;
+                in_run_properties_change = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/styles.xml run properties at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(result)
+}
+
 fn style_xml_on_off(
     reader: &Reader<&[u8]>,
     element: &BytesStart<'_>,
@@ -5939,6 +6095,7 @@ fn reverse_styles_attribute(
                 writer.style_character_indents.get(&style.style_id),
                 writer.style_suppress_line_numbers.get(&style.style_id),
                 writer.style_paragraph_properties.get(&style.style_id),
+                writer.style_run_properties.get(&style.style_id),
             )
         })
         .collect::<Result<Vec<_>>>()?
@@ -6558,6 +6715,7 @@ fn reverse_style_definition(
     raw_character_indentation: Option<&BTreeMap<String, i64>>,
     raw_suppress_line_numbers: Option<&bool>,
     raw_paragraph_properties: Option<&Map<String, Value>>,
+    raw_run_properties: Option<&Map<String, Value>>,
 ) -> Result<Option<Value>> {
     let source = json(style)?;
     let mut definition = Map::new();
@@ -6611,7 +6769,12 @@ fn reverse_style_definition(
     {
         definition.insert("unhideWhenUsed".to_owned(), Value::Bool(true));
     }
-    if let Some(mut run) = reverse_run_properties(&source["runProperty"])? {
+    let mut run_properties = reverse_run_properties(&source["runProperty"])?.unwrap_or_default();
+    if let Some(raw_run_properties) = raw_run_properties {
+        run_properties.extend(raw_run_properties.clone());
+    }
+    if !run_properties.is_empty() {
+        let mut run = run_properties;
         apply_theme_color_to_map(&mut run, theme);
         definition.insert("run".to_owned(), Value::Object(run));
     } else if let Some(theme) = theme.filter(|theme| {
@@ -7832,6 +7995,81 @@ mod tests {
             r#""characterSpacing":-1.5"#,
         ] {
             assert!(jsx.contains(expected), "missing {expected} in {jsx}");
+        }
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_extended_style_run_effects() {
+        let packed = pack_docx(
+            Docx::new().add_style(Style::new("Effects", StyleType::Character).name("Effects")),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part")
+            .read_to_string(&mut styles)
+            .expect("styles XML");
+        let style_marker = styles
+            .find(r#"w:styleId="Effects""#)
+            .expect("custom style should be present");
+        let style_end = styles[style_marker..]
+            .find("</w:style>")
+            .map(|offset| style_marker + offset)
+            .expect("style end should be present");
+        styles.insert_str(
+            style_end,
+            r#"<w:pPr><w:rPr><w:w w:val="200"/></w:rPr></w:pPr><w:rPr><w:rPrChange><w:rPr><w:w w:val="250"/></w:rPr></w:rPrChange><w:fitText w:val="840" w:id="9"/><w:w w:val="125"/><w:specVanish/><w:shd w:val="pct20" w:color="336699" w:fill="FFF2CC"/></w:rPr>"#,
+        );
+        let modified = rewrite_package_parts(&packed, &[("word/styles.xml", styles.as_bytes())]);
+        let jsx = reverse_document(&modified).expect("external style effects should reverse");
+        for expected in [
+            r#""fitText":{"width":42,"id":9}"#,
+            r#""stretch":125"#,
+            r#""specVanish":true"#,
+            r#""shading":{"fill":"FFF2CC","color":"336699","pattern":"pct20"}"#,
+        ] {
+            assert!(jsx.contains(expected), "missing {expected} in {jsx}");
+        }
+    }
+
+    #[test]
+    fn reverse_should_explain_unrepresentable_style_run_effects() {
+        for (properties, expected) in [
+            (
+                r#"<w:w w:val="700"/>"#,
+                "stretch percentage from 1 through 600",
+            ),
+            (r#"<w:specVanish w:val="false"/>"#, "cannot represent"),
+            (
+                r#"<w:shd w:val="waves" w:fill="FFF2CC"/>"#,
+                "unsupported w:shd pattern",
+            ),
+        ] {
+            let packed = pack_docx(
+                Docx::new().add_style(Style::new("Effects", StyleType::Character).name("Effects")),
+            );
+            let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+            let mut styles = String::new();
+            archive
+                .by_name("word/styles.xml")
+                .expect("styles part")
+                .read_to_string(&mut styles)
+                .expect("styles XML");
+            let style_marker = styles
+                .find(r#"w:styleId="Effects""#)
+                .expect("custom style should be present");
+            let style_end = styles[style_marker..]
+                .find("</w:style>")
+                .map(|offset| style_marker + offset)
+                .expect("style end should be present");
+            styles.insert_str(style_end, &format!("<w:rPr>{properties}</w:rPr>"));
+            let modified =
+                rewrite_package_parts(&packed, &[("word/styles.xml", styles.as_bytes())]);
+            let error = reverse_document(&modified)
+                .expect_err("unrepresentable external style must be rejected");
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(error.to_string().contains("style `Effects`"), "{error}");
         }
     }
 

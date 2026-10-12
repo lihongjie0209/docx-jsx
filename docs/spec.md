@@ -259,12 +259,20 @@ error instead of a silent drop.
   definition requires unique non-empty `id`, non-empty `name`, and `type` of
   `paragraph`, `character`, `numbering`, or `table`. Optional metadata is
   `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
-  `unhideWhenUsed`. `run?: {font,fonts,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,strike,doubleStrike,caps,underline,hidden,verticalAlign,characterSpacing,textBorder}`
+  `unhideWhenUsed`. `run?: {font,fonts,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,strike,doubleStrike,caps,underline,hidden,verticalAlign,characterSpacing,fitText,stretch,specVanish,shading,textBorder}`
   uses the same units and color rules as `Run`. `strike` and
   `doubleStrike` cannot both be true; `verticalAlign` is `baseline`,
   `superscript`, or `subscript`; `characterSpacing` is a signed point value.
   False `bold`, `italic`, `strike`, `doubleStrike`, and `caps` values are
   retained as explicit off properties, rather than omitted from the style.
+  `fitText:{width,id?}` uses a positive point width and optional unsigned
+  32-bit integer id; `stretch` is an integer percentage from 1 through 600;
+  `specVanish` only accepts `true` because docx-rs has no explicit-off writer
+  value; `shading:{fill,color?,pattern?}` requires six-digit RGB `fill`, accepts
+  optional six-digit RGB or `auto` for `color`, and uses the same OOXML pattern
+  names as `ShadedText`. Reverse conversion reads these values from the style's
+  direct `w:rPr` XML; unsupported foreground/fill forms and disabled
+  `w:specVanish` fail with a repair suggestion.
   `paragraph?: {align,textAlign,snapToGrid,keepNext,keepLines,pageBreakBefore,widowControl,bidi,shading,suppressLineNumbers,spacingBefore,spacingAfter,lineSpacing,spacingBeforeLines,spacingAfterLines,lineRule,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
   uses point dimensions; `firstLine` and `hanging` are mutually exclusive.
   `keepNext`, `keepLines`, `pageBreakBefore`, `widowControl`, `bidi`, and

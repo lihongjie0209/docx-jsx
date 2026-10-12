@@ -2479,6 +2479,10 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
             "verticalAlign",
             "characterSpacing",
             "textBorder",
+            "fitText",
+            "stretch",
+            "specVanish",
+            "shading",
         ],
     )?;
     if let Some(value) = run.get("size") {
@@ -2536,8 +2540,74 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
                 validation(path, "style run `characterSpacing` must be a finite number")
             })?;
     }
+    validate_style_run_effects(run, path)?;
     if let Some(border) = run.get("textBorder") {
         validate_style_border(border, path, true)?;
+    }
+    Ok(())
+}
+
+fn validate_style_run_effects(run: &Map<String, Value>, path: &str) -> Result<()> {
+    if let Some(value) = run.get("fitText") {
+        let fit_text = value
+            .as_object()
+            .ok_or_else(|| validation(path, "style run `fitText` must be an object"))?;
+        validate_object_keys(fit_text, path, &["width", "id"])?;
+        let width = fit_text
+            .get("width")
+            .ok_or_else(|| validation(path, "style run `fitText` requires `width`"))?;
+        require_number(width, path, "style run fitText.width", true)?;
+        if let Some(id) = fit_text.get("id")
+            && id.as_u64().is_none_or(|value| value > u64::from(u32::MAX))
+        {
+            return Err(validation(
+                path,
+                "style run `fitText.id` must be an unsigned 32-bit integer",
+            ));
+        }
+    }
+    if let Some(value) = run.get("stretch")
+        && value
+            .as_u64()
+            .is_none_or(|value| !(1..=600).contains(&value))
+    {
+        return Err(validation(
+            path,
+            "style run `stretch` must be an integer from 1..=600",
+        ));
+    }
+    if let Some(value) = run.get("specVanish")
+        && value.as_bool() != Some(true)
+    {
+        return Err(validation(
+            path,
+            "style run `specVanish` only accepts `true`; docx-rs has no explicit-off writer value",
+        ));
+    }
+    if let Some(value) = run.get("shading") {
+        let shading = value
+            .as_object()
+            .ok_or_else(|| validation(path, "style run `shading` must be an object"))?;
+        validate_object_keys(shading, path, &["fill", "color", "pattern"])?;
+        let fill = shading
+            .get("fill")
+            .ok_or_else(|| validation(path, "style run `shading` requires six-digit RGB `fill`"))?;
+        validate_rgb(fill, path, "style run shading `fill`")?;
+        if let Some(color) = shading.get("color") {
+            if color.as_str() == Some("auto") {
+                // `auto` is a valid OOXML foreground color.
+            } else {
+                validate_rgb(color, path, "style run shading `color`")?;
+            }
+        }
+        if let Some(pattern) = shading.get("pattern") {
+            let pattern = pattern
+                .as_str()
+                .ok_or_else(|| validation(path, "style run shading `pattern` must be a string"))?;
+            if !SHADING_PATTERNS.contains(&pattern) {
+                return Err(validation(path, "style run shading `pattern` is invalid"));
+            }
+        }
     }
     Ok(())
 }
@@ -3846,7 +3916,7 @@ fn validate_shaded_text(node: &Node, path: &str) -> Result<()> {
     Ok(())
 }
 
-const SHADING_PATTERNS: &[&str] = &[
+pub(crate) const SHADING_PATTERNS: &[&str] = &[
     "nil",
     "clear",
     "solid",
@@ -6430,6 +6500,42 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"keepNext":true,"keepLines":true,"pageBreakBefore":true,"widowControl":false,"bidi":true,"shading":"DDEEFF","adjustRightIndent":1,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         );
         ir.validate().expect("custom style should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_extended_style_run_effects() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Effects","name":"Effects","type":"character","run":{"fitText":{"width":42,"id":9},"stretch":125,"specVanish":true,"shading":{"fill":"FFF2CC","color":"336699","pattern":"pct20"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        );
+        ir.validate()
+            .expect("extended style run effects should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_extended_style_run_effects() {
+        for (run, expected) in [
+            (r#"{"fitText":{"width":0}}"#, "positive"),
+            (r#"{"fitText":{"width":42,"extra":1}}"#, "unknown property"),
+            (r#"{"stretch":0}"#, "1..=600"),
+            (r#"{"stretch":601}"#, "1..=600"),
+            (r#"{"specVanish":false}"#, "only accepts `true`"),
+            (
+                r#"{"shading":{"color":"336699"}}"#,
+                "requires six-digit RGB `fill`",
+            ),
+            (
+                r#"{"shading":{"fill":"FFF2CC","pattern":"waves"}}"#,
+                "invalid",
+            ),
+        ] {
+            let ir = parse(&format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{"styles":[{{"id":"Effects","name":"Effects","type":"character","run":{run}}}]}},"children":[{{"type":"Section","props":{{}},"children":[]}}]}}}}"#
+            ));
+            let error = ir
+                .validate()
+                .expect_err("invalid style run effect must fail");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]
