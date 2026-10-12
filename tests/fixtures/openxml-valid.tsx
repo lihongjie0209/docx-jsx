@@ -1,5 +1,6 @@
 import {
   Bold,
+  Bookmark,
   ContentControl,
   Document,
   Comment,
@@ -21,6 +22,7 @@ import {
   TableOfContents,
   TableOfFigures,
   TableOfEntries,
+  TocItem,
   TableRow,
 } from "docx-jsx";
 
@@ -96,12 +98,14 @@ export default (
         preserveNewLine
         useAppliedParagraphLineLevel
         hideTabAndPageNumbersInWebview
-      />
+      >
+        <TocItem text="Open XML validation fixture" bookmark="validation-heading" />
+      </TableOfContents>
       <TableOfFigures label="Figure" separator="-" dirty={false} />
       <TableOfEntries identifier="legal" tcFieldLevelRange={{ start: 1, end: 2 }} />
       <Paragraph><Deleted author="Open XML SDK"><Comment text="Deleted text review" author="Agent">removed</Comment></Deleted></Paragraph>
       <Paragraph><Deleted author="Open XML SDK"><Run><DeletedInstruction instruction={'HYPERLINK "https://example.com"'} /></Run></Deleted></Paragraph>
-      <Heading level={1}>Open XML validation fixture</Heading>
+      <Bookmark name="validation-heading"><Heading level={1}>Open XML validation fixture</Heading></Bookmark>
       <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.
       </Paragraph>

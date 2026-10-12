@@ -40,6 +40,7 @@ export const InlineBookmark = host("InlineBookmark");
 export const TableOfContents = host("TableOfContents");
 export const TableOfFigures = host("TableOfFigures");
 export const TableOfEntries = host("TableOfEntries");
+export const TocItem = host("TocItem");
 export const TocEntry = host("TocEntry");
 export const IndexEntry = host("IndexEntry");
 export const Comment = host("Comment");

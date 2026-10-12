@@ -103,8 +103,8 @@ children are text. Pure whitespace between structural elements is ignored.
 | `List` | one or more `ListItem` |
 | `ListItem` | `Run`, `Text`, `Break`, `Image`, string, number |
 | `Bookmark` | `Heading`, `Paragraph`, `Caption`, `Table`, `List` |
-| `TableOfContents` | none |
-| `TableOfFigures`, `TableOfEntries` | none |
+| `TableOfContents`, `TableOfFigures`, `TableOfEntries` | `TocItem` |
+| `TocItem` | none |
 | `Index`, `IndexEntry` | none |
 
 Text, breaks, and images placed directly in a paragraph are wrapped in an
@@ -681,7 +681,13 @@ error instead of a silent drop.
   `dirty?: boolean`, and `alias?: string`. Defaults to
   levels 1–3, hyperlinks enabled, and automatic refresh requested. A section
   accepts at most one TOC, placed before its body content (headers and footers
-  may precede it).
+  may precede it. Optional `TocItem` children provide a static entry row with
+  required non-empty `text` and `bookmark`, optional `level?: 1..9` (default
+  `1`), optional `pageRef` display text (default `"1"`), and optional positive
+  `tabPosition` in points (default `420`, maximum `1584`, corresponding to the
+  OOXML maximum of `31680` twips). The compiler emits
+  a native `w:hyperlink` entry and a `PAGEREF` field targeting `bookmark`;
+  reverse restores the item from the external DOCX without the IR manifest.
 - `TableOfFigures`: required non-empty `label` (for example `Figure`),
   `includeLabelAndNumber?: boolean`, `separator?: string`,
   `entryBookmarkName?: string`, `entryAndPageNumberSeparator?: string`,
@@ -692,7 +698,8 @@ error instead of a silent drop.
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `hyperlinks?: boolean`,
   `dirty?: boolean`, and `alias?: string`. It emits a native TOC field filtered
-  by caption/SEQ label.
+  by caption/SEQ label. It also accepts `TocItem` children with the same
+  contract as `TableOfContents`.
 - `TableOfEntries`: required non-empty `identifier`, plus `hyperlinks?`,
   `tcFieldLevelRange?: {start:1..9,end:1..9}`,
   `omitPageNumbersLevelRange?: {start:1..9,end:1..9}`,
@@ -704,6 +711,8 @@ error instead of a silent drop.
   `useAppliedParagraphLineLevel?: boolean`,
   `hideTabAndPageNumbersInWebview?: boolean`, `dirty?`, and `alias?`. It emits
   a native custom TOC containing `TocEntry` fields with the same `identifier`.
+  It also accepts `TocItem` children with the same contract as
+  `TableOfContents`.
   Range starts must be no greater than ends; levels are integers from 1 to 9.
   Style names are non-empty and cannot contain commas or quotes, matching the
   OOXML `\\t` field-argument syntax. The Boolean switches default to false at

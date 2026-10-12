@@ -42,6 +42,7 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("# docx-jsx v1 specification"))
         .stdout(predicate::str::contains("## Component tree"))
         .stdout(predicate::str::contains("`IndexEntry`"))
+        .stdout(predicate::str::contains("`TocItem`"))
         .stdout(predicate::str::contains("`creator?: string`"))
         .stdout(predicate::str::contains("`revision?: integer`"))
         .stdout(predicate::str::contains("`documentProtection?:"))
@@ -70,6 +71,11 @@ fn spec_should_output_machine_readable_json_schema() {
     let schema: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
     assert_eq!(schema["title"], "docx-jsx IR v1");
+    assert!(
+        schema["$defs"]["node"]["properties"]["type"]["enum"]
+            .as_array()
+            .is_some_and(|components| components.contains(&serde_json::json!("TocItem")))
+    );
 }
 
 #[test]
@@ -899,13 +905,13 @@ fn cli_should_compile_advanced_document_components() {
         .expect("image fixture should write");
     fs::write(
         &input,
-        r##"import { Document, Section, Header, Footer, Heading, Caption, Index, IndexEntry, Paragraph, Hyperlink, PageNumber, TotalPages, List, ListItem, Run, Image, Bookmark, Table, TableRow, TableCell, TableOfContents, TableOfFigures, TableOfEntries, TocEntry, Comment, Footnote, Tab, TabStop, CarriageReturn, NonBreakingSpace, SoftHyphen, NonBreakingHyphen, Symbol, Bold, Italic, Underline, StrikeThrough, Superscript, Subscript, AllCaps, HiddenText, SpecialHiddenText, DoubleStrike, SpacedText, ScaledText, FitText, BorderedText, ShadedText, Inserted, Deleted, DeletedInstruction, MovedFrom, MovedTo, PageReference, PositionalTab, ContentControl, Field, DateField, TimeField, FileNameField, AuthorField, TitleField, SubjectField, SequenceField, ReferenceField, MergeField, DocumentPropertyField, FormulaField } from "docx-jsx";
+        r##"import { Document, Section, Header, Footer, Heading, Caption, Index, IndexEntry, Paragraph, Hyperlink, PageNumber, TotalPages, List, ListItem, Run, Image, Bookmark, Table, TableRow, TableCell, TableOfContents, TableOfFigures, TableOfEntries, TocItem, TocEntry, Comment, Footnote, Tab, TabStop, CarriageReturn, NonBreakingSpace, SoftHyphen, NonBreakingHyphen, Symbol, Bold, Italic, Underline, StrikeThrough, Superscript, Subscript, AllCaps, HiddenText, SpecialHiddenText, DoubleStrike, SpacedText, ScaledText, FitText, BorderedText, ShadedText, Inserted, Deleted, DeletedInstruction, MovedFrom, MovedTo, PageReference, PositionalTab, ContentControl, Field, DateField, TimeField, FileNameField, AuthorField, TitleField, SubjectField, SequenceField, ReferenceField, MergeField, DocumentPropertyField, FormulaField } from "docx-jsx";
 export default <Document defaultCharacterSpacing={0.5} defaultLineSpacing={{before: 2, after: 6, line: 14, beforeLines: 100, afterLines: 200, lineRule: "atLeast"}} createdAt="2026-08-14T00:00:00Z" updatedAt="2026-08-15T00:00:00Z" customProperties={{Project: "Apollo"}} documentId="01234567-89AB-CDEF-0123-456789ABCDEF" defaultTabStop={36} documentVariables={{Customer: "Ada"}} evenAndOddHeaders adjustLineHeightInTable characterSpacingControl="compressPunctuation" webExtensions={[{id: "7f33b723-fb58-4524-8733-dbedc4b7c095", referenceId: "office-addin", version: "1.0.0.0", store: "developer", storeType: "Registry", properties: {mode: "review"}}, {id: "11111111-2222-3333-4444-555555555555", referenceId: "second", version: "2.0", store: "OMEX", storeType: "Marketplace"}]} customXmlItems={[{id: "06AC5857-5C65-A94A-BCEC-37356A209BC3", xml: "<customer><name>Ada</name></customer>"}, {id: "11111111-AAAA-BBBB-CCCC-222222222222", xml: "<order id=\"42\"/>"}]} styles={[{id: "BodyBase", name: "Body Base", type: "paragraph", paragraph: {spacingAfter: 6}}, {id: "Body", name: "Body", type: "paragraph", basedOn: "BodyBase", next: "Body", link: "BodyChar", run: {font: "Noto Sans CJK SC", size: 12}}, {id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: {italic: true}}, {id: "ReportTitle", name: "Report Title", type: "paragraph", basedOn: "Normal", quickFormat: true, run: {font: "Noto Sans CJK SC", size: 18, color: "336699", bold: true, textBorder: {style: "double", size: 1, color: "336699", space: 2}}, paragraph: {align: "center", spacingAfter: 12, spacingBeforeLines: 50, spacingAfterLines: 75, lineRule: "exact", outlineLevel: 1}}, {id: "ReportTable", name: "Report Table", type: "table", table: {align: "center", margins: {top: 1, right: 2, bottom: 3, left: 4}, border: {style: "double", size: 1, color: "336699"}}, cell: {verticalAlign: "center", shading: "FFF2CC", border: {style: "dotted", size: 0.5, color: "993366"}}}]}><Section titlePage textDirection="tbRl" documentGrid={{type: "linesAndChars", linePitch: 18, charSpace: -10}} pageNumbering={{start: 3, chapterStyle: "1"}}>
   <Header type="first"><Paragraph>Report header <Image src="pixel.png" width={12} height={12} /></Paragraph></Header>
   <Footer type="even"><Paragraph>Page <PageNumber /> of <TotalPages /></Paragraph></Footer>
-  <TableOfContents startLevel={1} endLevel={2} alias="Contents" />
-  <TableOfFigures label="Figure" alias="Figures" />
-  <TableOfEntries identifier="manual" alias="Manual entries" />
+  <TableOfContents startLevel={1} endLevel={2} alias="Contents"><TocItem text="Introduction" bookmark="intro" /></TableOfContents>
+  <TableOfFigures label="Figure" alias="Figures"><TocItem text="Architecture" bookmark="intro" level={1} /></TableOfFigures>
+  <TableOfEntries identifier="manual" alias="Manual entries"><TocItem text="Rust" bookmark="intro" pageRef="4" /></TableOfEntries>
   <Paragraph style="Body"><Hyperlink href="https://example.com" history><Run style="BodyChar" underline color="2E74B5" themeColor="accent1" themeShade="BF" bold={false} italic={false} strike={false} doubleStrike>Example</Run></Hyperlink></Paragraph>
   <Paragraph><Image src="pixel.png" width={48} height={32} rotate={45} floating allowOverlap positionH="right" positionV={18.5} relativeFromH="page" relativeFromV="paragraph" distanceTop={2} distanceBottom={3} distanceLeft={4} distanceRight={5} relativeHeight={251658240} /></Paragraph>
   <Bookmark name="intro"><Heading level={1} font="Noto Sans CJK SC" size={16}>Introduction</Heading><Paragraph style="Quote" snapToGrid={false} widowControl font="Noto Sans CJK SC" size={12} bold italic={false} color="1a2B3c" characterSpacing={0.5}>Bookmarked text</Paragraph></Bookmark>

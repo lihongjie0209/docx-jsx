@@ -159,6 +159,7 @@ pub enum NodeKind {
     TableOfContents,
     TableOfFigures,
     TableOfEntries,
+    TocItem,
     TocEntry,
     IndexEntry,
     Comment,
@@ -236,6 +237,7 @@ impl NodeKind {
             Self::TableOfContents => "TableOfContents",
             Self::TableOfFigures => "TableOfFigures",
             Self::TableOfEntries => "TableOfEntries",
+            Self::TocItem => "TocItem",
             Self::TocEntry => "TocEntry",
             Self::IndexEntry => "IndexEntry",
             Self::Comment => "Comment",
@@ -634,6 +636,7 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
             return Err(validation(path, "DeletedInstruction cannot have children"));
         }
     }
+    validate_toc_item(node, path)?;
 
     for (index, child) in node.children.iter().enumerate() {
         match child {
@@ -739,6 +742,62 @@ fn validate_deleted_children(node: &Node, path: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_toc_item(node: &Node, path: &str) -> Result<()> {
+    if node.kind != NodeKind::TocItem {
+        return Ok(());
+    }
+    if node
+        .props
+        .get("text")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(validation(path, "TocItem requires non-empty `text`"));
+    }
+    let bookmark = node.props.get("bookmark").and_then(Value::as_str);
+    if bookmark.is_none_or(str::is_empty) {
+        return Err(validation(path, "TocItem requires non-empty `bookmark`"));
+    }
+    if bookmark.is_some_and(|value| {
+        value
+            .chars()
+            .any(|character| character.is_whitespace() || matches!(character, '"' | '\\'))
+    }) {
+        return Err(validation(
+            path,
+            "TocItem `bookmark` cannot contain whitespace, quotes, or backslashes because it is an unquoted PAGEREF field argument",
+        ));
+    }
+    if node
+        .props
+        .get("level")
+        .is_some_and(|value| value.as_u64().is_none_or(|level| !(1..=9).contains(&level)))
+    {
+        return Err(validation(
+            path,
+            "TocItem `level` must be an integer from 1 to 9",
+        ));
+    }
+    if node
+        .props
+        .get("pageRef")
+        .is_some_and(|value| !value.is_string())
+    {
+        return Err(validation(path, "TocItem `pageRef` must be a string"));
+    }
+    if node.props.get("tabPosition").is_some_and(|value| {
+        value
+            .as_f64()
+            .is_none_or(|position| !position.is_finite() || position <= 0.0 || position > 1584.0)
+    }) {
+        return Err(validation(
+            path,
+            "TocItem `tabPosition` must be a positive point value no greater than 1584 (the OOXML 31680-twip limit); reduce the position to keep the page-number tab inside the page width",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_child_node(parent: NodeKind, child: &Node, path: &str, index: usize) -> Result<()> {
     if !allows(parent, child.kind) {
         return Err(validation(
@@ -772,6 +831,9 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
                 | NodeKind::TableOfEntries
                 | NodeKind::ContentControl
         ),
+        NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries => {
+            child == NodeKind::TocItem
+        }
         NodeKind::Paragraph | NodeKind::Heading | NodeKind::Caption => {
             allows_paragraph_child(child)
         }
@@ -785,9 +847,6 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         | NodeKind::Image
         | NodeKind::PageNumber
         | NodeKind::TotalPages
-        | NodeKind::TableOfContents
-        | NodeKind::TableOfFigures
-        | NodeKind::TableOfEntries
         | NodeKind::TocEntry
         | NodeKind::Index
         | NodeKind::IndexEntry
@@ -796,7 +855,8 @@ fn allows(parent: NodeKind, child: NodeKind) -> bool {
         | NodeKind::Symbol
         | NodeKind::PageReference
         | NodeKind::PositionalTab
-        | NodeKind::DeletedInstruction => false,
+        | NodeKind::DeletedInstruction
+        | NodeKind::TocItem => false,
         NodeKind::Bold
         | NodeKind::Italic
         | NodeKind::Underline
@@ -1106,6 +1166,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         ],
         NodeKind::Bookmark | NodeKind::InlineBookmark => &["name"],
         NodeKind::DeletedInstruction => &["instruction"],
+        NodeKind::TocItem => &["text", "bookmark", "level", "pageRef", "tabPosition"],
         NodeKind::TableOfContents => &[
             "startLevel",
             "endLevel",
@@ -5338,6 +5399,40 @@ mod tests {
             r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"startLevel":1,"endLevel":3},"children":[]},{"type":"Bookmark","props":{"name":"intro"},"children":[{"type":"Heading","props":{"level":1},"children":["Intro"]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_accept_toc_item_with_bookmark_and_page_placeholder() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocItem","props":{"text":"Overview","bookmark":"overview","level":2,"pageRef":"7"},"children":[]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("TOC item with a bookmark should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_toc_item_without_bookmark() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocItem","props":{"text":"Overview"},"children":[]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("TocItem requires a target bookmark");
+        assert!(
+            error.to_string().contains("requires non-empty `bookmark`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_toc_item_tab_position_outside_openxml_range() {
+        let error = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocItem","props":{"text":"Overview","bookmark":"overview","tabPosition":1600},"children":[]}]}]}]}}"#,
+        )
+        .validate()
+        .expect_err("out-of-range tab stop must fail validation");
+        assert!(error.to_string().contains("31680-twip limit"));
+        assert!(error.to_string().contains("reduce the position"));
     }
 
     #[test]

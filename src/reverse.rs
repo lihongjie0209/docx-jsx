@@ -686,11 +686,13 @@ impl Writer {
                 start,
                 end,
                 attributes,
+                items,
             } => {
-                self.empty(
+                self.index_with_items(
                     "TableOfContents",
                     depth,
                     &format!(" startLevel={{{start}}} endLevel={{{end}}}{attributes}"),
+                    items,
                 );
             }
             IndexField::Figures {
@@ -698,6 +700,7 @@ impl Writer {
                 include_label_and_number,
                 separator,
                 attributes,
+                items,
             } => {
                 let mut properties = attr("label", label);
                 if !include_label_and_number {
@@ -707,17 +710,53 @@ impl Writer {
                     properties.push_str(&attr("separator", separator));
                 }
                 properties.push_str(attributes);
-                self.empty("TableOfFigures", depth, &properties);
+                self.index_with_items("TableOfFigures", depth, &properties, items);
             }
             IndexField::Entries {
                 identifier,
                 attributes,
+                items,
             } => {
                 let mut properties = attr("identifier", identifier);
                 properties.push_str(attributes);
-                self.empty("TableOfEntries", depth, &properties);
+                self.index_with_items("TableOfEntries", depth, &properties, items);
             }
         }
+    }
+
+    fn index_with_items(
+        &mut self,
+        component: &'static str,
+        depth: usize,
+        attributes: &str,
+        items: &[TocItemField],
+    ) {
+        if items.is_empty() {
+            self.empty(component, depth, attributes);
+            return;
+        }
+        self.components.insert(component);
+        self.line(depth, &format!("<{component}{attributes}>"));
+        for item in items {
+            self.components.insert("TocItem");
+            let mut attributes = attr("text", &item.text);
+            attributes.push_str(&attr("bookmark", &item.bookmark));
+            if item.level != 1 {
+                let _ = write!(attributes, " level={{{}}}", item.level);
+            }
+            if item.page_ref != "1" {
+                attributes.push_str(&attr("pageRef", &item.page_ref));
+            }
+            if item.tab_position != 8_400 {
+                let _ = write!(
+                    attributes,
+                    " tabPosition={{{}}}",
+                    format_twips_as_points(i64::from(item.tab_position))
+                );
+            }
+            self.line(depth + 1, &format!("<TocItem{attributes} />"));
+        }
+        self.line(depth, &format!("</{component}>"));
     }
 
     fn block_content_control(&mut self, tag: &StructuredDataTag, depth: usize) -> Result<()> {
@@ -2412,17 +2451,29 @@ enum IndexField {
         start: u64,
         end: u64,
         attributes: String,
+        items: Vec<TocItemField>,
     },
     Figures {
         label: String,
         include_label_and_number: bool,
         separator: Option<String>,
         attributes: String,
+        items: Vec<TocItemField>,
     },
     Entries {
         identifier: String,
         attributes: String,
+        items: Vec<TocItemField>,
     },
+}
+
+#[derive(Debug)]
+struct TocItemField {
+    text: String,
+    bookmark: String,
+    level: u64,
+    page_ref: String,
+    tab_position: u32,
 }
 
 fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
@@ -2430,6 +2481,12 @@ fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
     let Some(mut index) = parse_toc_instruction(&instruction)? else {
         return Ok(None);
     };
+    let items = toc_items_from_sdt(tag)?;
+    match &mut index {
+        IndexField::Contents { items: target, .. }
+        | IndexField::Figures { items: target, .. }
+        | IndexField::Entries { items: target, .. } => *target = items,
+    }
     let attributes = match &mut index {
         IndexField::Contents { attributes, .. }
         | IndexField::Figures { attributes, .. }
@@ -2446,6 +2503,236 @@ fn index_from_sdt(tag: &StructuredDataTag) -> Result<Option<IndexField>> {
         }
     }
     Ok(Some(index))
+}
+
+fn toc_items_from_sdt(tag: &StructuredDataTag) -> Result<Vec<TocItemField>> {
+    let mut items = Vec::new();
+    for child in &tag.children {
+        match child {
+            StructuredDataTagChild::Paragraph(paragraph) => {
+                if let Some(item) = toc_item_from_paragraph(paragraph)? {
+                    items.push(item);
+                }
+            }
+            StructuredDataTagChild::Table(_) => {
+                return Err(Error::Reverse(
+                    "table content inside an index control cannot be represented as `TocItem`; remove the table or use only static TOC item rows"
+                        .to_owned(),
+                ));
+            }
+            StructuredDataTagChild::StructuredDataTag(_)
+            | StructuredDataTagChild::Run(_)
+            | StructuredDataTagChild::BookmarkStart(_)
+            | StructuredDataTagChild::BookmarkEnd(_)
+            | StructuredDataTagChild::CommentStart(_)
+            | StructuredDataTagChild::CommentEnd(_) => {
+                return Err(Error::Reverse(
+                    "non-paragraph content inside an index control cannot be represented; keep static entries as `ToCItem` rows and remove unsupported controls or markers"
+                        .to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(items)
+}
+
+fn toc_item_from_paragraph(paragraph: &docx_rs::Paragraph) -> Result<Option<TocItemField>> {
+    let mut runs = Vec::new();
+    let mut anchors = Vec::new();
+    collect_toc_item_runs(&paragraph.children, &mut runs, &mut anchors)?;
+    let mut text = String::new();
+    let mut bookmark = None;
+    let mut page_ref = String::new();
+    let mut in_page_ref = false;
+    let mut saw_page_ref_text = false;
+    for run in runs {
+        for child in &run.children {
+            match child {
+                RunChild::InstrTextString(instruction)
+                    if instruction.trim_start().starts_with("PAGEREF") =>
+                {
+                    if bookmark.is_some() {
+                        return Err(Error::Reverse(
+                            "index row contains multiple PAGEREF fields; split it into one entry per paragraph"
+                                .to_owned(),
+                        ));
+                    }
+                    bookmark = Some(parse_toc_item_pageref(instruction)?);
+                    in_page_ref = true;
+                }
+                RunChild::InstrTextString(instruction)
+                    if instruction.trim_start().starts_with("TOC") => {}
+                RunChild::InstrTextString(instruction) => {
+                    return Err(Error::Reverse(format!(
+                        "static index row contains unsupported field instruction `{instruction}`; use the TOC field and one PAGEREF per entry"
+                    )));
+                }
+                RunChild::FieldChar(field)
+                    if field.field_char_type == docx_rs::FieldCharType::End && in_page_ref =>
+                {
+                    in_page_ref = false;
+                }
+                RunChild::Text(value) if in_page_ref => {
+                    page_ref.push_str(&value.text);
+                    saw_page_ref_text = true;
+                }
+                RunChild::Text(value) => text.push_str(&value.text),
+                RunChild::Tab(_) | RunChild::FieldChar(_) => {}
+                child => {
+                    return Err(Error::Reverse(format!(
+                        "static index row contains unsupported run content `{child:?}`; use text, tab, and a PAGEREF field only"
+                    )));
+                }
+            }
+        }
+    }
+    if bookmark.is_none() {
+        if text.is_empty() {
+            return Ok(None);
+        }
+        return Err(Error::Reverse(
+            "index control contains text without a PAGEREF target; use representable static `TocItem` rows or remove the unsupported field result"
+                .to_owned(),
+        ));
+    }
+    if text.is_empty() {
+        return Err(Error::Reverse(
+            "static index row has a PAGEREF field but no entry text; add visible text before the tab"
+                .to_owned(),
+        ));
+    }
+    if !saw_page_ref_text {
+        return Err(Error::Reverse(
+            "static index row has no cached page-reference text; add a visible PAGEREF result or update the field in Word before reversing"
+                .to_owned(),
+        ));
+    }
+    let bookmark = bookmark.unwrap_or_default();
+    if anchors.iter().any(|anchor| anchor != &bookmark) {
+        return Err(Error::Reverse(
+            "index entry hyperlink target does not match its PAGEREF bookmark; make both targets identical before reversing"
+                .to_owned(),
+        ));
+    }
+    let style = paragraph
+        .property
+        .style
+        .as_ref()
+        .map(|style| style.val.as_str())
+        .and_then(|style| style.strip_prefix("ToC"))
+        .and_then(|level| level.parse::<u64>().ok())
+        .filter(|level| (1..=9).contains(level))
+        .ok_or_else(|| {
+            Error::Reverse(
+                "static index row has no supported `ToC1`–`ToC9` paragraph style; apply a TOC level style before reversing"
+                    .to_owned(),
+            )
+        })?;
+    let tab_position = toc_item_tab_position(paragraph)?;
+    Ok(Some(TocItemField {
+        text,
+        bookmark,
+        level: style,
+        page_ref,
+        tab_position,
+    }))
+}
+
+fn toc_item_tab_position(paragraph: &docx_rs::Paragraph) -> Result<u32> {
+    let matching_tabs = paragraph
+        .property
+        .tabs
+        .iter()
+        .filter(|tab| {
+            tab.val == Some(docx_rs::TabValueType::Right)
+                && tab.leader == Some(docx_rs::TabLeaderType::Dot)
+        })
+        .collect::<Vec<_>>();
+    if matching_tabs.len() != 1 {
+        return Err(Error::Reverse(
+            "static index row must contain exactly one right-aligned dotted page-number tab; add that tab or reduce the row to a representable TOC entry"
+                .to_owned(),
+        ));
+    }
+    let tab_position = matching_tabs[0].pos.ok_or_else(|| {
+        Error::Reverse(
+            "static index row page-number tab has no explicit position; set a positive `tabPosition` before reversing"
+                .to_owned(),
+        )
+    })?;
+    let tab_position = u32::try_from(tab_position)
+        .map_err(|_| Error::Reverse("static index row tab position is out of range".to_owned()))?;
+    if tab_position == 0 || tab_position > 31_680 {
+        return Err(Error::Reverse(format!(
+            "static index row tab position {tab_position} twips is outside OOXML's legal range 1..=31680; set a legal `tabPosition` no greater than 1584 points"
+        )));
+    }
+    Ok(tab_position)
+}
+
+fn format_twips_as_points(twips: i64) -> String {
+    let whole = twips / 20;
+    let remainder = twips % 20;
+    if remainder == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{fraction:02}", fraction = remainder * 5)
+    }
+}
+
+fn collect_toc_item_runs<'a>(
+    children: &'a [ParagraphChild],
+    runs: &mut Vec<&'a docx_rs::Run>,
+    anchors: &mut Vec<String>,
+) -> Result<()> {
+    for child in children {
+        match child {
+            ParagraphChild::Run(run) => runs.push(run),
+            ParagraphChild::Hyperlink(hyperlink) => {
+                match &hyperlink.link {
+                    docx_rs::HyperlinkData::Anchor { anchor } => anchors.push(anchor.clone()),
+                    docx_rs::HyperlinkData::External { .. } => {
+                        return Err(Error::Reverse(
+                            "static index entry uses an external hyperlink; use a bookmark link matching its PAGEREF target"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                collect_toc_item_runs(&hyperlink.children, runs, anchors)?;
+            }
+            child => {
+                return Err(Error::Reverse(format!(
+                    "static index row contains unsupported paragraph content `{child:?}`; use runs or a bookmark hyperlink only"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_toc_item_pageref(instruction: &str) -> Result<String> {
+    let mut words = instruction.split_whitespace();
+    if words.next() != Some("PAGEREF") {
+        return Err(Error::Reverse(
+            "index row has an unsupported field instruction; use `PAGEREF bookmark`".to_owned(),
+        ));
+    }
+    let bookmark = words
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            Error::Reverse(
+                "PAGEREF in index row has no bookmark target; add a target bookmark name"
+                    .to_owned(),
+            )
+        })?;
+    if words.any(|switch| switch != "\\h") {
+        return Err(Error::Reverse(
+            "PAGEREF in index row contains unsupported switches; use only the optional `\\h` switch"
+                .to_owned(),
+        ));
+    }
+    Ok(bookmark.to_owned())
 }
 
 fn add_index_sdt_properties(index: &mut IndexField, props: &SdtProps) {
@@ -2480,6 +2767,8 @@ fn sdt_field_dirty(tag: &StructuredDataTag) -> Option<bool> {
 
 fn collect_sdt_instruction(tag: &StructuredDataTag) -> String {
     let mut instruction = String::new();
+    let mut in_first_field = false;
+    let mut first_field_started = false;
     for child in &tag.children {
         let StructuredDataTagChild::Paragraph(paragraph) = child else {
             continue;
@@ -2489,8 +2778,27 @@ fn collect_sdt_instruction(tag: &StructuredDataTag) -> String {
                 continue;
             };
             for child in &run.children {
-                if let RunChild::InstrTextString(value) = child {
-                    instruction.push_str(value);
+                match child {
+                    RunChild::FieldChar(field)
+                        if field.field_char_type == docx_rs::FieldCharType::Begin
+                            && !first_field_started =>
+                    {
+                        first_field_started = true;
+                        in_first_field = true;
+                    }
+                    RunChild::InstrTextString(value) if in_first_field => {
+                        instruction.push_str(value);
+                    }
+                    RunChild::FieldChar(field)
+                        if field.field_char_type == docx_rs::FieldCharType::Separate
+                            && in_first_field =>
+                    {
+                        if instruction.trim_start().starts_with("TOC") {
+                            return instruction;
+                        }
+                        in_first_field = false;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -2573,6 +2881,7 @@ fn parse_toc_instruction(instruction: &str) -> Result<Option<IndexField>> {
             include_label_and_number: caption_number_label.is_some(),
             separator: switches.get(&'d').and_then(Clone::clone),
             attributes,
+            items: Vec::new(),
         }));
     }
     if let Some(identifier) = switches.get(&'f') {
@@ -2589,6 +2898,7 @@ fn parse_toc_instruction(instruction: &str) -> Result<Option<IndexField>> {
         return Ok(Some(IndexField::Entries {
             identifier: identifier.clone(),
             attributes,
+            items: Vec::new(),
         }));
     }
     let (start, end) = match switches.get(&'o') {
@@ -2605,6 +2915,7 @@ fn parse_toc_instruction(instruction: &str) -> Result<Option<IndexField>> {
         start,
         end,
         attributes,
+        items: Vec::new(),
     }))
 }
 
@@ -7536,8 +7847,9 @@ mod tests {
         ShdType, SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Table,
         TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
         TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
-        TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
-        TextDirectionType, ThemeColor, VAlignType, VMergeType, WidthType,
+        TableCellProperty, TableLayoutType, TableOfContents, TableOfContentsItem,
+        TablePositionProperty, TableRow, TextDirectionType, ThemeColor, VAlignType, VMergeType,
+        WidthType,
     };
     use std::io::Write;
 
@@ -9019,6 +9331,48 @@ mod tests {
         assert!(
             !toc_as_control,
             "TOC must not flatten to a nameless ContentControl: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_restore_static_toc_items() {
+        let packed = pack_docx(
+            Docx::new().add_table_of_contents(
+                TableOfContents::new().heading_styles_range(1, 3).add_item(
+                    TableOfContentsItem::new()
+                        .text("Overview")
+                        .toc_key("overview")
+                        .level(2)
+                        .page_ref("7"),
+                ),
+            ),
+        );
+        let mut document = read_zip_text(&packed, "word/document.xml")
+            .expect("generated document XML should be readable");
+        document = document.replace("w:pos=\"80000\"", "w:pos=\"8400\"");
+        let bytes = rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let jsx = reverse_document(&bytes).expect("external static TOC should reverse");
+        assert!(
+            jsx.contains(
+                r#"<TocItem text="Overview" bookmark="overview" level={2} pageRef="7" />"#
+            ),
+            "static TOC entry must be restored: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_should_preserve_custom_static_toc_tab_position_without_manifest() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{},"children":[{"type":"TocItem","props":{"text":"Overview","bookmark":"overview","tabPosition":431.25},"children":[]}]}]}]}}"#,
+        )
+        .expect("fixture should parse");
+        let compiled = crate::compiler::compile_document(&ir, Path::new("."))
+            .expect("document should compile");
+        let jsx = reverse_document(&strip_ir_manifest(&compiled))
+            .expect("external document should reverse without its IR manifest");
+        assert!(
+            jsx.contains("tabPosition={431.25}"),
+            "custom tab position should round trip: {jsx}"
         );
     }
 

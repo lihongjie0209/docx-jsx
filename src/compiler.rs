@@ -17,9 +17,9 @@ use docx_rs::{
     Start, StructuredDataTag, Style, StyleType, StyleWithLevel, Sym, Tab as DocxTab, TabLeaderType,
     TabValueType, Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders,
     TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
-    TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
-    TextAlignmentType, TextBorder, TextDirectionType, ThemeColor, VAlignType, VMergeType,
-    VertAlignType, WebExtension, WidthType,
+    TableCellProperty, TableLayoutType, TableOfContents, TableOfContentsItem,
+    TablePositionProperty, TableRow, TextAlignmentType, TextBorder, TextDirectionType, ThemeColor,
+    VAlignType, VMergeType, VertAlignType, WebExtension, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -42,6 +42,8 @@ struct CompileContext {
     used_paragraph_ids: BTreeSet<String>,
     next_generated_paragraph_id: u32,
     deleted_comment_dependencies: Vec<Comment>,
+    toc_item_tab_patches: Vec<(String, u32)>,
+    toc_marker_occupied_text: String,
 }
 
 struct ParagraphPropertyPatch {
@@ -89,6 +91,8 @@ impl Default for CompileContext {
             used_paragraph_ids: BTreeSet::new(),
             next_generated_paragraph_id: 0xf000_0000,
             deleted_comment_dependencies: Vec::new(),
+            toc_item_tab_patches: Vec::new(),
+            toc_marker_occupied_text: String::new(),
         }
     }
 }
@@ -143,7 +147,11 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
         }
     }
     docx = compile_package_parts(docx, &ir.document.props)?;
-    let mut context = CompileContext::default();
+    let mut context = CompileContext {
+        toc_marker_occupied_text: serde_json::to_string(&ir.document)
+            .map_err(|error| Error::Compile(format!("cannot inspect document text: {error}")))?,
+        ..CompileContext::default()
+    };
     collect_existing_paragraph_ids(&ir.document, &mut context.used_paragraph_ids);
     let section_count = ir.document.children.len();
     for (index, child) in ir.document.children.iter().enumerate() {
@@ -182,6 +190,7 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
         &context.character_indent_patches,
         &context.numbering_style_links,
         &comment_seed_paragraph_ids,
+        &context.toc_item_tab_patches,
     )
 }
 
@@ -205,9 +214,9 @@ fn compile_section_into_docx(
                 child.kind.name()
             );
             let compiled_index = match child.kind {
-                NodeKind::TableOfFigures => compile_table_of_figures(child, &child_path)?,
-                NodeKind::TableOfEntries => compile_table_of_entries(child, &child_path)?,
-                _ => compile_table_of_contents(child, &child_path)?,
+                NodeKind::TableOfFigures => compile_table_of_figures(child, &child_path, context)?,
+                NodeKind::TableOfEntries => compile_table_of_entries(child, &child_path, context)?,
+                _ => compile_table_of_contents(child, &child_path, context)?,
             };
             docx = docx.add_table_of_contents(compiled_index);
         }
@@ -263,6 +272,7 @@ fn package_document(
     paragraph_character_indents: &[ParagraphPropertyPatch],
     numbering_style_links: &[(usize, Option<String>, Option<String>)],
     comment_seed_paragraph_ids: &[String],
+    toc_item_tab_patches: &[(String, u32)],
 ) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     docx.pack(&mut cursor)
@@ -355,6 +365,7 @@ fn package_document(
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     let bytes = patch_index_dirty_values(bytes, &ir.document)?;
+    let bytes = patch_toc_item_tabs(bytes, toc_item_tab_patches)?;
     let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_simple_position_images(bytes)?;
     embed_ir_manifest(bytes, ir)
@@ -420,6 +431,53 @@ fn patch_index_dirty_values(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> 
             "DSL defines {} TOC components, but only {index_number} were serialized; repair index placement before compiling",
             dirty_values.len()
         )));
+    }
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
+}
+
+fn toc_item_marker(context: &mut CompileContext) -> String {
+    let mut sequence = context.toc_item_tab_patches.len();
+    loop {
+        let marker = format!("DOCXJSX_INTERNAL_TOC_TAB_{sequence:08X}");
+        if !context.toc_marker_occupied_text.contains(&marker) {
+            context.toc_marker_occupied_text.push_str(&marker);
+            return marker;
+        }
+        sequence += 1;
+    }
+}
+
+fn patch_toc_item_tabs(bytes: Vec<u8>, patches: &[(String, u32)]) -> Result<Vec<u8>> {
+    if patches.is_empty() {
+        return Ok(bytes);
+    }
+    let mut xml = read_zip_text_entry(&bytes, "word/document.xml")?;
+    for (marker, tab_position) in patches {
+        let Some(marker_offset) = xml.find(marker) else {
+            return Err(Error::Compile(format!(
+                "could not locate generated TOC item marker `{marker}`; ensure the index item remains in the document body"
+            )));
+        };
+        let paragraph_start = xml[..marker_offset]
+            .rfind("<w:p ")
+            .ok_or_else(|| Error::Compile("TOC item has no containing paragraph".to_owned()))?;
+        let paragraph_end = xml[marker_offset..]
+            .find("</w:p>")
+            .map(|offset| marker_offset + offset + "</w:p>".len())
+            .ok_or_else(|| Error::Compile("TOC item paragraph is unterminated".to_owned()))?;
+        let paragraph = &xml[paragraph_start..paragraph_end];
+        let invalid = "w:pos=\"80000\"";
+        if paragraph.matches(invalid).count() != 1 {
+            return Err(Error::Compile(
+                "TOC item paragraph did not contain exactly one expected invalid tab position; docx-rs serialization changed, inspect its `w:tab` output".to_owned(),
+            ));
+        }
+        let replacement = format!("w:pos=\"{tab_position}\"");
+        let mut patched_paragraph = paragraph.replace(invalid, &replacement);
+        patched_paragraph = patched_paragraph.replace(marker, "");
+        xml.replace_range(paragraph_start..paragraph_end, &patched_paragraph);
     }
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
@@ -5858,7 +5916,7 @@ fn compile_cell(
             }
             NodeKind::List => add_list_to_cell(cell, child, entry_dir, &child_path, context)?,
             NodeKind::TableOfContents => {
-                cell.add_table_of_contents(compile_table_of_contents(child, &child_path)?)
+                cell.add_table_of_contents(compile_table_of_contents(child, &child_path, context)?)
             }
             NodeKind::ContentControl => cell.add_structured_data_tag(compile_content_control(
                 child,
@@ -6041,7 +6099,11 @@ fn compile_footer(
     Ok(footer)
 }
 
-fn compile_table_of_contents(node: &Node, path: &str) -> Result<TableOfContents> {
+fn compile_table_of_contents(
+    node: &Node,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<TableOfContents> {
     let start = usize::try_from(
         node.props
             .get("startLevel")
@@ -6059,10 +6121,14 @@ fn compile_table_of_contents(node: &Node, path: &str) -> Result<TableOfContents>
     let toc = TableOfContents::new()
         .heading_styles_range(start, end)
         .auto();
-    configure_index(toc, node, path)
+    configure_index(toc, node, path, context)
 }
 
-fn compile_table_of_figures(node: &Node, path: &str) -> Result<TableOfContents> {
+fn compile_table_of_figures(
+    node: &Node,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<TableOfContents> {
     let label = required_string(&node.props, "label", path)?;
     let instr = if bool_prop(&node.props, "includeLabelAndNumber", path)?.unwrap_or(true) {
         InstrToC::new().caption_label_including_numbers(label)
@@ -6076,17 +6142,26 @@ fn compile_table_of_figures(node: &Node, path: &str) -> Result<TableOfContents> 
     };
     let mut toc = TableOfContents::new();
     toc.instr = instr;
-    configure_index(toc, node, path)
+    configure_index(toc, node, path, context)
 }
 
-fn compile_table_of_entries(node: &Node, path: &str) -> Result<TableOfContents> {
+fn compile_table_of_entries(
+    node: &Node,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<TableOfContents> {
     let identifier = required_string(&node.props, "identifier", path)?;
     let mut toc = TableOfContents::new();
     toc.instr = InstrToC::new().tc_field_identifier(Some(identifier.to_owned()));
-    configure_index(toc, node, path)
+    configure_index(toc, node, path, context)
 }
 
-fn configure_index(mut toc: TableOfContents, node: &Node, path: &str) -> Result<TableOfContents> {
+fn configure_index(
+    mut toc: TableOfContents,
+    node: &Node,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<TableOfContents> {
     toc = toc.auto();
     if let Some(range) = node
         .props
@@ -6166,6 +6241,41 @@ fn configure_index(mut toc: TableOfContents, node: &Node, path: &str) -> Result<
     }
     if let Some(alias) = string_prop(&node.props, "alias", path)? {
         toc = toc.alias(alias);
+    }
+    add_index_items(toc, node, path, context)
+}
+
+fn add_index_items(
+    mut toc: TableOfContents,
+    node: &Node,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<TableOfContents> {
+    for (index, child) in node.children.iter().enumerate() {
+        let Child::Node(item) = child else {
+            continue;
+        };
+        if item.kind != NodeKind::TocItem {
+            continue;
+        }
+        let item_path = format!("{path}/TocItem[{index}]");
+        let text = required_string(&item.props, "text", &item_path)?;
+        let bookmark = required_string(&item.props, "bookmark", &item_path)?;
+        let level = item.props.get("level").and_then(Value::as_u64).unwrap_or(1);
+        let level = usize::try_from(level)
+            .map_err(|_| validation(&item_path, "`level` is out of range"))?;
+        let marker = toc_item_marker(context);
+        let mut compiled = TableOfContentsItem::new()
+            .text(format!("{marker}{text}"))
+            .toc_key(bookmark)
+            .level(level);
+        if let Some(page_ref) = string_prop(&item.props, "pageRef", &item_path)? {
+            compiled = compiled.page_ref(page_ref);
+        }
+        let tab_position = number_prop(&item.props, "tabPosition", &item_path)?.unwrap_or(420.0);
+        let tab_twips = to_twips_u32(tab_position, &item_path)?;
+        context.toc_item_tab_patches.push((marker, tab_twips));
+        toc = toc.add_item(compiled);
     }
     Ok(toc)
 }
@@ -8825,6 +8935,36 @@ mod tests {
                 && document.matches("w:dirty=\"true\"").count() >= 2,
             "{document}"
         );
+    }
+
+    #[test]
+    fn compile_should_render_static_toc_item_with_page_reference() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [{
+                    "type": "TableOfContents", "props": {"alias": "Contents"},
+                    "children": [{"type": "TocItem", "props": {
+                        "text": "Overview", "bookmark": "overview", "level": 2,
+                        "pageRef": "7"
+                    }, "children": []}]
+                }]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("UTF-8 XML");
+        assert!(document.contains("w:anchor=\"overview\""), "{document}");
+        assert!(document.contains("PAGEREF overview"), "{document}");
+        assert!(document.contains(">7</w:t>"), "{document}");
+        assert!(document.contains("w:pos=\"8400\""), "{document}");
+        assert!(!document.contains("w:pos=\"80000\""), "{document}");
     }
 
     #[test]
