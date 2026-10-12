@@ -75,11 +75,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let style_run_properties = collect_style_run_xml_metadata(bytes)?;
     let index_field_paragraph_xml = collect_index_field_paragraph_metadata(bytes)?;
     let hyperlink_histories = collect_hyperlink_histories(bytes)?;
-    let toc_reader_bytes = normalize_nested_toc_item_sdts(bytes)?;
-    let (reader_bytes, deleted_instructions) =
-        normalize_deleted_instruction_parts(&toc_reader_bytes)?;
-    let docx =
-        docx_rs::read_docx(&reader_bytes).map_err(|error| Error::Reverse(error.to_string()))?;
+    let (docx, deleted_instructions) = read_external_docx(bytes)?;
     let mut images = collect_package_images(bytes)?;
     for (id, asset) in collect_images(&docx, &images.used_names) {
         images.by_id.entry(id).or_insert(asset);
@@ -152,6 +148,330 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         ),
         assets: writer.assets,
     })
+}
+
+fn read_external_docx(bytes: &[u8]) -> Result<(docx_rs::Docx, HashMap<String, String>)> {
+    let complex_script_reader_bytes = normalize_complex_script_properties_for_reader(bytes)?;
+    let toc_reader_bytes = normalize_nested_toc_item_sdts(&complex_script_reader_bytes)?;
+    let (reader_bytes, deleted_instructions) =
+        normalize_deleted_instruction_parts(&toc_reader_bytes)?;
+    let docx =
+        docx_rs::read_docx(&reader_bytes).map_err(|error| Error::Reverse(error.to_string()))?;
+    Ok((docx, deleted_instructions))
+}
+
+fn normalize_complex_script_properties_for_reader(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Reverse(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..source.len() {
+        let mut file = source
+            .by_index(index)
+            .map_err(|error| Error::Reverse(format!("cannot read DOCX entry: {error}")))?;
+        if Path::new(file.name())
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            let name = file.name().to_owned();
+            let mut xml = String::new();
+            file.read_to_string(&mut xml)
+                .map_err(|error| Error::Reverse(format!("cannot read {name}: {error}")))?;
+            normalize_complex_script_properties_in_xml(&mut xml)?;
+            writer
+                .start_file(&name, file.options())
+                .map_err(|error| Error::Reverse(format!("cannot rewrite {name}: {error}")))?;
+            writer
+                .write_all(xml.as_bytes())
+                .map_err(|error| Error::Reverse(format!("cannot rewrite {name}: {error}")))?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Reverse(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Reverse(format!("cannot finalize normalized DOCX: {error}")))
+}
+
+fn normalize_complex_script_properties_in_xml(xml: &mut String) -> Result<()> {
+    for (start, end) in reverse_element_content_ranges(xml, "w:rPr")?
+        .into_iter()
+        .rev()
+    {
+        let children = reverse_split_element_children(&xml[start..end])?;
+        let find = |name: &str| {
+            children
+                .iter()
+                .find(|child| reverse_child_name(child) == name)
+        };
+        let bold_cs = find("w:bCs");
+        let italic_cs = find("w:iCs");
+        let size_cs = find("w:szCs");
+        let has_toggle = find("w:b").is_some() || find("w:i").is_some();
+        if bold_cs.is_none() && italic_cs.is_none() && size_cs.is_none() && !has_toggle {
+            continue;
+        }
+        let old_style = find("w:rStyle")
+            .map(|element| {
+                let attributes = reverse_xml_attributes(element)?;
+                if attributes.keys().any(|name| name != "w:val") {
+                    return Err(Error::Reverse(
+                        "run style has unsupported attributes; keep only `w:val` before reverse conversion".to_owned(),
+                    ));
+                }
+                attributes.get("w:val").cloned().ok_or_else(|| {
+                    Error::Reverse("run style has no `w:val`; repair `w:rStyle`".to_owned())
+                })
+            })
+            .transpose()?;
+        if old_style
+            .as_deref()
+            .is_some_and(|style| style.starts_with("__DOCXJSX_RAWCS_"))
+        {
+            return Err(Error::Reverse(
+                "run style uses the reserved complex-script reverse marker prefix; rename that style before reverse conversion".to_owned(),
+            ));
+        }
+        let bold_value = bold_cs
+            .map(|element| reverse_xml_on_off(element, "w:bCs"))
+            .transpose()?;
+        let italic_value = italic_cs
+            .map(|element| reverse_xml_on_off(element, "w:iCs"))
+            .transpose()?;
+        let latin_size = if size_cs.is_some() {
+            find("w:sz")
+                .map(|element| reverse_xml_size_value(element, "w:sz"))
+                .transpose()?
+                .unwrap_or_else(|| "-".to_owned())
+        } else {
+            "~".to_owned()
+        };
+        let complex_size = size_cs
+            .map(|element| reverse_xml_size_value(element, "w:szCs"))
+            .transpose()?
+            .unwrap_or_else(|| "-".to_owned());
+        let marker = format!(
+            "__DOCXJSX_RAWCS_{}{}_{}_{}_{}__",
+            marker_bool(bold_value),
+            marker_bool(italic_value),
+            latin_size,
+            complex_size,
+            encode_marker_text(old_style.as_deref())
+        );
+        let mut patched_children =
+            Vec::with_capacity(children.len() + usize::from(find("w:rStyle").is_none()));
+        let mut style_inserted = false;
+        for element in children {
+            match reverse_child_name(element) {
+                "w:rStyle" => {
+                    patched_children.push(format!(r#"<w:rStyle w:val="{marker}" />"#));
+                    style_inserted = true;
+                }
+                "w:szCs" => patched_children.push(format!(r#"<w:sz w:val="{complex_size}" />"#)),
+                _ => patched_children.push(element.to_owned()),
+            }
+        }
+        if !style_inserted {
+            patched_children.insert(0, format!(r#"<w:rStyle w:val="{marker}" />"#));
+        }
+        xml.replace_range(start..end, &patched_children.concat());
+    }
+    Ok(())
+}
+
+fn marker_bool(value: Option<bool>) -> char {
+    value.map_or('x', |enabled| if enabled { '1' } else { '0' })
+}
+
+fn reverse_xml_on_off(element: &str, name: &str) -> Result<bool> {
+    let attributes = reverse_xml_attributes(element)?;
+    if attributes.keys().any(|attribute| attribute != "w:val") {
+        return Err(Error::Reverse(format!(
+            "{name} has unsupported attributes; keep only `w:val` before reverse conversion"
+        )));
+    }
+    attributes
+        .get("w:val")
+        .map_or(Ok(true), |value| parse_on_off(value))
+}
+
+fn reverse_xml_size_value(element: &str, name: &str) -> Result<String> {
+    let attributes = reverse_xml_attributes(element)?;
+    if attributes.keys().any(|attribute| attribute != "w:val") {
+        return Err(Error::Reverse(format!(
+            "{name} has unsupported attributes; keep only `w:val` before reverse conversion"
+        )));
+    }
+    let value = attributes.get("w:val").ok_or_else(|| {
+        Error::Reverse(format!(
+            "{name} has no `w:val`; add a half-point value before reverse conversion"
+        ))
+    })?;
+    if value.parse::<u32>().is_err() {
+        return Err(Error::Reverse(format!(
+            "{name} has invalid half-point value `{value}`; use a non-negative integer"
+        )));
+    }
+    Ok(value.clone())
+}
+
+fn reverse_xml_attributes(element: &str) -> Result<BTreeMap<String, String>> {
+    let mut reader = Reader::from_str(element);
+    match reader.read_event() {
+        Ok(Event::Start(tag) | Event::Empty(tag)) => tag
+            .attributes()
+            .with_checks(true)
+            .map(|attribute| {
+                let attribute = attribute.map_err(|error| {
+                    Error::Reverse(format!("cannot read OOXML attribute: {error}"))
+                })?;
+                let name = String::from_utf8(attribute.key.as_ref().to_vec()).map_err(|error| {
+                    Error::Reverse(format!("invalid OOXML attribute name: {error}"))
+                })?;
+                let value = attribute
+                    .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                    .map_err(|error| {
+                        Error::Reverse(format!("invalid OOXML attribute value: {error}"))
+                    })?
+                    .into_owned();
+                Ok((name, value))
+            })
+            .collect(),
+        _ => Err(Error::Reverse("invalid OOXML element".to_owned())),
+    }
+}
+
+fn encode_marker_text(value: Option<&str>) -> String {
+    let Some(value) = value else {
+        return "-".to_owned();
+    };
+    value.as_bytes().iter().fold(
+        String::with_capacity(value.len() * 2),
+        |mut encoded, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(encoded, "{byte:02x}");
+            encoded
+        },
+    )
+}
+
+fn decode_marker_text(value: &str) -> Result<Option<String>> {
+    if value == "-" {
+        return Ok(None);
+    }
+    if !value.len().is_multiple_of(2) {
+        return Err(Error::Reverse(
+            "malformed encoded complex-script style marker".to_owned(),
+        ));
+    }
+    let bytes = value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let hex = std::str::from_utf8(pair)
+                .map_err(|error| Error::Reverse(format!("invalid style marker: {error}")))?;
+            u8::from_str_radix(hex, 16)
+                .map_err(|error| Error::Reverse(format!("invalid style marker: {error}")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| Error::Reverse(format!("invalid UTF-8 in style marker: {error}")))
+}
+
+fn reverse_element_content_ranges(xml: &str, wanted: &str) -> Result<Vec<(usize, usize)>> {
+    let mut ranges = Vec::new();
+    let mut stack = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative_start) = xml[cursor..].find('<') {
+        let start = cursor + relative_start;
+        let end = xml[start..]
+            .find('>')
+            .map(|offset| start + offset)
+            .ok_or_else(|| Error::Reverse("unterminated XML tag".to_owned()))?;
+        let token = xml[start + 1..end].trim();
+        let closing = token.strip_prefix('/');
+        let name = closing
+            .unwrap_or(token)
+            .split(|character: char| character.is_ascii_whitespace() || character == '/')
+            .next()
+            .unwrap_or_default();
+        if name == wanted {
+            if closing.is_some() {
+                let content_start = stack.pop().ok_or_else(|| {
+                    Error::Reverse(format!("unexpected closing `<{wanted}>` element"))
+                })?;
+                ranges.push((content_start, start));
+            } else if !token.ends_with('/') {
+                stack.push(end + 1);
+            }
+        }
+        cursor = end + 1;
+    }
+    if stack.is_empty() {
+        Ok(ranges)
+    } else {
+        Err(Error::Reverse(format!("unclosed `<{wanted}>` element")))
+    }
+}
+
+fn reverse_split_element_children(content: &str) -> Result<Vec<&str>> {
+    let mut children = Vec::new();
+    let mut depth = 0_usize;
+    let mut child_start = None;
+    let mut cursor = 0;
+    while let Some(relative_start) = content[cursor..].find('<') {
+        let start = cursor + relative_start;
+        let end = content[start..]
+            .find('>')
+            .map(|offset| start + offset)
+            .ok_or_else(|| Error::Reverse("unterminated XML child tag".to_owned()))?;
+        let token = content[start + 1..end].trim();
+        if token.starts_with('!') || token.starts_with('?') {
+            cursor = end + 1;
+            continue;
+        }
+        if token.starts_with('/') {
+            depth = depth
+                .checked_sub(1)
+                .ok_or_else(|| Error::Reverse("unexpected XML child closing tag".to_owned()))?;
+            if depth == 0 {
+                let child_start = child_start
+                    .take()
+                    .ok_or_else(|| Error::Reverse("missing XML child opening tag".to_owned()))?;
+                children.push(&content[child_start..=end]);
+            }
+        } else if token.ends_with('/') {
+            if depth == 0 {
+                children.push(&content[start..=end]);
+            }
+        } else {
+            if depth == 0 {
+                child_start = Some(start);
+            }
+            depth += 1;
+        }
+        cursor = end + 1;
+    }
+    if depth == 0 && children.concat().len() == content.len() {
+        Ok(children)
+    } else {
+        Err(Error::Reverse(
+            "run properties contain malformed XML children".to_owned(),
+        ))
+    }
+}
+
+fn reverse_child_name(element: &str) -> &str {
+    element
+        .trim_start_matches('<')
+        .split(|character: char| {
+            character.is_ascii_whitespace() || character == '/' || character == '>'
+        })
+        .next()
+        .unwrap_or_default()
 }
 
 fn normalize_nested_toc_item_sdts(bytes: &[u8]) -> Result<Vec<u8>> {
@@ -661,6 +981,81 @@ struct ThemeColorInfo {
     theme_color: Option<String>,
     theme_shade: Option<String>,
     theme_tint: Option<String>,
+}
+
+fn reverse_run_toggle_attributes(
+    property: &Value,
+    complex_script: Option<&RawComplexScriptMarker>,
+) -> Result<Vec<String>> {
+    let mut attrs = Vec::new();
+    for (key, name) in [
+        ("bold", "bold"),
+        ("italic", "italic"),
+        ("boldCs", "boldCs"),
+        ("italicCs", "italicCs"),
+        ("strike", "strike"),
+    ] {
+        if complex_script.is_some() && matches!(key, "boldCs" | "italicCs") {
+            continue;
+        }
+        if let Some(value) = property.get(key) {
+            let enabled = if matches!(key, "boldCs" | "italicCs") {
+                strict_on_off_value(value, key)?
+            } else {
+                property_enabled(property, key)
+            };
+            attrs.push(if enabled {
+                format!(" {name}")
+            } else {
+                jsx_prop(name, &Value::Bool(false))?
+            });
+        }
+    }
+    if let Some(marker) = complex_script {
+        for (name, value) in [("boldCs", marker.bold_cs), ("italicCs", marker.italic_cs)] {
+            if let Some(value) = value {
+                attrs.push(if value {
+                    format!(" {name}")
+                } else {
+                    jsx_prop(name, &Value::Bool(false))?
+                });
+            }
+        }
+    }
+    Ok(attrs)
+}
+
+fn reverse_run_size_attributes(
+    property: &Value,
+    complex_script: Option<&RawComplexScriptMarker>,
+) -> Result<Vec<String>> {
+    let mut attrs = Vec::new();
+    let regular_size = match complex_script.map(|marker| &marker.latin_size) {
+        Some(RawLatinSize::Original(size)) => *size,
+        Some(RawLatinSize::Unchanged) | None => property.get("sz").and_then(scalar_u64),
+    };
+    if let Some(value) = regular_size {
+        let size = if value % 2 == 0 {
+            (value / 2).to_string()
+        } else {
+            format!("{}.5", value / 2)
+        };
+        attrs.push(format!(" size={{{size}}}"));
+    }
+    let complex_size = complex_script
+        .and_then(|marker| marker.complex_size)
+        .or_else(|| property.get("szCs").and_then(scalar_u64));
+    if let Some(value) = complex_size {
+        let value = i64::try_from(value).map_err(|_| {
+            Error::Reverse("run complex-script font size exceeds supported range".to_owned())
+        })?;
+        attrs.push(jsx_prop("sizeCs", &scaled_decimal_value(value, 2)?)?);
+    } else if property.get("szCs").is_some() && complex_script.is_none() {
+        return Err(Error::Reverse(
+            "run complex-script font size has no numeric value".to_owned(),
+        ));
+    }
+    Ok(attrs)
 }
 
 impl Writer {
@@ -1564,11 +1959,16 @@ impl Writer {
 
     fn run_attributes(&mut self, property: &Value) -> Result<Vec<String>> {
         let mut attrs = Vec::new();
-        for (key, name) in [("bold", "bold"), ("italic", "italic"), ("strike", "strike")] {
-            if property_enabled(property, key) {
-                attrs.push(format!(" {name}"));
-            }
-        }
+        let complex_script = property
+            .get("style")
+            .and_then(scalar_string)
+            .map(parse_raw_complex_script_marker)
+            .transpose()?
+            .flatten();
+        attrs.extend(reverse_run_toggle_attributes(
+            property,
+            complex_script.as_ref(),
+        )?);
         if property.get("caps").is_some() {
             attrs.push(jsx_prop(
                 "caps",
@@ -1603,18 +2003,18 @@ impl Writer {
             attrs.push(attr("color", value));
             attrs.extend(self.next_run_theme_attrs(value));
         }
-        if let Some(value) = property.get("sz").and_then(scalar_u64) {
-            let size = if value % 2 == 0 {
-                (value / 2).to_string()
-            } else {
-                format!("{}.5", value / 2)
-            };
-            attrs.push(format!(" size={{{size}}}"));
-        }
+        attrs.extend(reverse_run_size_attributes(
+            property,
+            complex_script.as_ref(),
+        )?);
         if let Some((name, value)) = reverse_fonts_property(property, "font", "fonts") {
             attrs.push(jsx_prop(&name, &value)?);
         }
-        if let Some(value) = property
+        if let Some(marker) = complex_script {
+            if let Some(style) = marker.style.as_deref() {
+                attrs.push(attr("style", style));
+            }
+        } else if let Some(value) = property
             .get("style")
             .and_then(scalar_string)
             .or_else(|| nested_string(property, &["style", "val"]))
@@ -8846,21 +9246,107 @@ fn xml_attribute(
     Ok(None)
 }
 
+#[derive(Debug)]
+struct RawComplexScriptMarker {
+    bold_cs: Option<bool>,
+    italic_cs: Option<bool>,
+    latin_size: RawLatinSize,
+    complex_size: Option<u64>,
+    style: Option<String>,
+}
+
+#[derive(Debug)]
+enum RawLatinSize {
+    Unchanged,
+    Original(Option<u64>),
+}
+
+fn parse_raw_complex_script_marker(value: &str) -> Result<Option<RawComplexScriptMarker>> {
+    let Some(body) = value
+        .strip_prefix("__DOCXJSX_RAWCS_")
+        .and_then(|body| body.strip_suffix("__"))
+    else {
+        return Ok(None);
+    };
+    let fields = body.split('_').collect::<Vec<_>>();
+    if fields.len() != 4 || fields[0].len() != 2 {
+        return Err(Error::Reverse(
+            "malformed complex-script reverse marker".to_owned(),
+        ));
+    }
+    let mut flags = fields[0].chars();
+    let bold_cs = parse_marker_bool(flags.next())?;
+    let italic_cs = parse_marker_bool(flags.next())?;
+    let latin_size = match fields[1] {
+        "~" => RawLatinSize::Unchanged,
+        "-" => RawLatinSize::Original(None),
+        value => RawLatinSize::Original(Some(value.parse::<u64>().map_err(|_| {
+            Error::Reverse("malformed Latin size in complex-script reverse marker".to_owned())
+        })?)),
+    };
+    let complex_size = if fields[2] == "-" {
+        None
+    } else {
+        Some(fields[2].parse::<u64>().map_err(|_| {
+            Error::Reverse("malformed complex-script size in reverse marker".to_owned())
+        })?)
+    };
+    let style = decode_marker_text(fields[3])?;
+    Ok(Some(RawComplexScriptMarker {
+        bold_cs,
+        italic_cs,
+        latin_size,
+        complex_size,
+        style,
+    }))
+}
+
+fn parse_marker_bool(value: Option<char>) -> Result<Option<bool>> {
+    match value {
+        Some('x') => Ok(None),
+        Some('0') => Ok(Some(false)),
+        Some('1') => Ok(Some(true)),
+        _ => Err(Error::Reverse(
+            "malformed complex-script reverse marker".to_owned(),
+        )),
+    }
+}
+
 fn reverse_run_properties(source: &Value) -> Result<Option<Map<String, Value>>> {
     let mut output = Map::new();
+    let complex_script = source
+        .get("style")
+        .and_then(scalar_string)
+        .map(parse_raw_complex_script_marker)
+        .transpose()?
+        .flatten();
     for (source_key, target_key) in [
         ("bold", "bold"),
+        ("boldCs", "boldCs"),
         ("italic", "italic"),
+        ("italicCs", "italicCs"),
         ("strike", "strike"),
         ("dstrike", "doubleStrike"),
         ("caps", "caps"),
         ("vanish", "hidden"),
     ] {
-        if source.get(source_key).is_some() {
-            output.insert(
-                target_key.to_owned(),
-                Value::Bool(property_enabled(source, source_key)),
-            );
+        if complex_script.is_some() && matches!(source_key, "boldCs" | "italicCs") {
+            continue;
+        }
+        if let Some(value) = source.get(source_key) {
+            let enabled = if matches!(source_key, "boldCs" | "italicCs") {
+                strict_on_off_value(value, source_key)?
+            } else {
+                property_enabled(source, source_key)
+            };
+            output.insert(target_key.to_owned(), Value::Bool(enabled));
+        }
+    }
+    if let Some(marker) = complex_script.as_ref() {
+        for (key, value) in [("boldCs", marker.bold_cs), ("italicCs", marker.italic_cs)] {
+            if let Some(value) = value {
+                output.insert(key.to_owned(), Value::Bool(value));
+            }
         }
     }
     if let Some(value) = source
@@ -8870,10 +9356,28 @@ fn reverse_run_properties(source: &Value) -> Result<Option<Map<String, Value>>> 
     {
         output.insert("color".to_owned(), Value::String(value.to_owned()));
     }
-    if let Some(value) = source.get("sz").and_then(scalar_u64) {
+    let regular_size = match complex_script.as_ref().map(|marker| &marker.latin_size) {
+        Some(RawLatinSize::Original(size)) => *size,
+        Some(RawLatinSize::Unchanged) | None => source.get("sz").and_then(scalar_u64),
+    };
+    if let Some(value) = regular_size {
         let value = i64::try_from(value)
             .map_err(|_| Error::Reverse("style font size exceeds supported range".to_owned()))?;
         output.insert("size".to_owned(), scaled_decimal_value(value, 2)?);
+    }
+    let complex_size = complex_script
+        .as_ref()
+        .and_then(|marker| marker.complex_size)
+        .or_else(|| source.get("szCs").and_then(scalar_u64));
+    if let Some(value) = complex_size {
+        let value = i64::try_from(value).map_err(|_| {
+            Error::Reverse("run complex-script font size exceeds supported range".to_owned())
+        })?;
+        output.insert("sizeCs".to_owned(), scaled_decimal_value(value, 2)?);
+    } else if source.get("szCs").is_some() && complex_script.is_none() {
+        return Err(Error::Reverse(
+            "run complex-script font size has no numeric value".to_owned(),
+        ));
     }
     if let Some((name, value)) = reverse_fonts_property(source, "font", "fonts") {
         output.insert(name, value);
@@ -9224,6 +9728,18 @@ fn property_enabled(value: &Value, key: &str) -> bool {
             .as_bool()
             .unwrap_or_else(|| value.get("val").and_then(Value::as_bool).unwrap_or(true))
     })
+}
+
+fn strict_on_off_value(value: &Value, property: &str) -> Result<bool> {
+    value
+        .as_bool()
+        .or_else(|| value.get("val").and_then(Value::as_bool))
+        .or_else(|| value.as_object().filter(|object| object.is_empty()).map(|_| true))
+        .ok_or_else(|| {
+            Error::Reverse(format!(
+                "run property `{property}` does not contain an on/off value; use explicit `w:val=\"0\"` or `w:val=\"1\"`"
+            ))
+        })
 }
 
 fn attr(name: &str, value: &str) -> String {
@@ -9875,7 +10391,7 @@ mod tests {
         let jsx = reverse_document(&bytes.into_inner()).expect("external DOCX should reverse");
 
         assert!(
-            jsx.contains(r#"{"id":"BodyBase","name":"Body Base","type":"paragraph","quickFormat":true,"run":{"size":12},"paragraph":{"lineSpacing":28,"lineRule":"exact"}}"#)
+            jsx.contains(r#"{"id":"BodyBase","name":"Body Base","type":"paragraph","quickFormat":true,"run":{"size":12,"sizeCs":12},"paragraph":{"lineSpacing":28,"lineRule":"exact"}}"#)
                 && jsx.contains(r#"{"id":"Body","name":"Body","type":"paragraph","basedOn":"BodyBase","next":"Body","quickFormat":true,"paragraph":{"align":"both"}}"#),
             "{jsx}"
         );

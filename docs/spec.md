@@ -265,7 +265,7 @@ error instead of a silent drop.
   definition requires unique non-empty `id`, non-empty `name`, and `type` of
   `paragraph`, `character`, `numbering`, or `table`. Optional metadata is
   `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
-  `unhideWhenUsed`. `run?: {font,fonts,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,strike,doubleStrike,caps,underline,hidden,verticalAlign,characterSpacing,fitText,stretch,specVanish,shading,textBorder}`
+  `unhideWhenUsed`. `run?: {font,fonts,size,sizeCs,color,themeColor,themeShade,themeTint,highlight,bold,boldCs,italic,italicCs,strike,doubleStrike,caps,underline,hidden,verticalAlign,characterSpacing,fitText,stretch,specVanish,shading,textBorder}`
   uses the same units and color rules as `Run`. `strike` and
   `doubleStrike` cannot both be true; `verticalAlign` is `baseline`,
   `superscript`, or `subscript`; `characterSpacing` is a signed point value.
@@ -435,8 +435,15 @@ error instead of a silent drop.
 - `Run`: `font?`, `fonts?`, `size?`, `bold?`, `italic?`, `strike?`,
   `doubleStrike?`, `caps?`, `hidden?: true`, `specVanish?: true`,
   `underline?: boolean | UnderlineStyle`,
+  `sizeCs?`, `boldCs?`, `italicCs?`,
   `color?`, `highlight?`, `style?`, and `verticalAlign?: "baseline" |
   "superscript" | "subscript"`.
+  `sizeCs?` is the complex-script font size in points, converted to half-points
+  as `w:szCs`; it is independent from `size?`. `boldCs?` and `italicCs?` are
+  explicit on/off values for complex-script characters only (`w:bCs` / `w:iCs`)
+  and are independent from `bold?` / `italic?`. External reverse preserves
+  these values independently rather than merging them into the non-complex
+  script properties.
   `true` is the compatibility shorthand for `"single"`; `false` means
   `"none"`. String values preserve the exact `w:u/@w:val` token. Supported
   `UnderlineStyle` values are `single`, `words`, `double`, `thick`, `dotted`,
@@ -679,7 +686,7 @@ error instead of a silent drop.
   `hanging?` / `firstLine?` (`firstLine` and `hanging` are mutually
   exclusive), and the same run formatting as `Run` (`font`/`fonts`, `size`,
   `color`, `highlight`, `bold`, `italic`, `strike`, `doubleStrike`,
-  `underline` as a Word underline style string, `hidden`,
+  `underline` as a Word underline style string, `boldCs`, `italicCs`, `sizeCs`, `hidden`,
   `characterSpacing`). Boolean run flags emit explicit on/off OOXML.
   `overrides?` is an array of
   per-instance `w:lvlOverride` objects: each requires a unique `level: 0..8`,

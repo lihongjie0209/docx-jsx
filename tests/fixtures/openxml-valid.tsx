@@ -82,7 +82,7 @@ export default (
       { id: "BodyChar", name: "Body Char", type: "character", link: "Body", run: { italic: true } },
       { id: "NoLineNumbers", name: "No Line Numbers", type: "paragraph", paragraph: { suppressLineNumbers: true } },
       { id: "StyleAllProps", name: "Extended Paragraph Properties", type: "paragraph", paragraph: { pageBreakBefore: true, widowControl: false, bidi: true, shading: "DDEEFF", adjustRightIndent: 1 } },
-      { id: "RunStyleAllProps", name: "Extended Run Properties", type: "character", run: { bold: false, italic: false, strike: true, doubleStrike: false, caps: true, verticalAlign: "superscript", characterSpacing: -1.5 } },
+      { id: "RunStyleAllProps", name: "Extended Run Properties", type: "character", run: { size: 12, sizeCs: 15, bold: false, boldCs: true, italic: false, italicCs: true, strike: true, doubleStrike: false, caps: true, verticalAlign: "superscript", characterSpacing: -1.5 } },
       { id: "RunVisualEffects", name: "Run Visual Effects", type: "character", run: { fitText: { width: 42, id: 9 }, stretch: 125, specVanish: true, shading: { fill: "FFF2CC", color: "336699", pattern: "pct20" } } },
       { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center", indent: 6 }, cell: { verticalAlign: "center", shading: "EAF2F8", margins: { top: 1, right: 1, bottom: 1, left: 1 } } },
     ]}
@@ -157,7 +157,7 @@ export default (
       <Paragraph indentStartChars={120} indentEndChars={80} hangingChars={20}>
         Logical character-unit indentation
       </Paragraph>
-      <Paragraph><Run underline="dottedHeavy">heavy dotted underline</Run><Run underline="wavyDouble">double wave underline</Run><Run underline={false}>explicitly not underlined</Run></Paragraph>
+      <Paragraph><Run underline="dottedHeavy">heavy dotted underline</Run><Run underline="wavyDouble">double wave underline</Run><Run underline={false}>explicitly not underlined</Run><Run size={12} sizeCs={18} bold={false} boldCs italic italicCs={false}>Latin and complex-script properties</Run></Paragraph>
       <Paragraph style="Body">
         <Hyperlink href="https://example.com" history>
           <ContentControl alias="LinkData">bound</ContentControl>
@@ -181,6 +181,12 @@ export default (
             legal: true,
             indentLeft: 36,
             hanging: 18,
+            size: 11,
+            sizeCs: 14,
+            bold: false,
+            boldCs: true,
+            italic: true,
+            italicCs: false,
           },
         ]}
         overrides={[{

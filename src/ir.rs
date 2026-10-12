@@ -1150,8 +1150,11 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "font",
             "fonts",
             "size",
+            "sizeCs",
             "bold",
+            "boldCs",
             "italic",
+            "italicCs",
             "strike",
             "underline",
             "color",
@@ -2654,13 +2657,16 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
             "font",
             "fonts",
             "size",
+            "sizeCs",
             "color",
             "themeColor",
             "themeShade",
             "themeTint",
             "highlight",
             "bold",
+            "boldCs",
             "italic",
+            "italicCs",
             "strike",
             "doubleStrike",
             "caps",
@@ -2703,6 +2709,7 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
             ));
         }
     }
+    validate_style_run_complex_script(run, path)?;
     if run.get("strike").and_then(Value::as_bool) == Some(true)
         && run.get("doubleStrike").and_then(Value::as_bool) == Some(true)
     {
@@ -2728,6 +2735,21 @@ fn validate_style_run(value: &Value, path: &str) -> Result<()> {
     validate_style_run_effects(run, path)?;
     if let Some(border) = run.get("textBorder") {
         validate_style_border(border, path, true)?;
+    }
+    Ok(())
+}
+
+fn validate_style_run_complex_script(run: &Map<String, Value>, path: &str) -> Result<()> {
+    if let Some(value) = run.get("sizeCs") {
+        require_number(value, path, "run.sizeCs", true)?;
+    }
+    for key in ["boldCs", "italicCs"] {
+        if run.get(key).is_some_and(|value| !value.is_boolean()) {
+            return Err(validation(
+                path,
+                format!("style run `{key}` must be a boolean"),
+            ));
+        }
     }
     Ok(())
 }
@@ -3889,6 +3911,9 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
     }
     validate_font_choice(&node.props, path, "font", "fonts")?;
     validate_run_underline(&node.props, path)?;
+    if let Some(value) = node.props.get("sizeCs") {
+        require_number(value, path, "sizeCs", true)?;
+    }
     if node.props.contains_key("verticalAlign") {
         validate_optional_enum_prop(
             node,
@@ -3935,7 +3960,9 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
     }
     for key in [
         "bold",
+        "boldCs",
         "italic",
+        "italicCs",
         "strike",
         "doubleStrike",
         "caps",
@@ -5376,10 +5403,13 @@ const LIST_LEVEL_KEYS: &[&str] = &[
     "font",
     "fonts",
     "size",
+    "sizeCs",
     "color",
     "highlight",
     "bold",
+    "boldCs",
     "italic",
+    "italicCs",
     "strike",
     "doubleStrike",
     "underline",
@@ -5419,7 +5449,9 @@ fn validate_list_level_scalars(level: &Map<String, Value>, path: &str) -> Result
     validate_map_enum(level, path, "suffix", &["tab", "space", "nothing"])?;
     for key in [
         "bold",
+        "boldCs",
         "italic",
+        "italicCs",
         "strike",
         "doubleStrike",
         "hidden",
@@ -5438,7 +5470,14 @@ fn validate_list_level_scalars(level: &Map<String, Value>, path: &str) -> Result
             "list level `firstLine` and `hanging` are mutually exclusive",
         ));
     }
-    for key in ["indentLeft", "indentRight", "hanging", "firstLine", "size"] {
+    for key in [
+        "indentLeft",
+        "indentRight",
+        "hanging",
+        "firstLine",
+        "size",
+        "sizeCs",
+    ] {
         if let Some(value) = level.get(key) {
             require_number(
                 value,
@@ -7090,6 +7129,29 @@ mod tests {
             .to_string();
         assert!(error.contains("underline"), "{error}");
         assert!(error.contains("dottedHeavy"), "{error}");
+    }
+
+    #[test]
+    fn validate_should_accept_independent_complex_script_run_properties() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"size":12,"sizeCs":18,"bold":false,"boldCs":true,"italic":true,"italicCs":false},"children":["mixed script"]}]}]}]}}"#,
+        );
+        assert!(ir.validate().is_ok(), "{:?}", ir.validate());
+    }
+
+    #[test]
+    fn validate_should_reject_invalid_complex_script_run_properties() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Run","props":{"sizeCs":0,"boldCs":"yes"},"children":["text"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("invalid complex-script run properties must fail")
+            .to_string();
+        assert!(
+            error.contains("sizeCs") || error.contains("boldCs"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -4,22 +4,22 @@ use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use docx_rs::{
-    AbstractNumbering, AlignmentType, BorderType, BreakType, Caps, CellMargins,
+    AbstractNumbering, AlignmentType, BoldCs, BorderType, BreakType, Caps, CellMargins,
     CharacterSpacingValues, Comment, DataBinding, Delete, DeleteInstrText, DocGrid, DocGridType,
     Docx, DrawingPosition, FieldCharType, Footer, FooterChild, Footnote, Header, HeaderChild,
     HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert, InstrPAGEREF, InstrTC, InstrText,
-    InstrToC, Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing,
+    InstrToC, ItalicCs, Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing,
     LineSpacingType, MoveFrom, MoveTo, NumPages, NumberFormat, Numbering, NumberingId, PageMargin,
     PageNum, PageNumType, PageOrientationType, PageSize, Paragraph, ParagraphBorder,
     ParagraphBorderPosition, ParagraphBorders, ParagraphPropertyChange, Pic, PicAlign,
     PositionalTab, PositionalTabAlignmentType, PositionalTabRelativeTo, RelativeFromHType,
-    RelativeFromVType, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType,
-    Start, StructuredDataTag, Style, StyleType, StyleWithLevel, Sym, Tab as DocxTab, TabLeaderType,
-    TabValueType, Table, TableAlignmentType, TableBorder, TableBorderPosition, TableBorders,
-    TableCell, TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
-    TableCellProperty, TableLayoutType, TableOfContents, TableOfContentsItem,
-    TablePositionProperty, TableRow, TextAlignmentType, TextBorder, TextDirectionType, ThemeColor,
-    VAlignType, VMergeType, VertAlignType, WebExtension, WidthType,
+    RelativeFromVType, Run, RunFonts, RunProperty, RunStyle, Section, Settings, Shading, ShdType,
+    SpecialIndentType, Start, StructuredDataTag, Style, StyleType, StyleWithLevel, Sym, SzCs,
+    Tab as DocxTab, TabLeaderType, TabValueType, Table, TableAlignmentType, TableBorder,
+    TableBorderPosition, TableBorders, TableCell, TableCellBorder, TableCellBorderPosition,
+    TableCellBorders, TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents,
+    TableOfContentsItem, TablePositionProperty, TableRow, TextAlignmentType, TextBorder,
+    TextDirectionType, ThemeColor, VAlignType, VMergeType, VertAlignType, WebExtension, WidthType,
 };
 use image::ImageFormat;
 use num_traits::ToPrimitive;
@@ -387,6 +387,7 @@ fn package_document(
     let bytes = patch_toc_item_tabs(bytes, toc_item_tab_patches)?;
     let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_simple_position_images(bytes)?;
+    let bytes = patch_complex_script_toggle_markers(bytes)?;
     embed_ir_manifest(bytes, ir)
 }
 
@@ -1901,6 +1902,7 @@ fn compile_style_run(mut style: Style, value: &Value, path: &str) -> Result<Styl
         );
     }
     style = compile_style_run_effects(style, run, path)?;
+    compile_complex_script_run_properties(&mut style.run_property, run, path)?;
     Ok(style)
 }
 
@@ -1959,6 +1961,52 @@ fn compile_style_run_effects(
         style.run_property = std::mem::take(&mut style.run_property).shading(property);
     }
     Ok(style)
+}
+
+fn compile_complex_script_run_properties(
+    run_property: &mut RunProperty,
+    props: &Map<String, Value>,
+    path: &str,
+) -> Result<()> {
+    if let Some(size) = number_prop(props, "sizeCs", path)? {
+        run_property.sz_cs = Some(SzCs::new(to_half_points(size, &format!("{path}/sizeCs"))?));
+    }
+    let bold = bool_prop(props, "boldCs", path)?;
+    let italic = bool_prop(props, "italicCs", path)?;
+    if let Some(value) = bold {
+        run_property.bold_cs = Some(if value {
+            BoldCs::new()
+        } else {
+            BoldCs::new().disable()
+        });
+    }
+    if let Some(value) = italic {
+        run_property.italic_cs = Some(if value {
+            ItalicCs::new()
+        } else {
+            ItalicCs::new().disable()
+        });
+    }
+    if bold.is_some() || italic.is_some() {
+        let bold_flag = bold.map_or('x', |value| if value { '1' } else { '0' });
+        let italic_flag = italic.map_or('x', |value| if value { '1' } else { '0' });
+        let style = run_property.style.as_ref().map_or_else(
+            || "-".to_owned(),
+            |style| {
+                style.val.as_bytes().iter().fold(
+                    String::with_capacity(style.val.len() * 2),
+                    |mut encoded, byte| {
+                        let _ = write!(encoded, "{byte:02x}");
+                        encoded
+                    },
+                )
+            },
+        );
+        run_property.style = Some(RunStyle::new(format!(
+            "__DOCXJSX_CS_{bold_flag}{italic_flag}_{style}__"
+        )));
+    }
+    Ok(())
 }
 
 fn compile_style_run_emphasis(
@@ -3035,6 +3083,176 @@ fn normalize_complex_script_toggle_values(xml: &mut String) -> Result<()> {
         xml.replace_range(start..end, &normalized);
     }
     Ok(())
+}
+
+fn patch_complex_script_toggle_markers(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    let mut source = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let output = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(output);
+    for index in 0..source.len() {
+        let mut file = source
+            .by_index(index)
+            .map_err(|error| Error::Compile(format!("cannot read DOCX entry: {error}")))?;
+        if Path::new(file.name())
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            let name = file.name().to_owned();
+            let mut xml = String::new();
+            file.read_to_string(&mut xml)
+                .map_err(|error| Error::Compile(format!("cannot read {name}: {error}")))?;
+            patch_complex_script_toggle_markers_in_xml(&mut xml)?;
+            writer
+                .start_file(&name, file.options())
+                .map_err(|error| Error::Compile(format!("cannot rewrite {name}: {error}")))?;
+            writer
+                .write_all(xml.as_bytes())
+                .map_err(|error| Error::Compile(format!("cannot rewrite {name}: {error}")))?;
+        } else {
+            writer
+                .raw_copy_file(file)
+                .map_err(|error| Error::Compile(format!("cannot copy DOCX entry: {error}")))?;
+        }
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|error| Error::Compile(format!("cannot finalize DOCX archive: {error}")))
+}
+
+fn patch_complex_script_toggle_markers_in_xml(xml: &mut String) -> Result<()> {
+    for (start, end) in element_content_ranges(xml, "w:rPr")?.into_iter().rev() {
+        let contents = &xml[start..end];
+        if !contents.contains("__DOCXJSX_CS_") {
+            continue;
+        }
+        let children = split_element_children(contents)?;
+        let marker = children
+            .iter()
+            .filter(|child| child_name(child) == "w:rStyle")
+            .find_map(|child| xml_attribute(child, "w:val"))
+            .filter(|value| value.starts_with("__DOCXJSX_CS_"))
+            .ok_or_else(|| {
+                Error::Compile("complex-script run marker is missing from w:rPr".to_owned())
+            })?;
+        let (bold, italic, original_style) = parse_complex_script_marker(&marker)?;
+        let mut patched_bold = false;
+        let mut patched_italic = false;
+        let mut restored_style = false;
+        let mut patched = String::new();
+        for child in children {
+            match child_name(child) {
+                "w:rStyle" if xml_attribute(child, "w:val").as_deref() == Some(&marker) => {
+                    if let Some(style) = original_style.as_deref() {
+                        let _ = write!(patched, r#"<w:rStyle w:val="{style}" />"#);
+                    }
+                    restored_style = true;
+                }
+                "w:bCs" if bold.is_some() => {
+                    patched.push_str(&set_on_off_xml_value(child, bold == Some(true))?);
+                    patched_bold = true;
+                }
+                "w:iCs" if italic.is_some() => {
+                    patched.push_str(&set_on_off_xml_value(child, italic == Some(true))?);
+                    patched_italic = true;
+                }
+                _ => patched.push_str(child),
+            }
+        }
+        if !restored_style
+            || bold.is_some_and(|_| !patched_bold)
+            || italic.is_some_and(|_| !patched_italic)
+        {
+            return Err(Error::Compile(format!(
+                "complex-script run marker `{marker}` could not be fully applied"
+            )));
+        }
+        xml.replace_range(start..end, &patched);
+    }
+    Ok(())
+}
+
+fn parse_complex_script_marker(
+    marker: &str,
+) -> Result<(Option<bool>, Option<bool>, Option<String>)> {
+    let body = marker
+        .strip_prefix("__DOCXJSX_CS_")
+        .and_then(|body| body.strip_suffix("__"))
+        .ok_or_else(|| Error::Compile("malformed complex-script run marker".to_owned()))?;
+    let (flags, style) = body
+        .split_once('_')
+        .ok_or_else(|| Error::Compile("malformed complex-script run marker".to_owned()))?;
+    let mut flags = flags.chars();
+    let bold = parse_complex_script_flag(flags.next())?;
+    let italic = parse_complex_script_flag(flags.next())?;
+    if flags.next().is_some() {
+        return Err(Error::Compile(
+            "malformed complex-script run marker".to_owned(),
+        ));
+    }
+    let original_style = if style == "-" {
+        None
+    } else {
+        let bytes = style
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let hex = std::str::from_utf8(pair)
+                    .map_err(|error| Error::Compile(format!("invalid style marker: {error}")))?;
+                u8::from_str_radix(hex, 16)
+                    .map_err(|error| Error::Compile(format!("invalid style marker: {error}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if style.len() % 2 != 0 {
+            return Err(Error::Compile(
+                "malformed encoded style in run marker".to_owned(),
+            ));
+        }
+        Some(String::from_utf8(bytes).map_err(|error| {
+            Error::Compile(format!("invalid UTF-8 in encoded run style: {error}"))
+        })?)
+    };
+    Ok((bold, italic, original_style))
+}
+
+fn parse_complex_script_flag(value: Option<char>) -> Result<Option<bool>> {
+    match value {
+        Some('x') => Ok(None),
+        Some('0') => Ok(Some(false)),
+        Some('1') => Ok(Some(true)),
+        _ => Err(Error::Compile(
+            "malformed complex-script run marker".to_owned(),
+        )),
+    }
+}
+
+fn xml_attribute(element: &str, name: &str) -> Option<String> {
+    let start = element.find(&format!("{name}=\""))? + name.len() + 2;
+    let end = element[start..].find('"')? + start;
+    Some(element[start..end].to_owned())
+}
+
+fn set_on_off_xml_value(element: &str, enabled: bool) -> Result<String> {
+    let attribute = "w:val=\"";
+    let mut output = element.to_owned();
+    if let Some(start) = output.find(attribute) {
+        let value_start = start + attribute.len();
+        let value_end = output[value_start..]
+            .find('"')
+            .map(|offset| value_start + offset + 1)
+            .ok_or_else(|| Error::Compile("unterminated on/off run property".to_owned()))?;
+        let attribute_start = output[..start].rfind(char::is_whitespace).unwrap_or(start);
+        output.replace_range(attribute_start..value_end, "");
+    }
+    if !enabled {
+        let close = output
+            .rfind(" />")
+            .or_else(|| output.rfind("/>"))
+            .ok_or_else(|| Error::Compile("unterminated on/off run property".to_owned()))?;
+        output.insert_str(close, " w:val=\"0\"");
+    }
+    Ok(output)
 }
 
 fn remove_table_grid_column_type(xml: &mut String) {
@@ -5244,6 +5462,7 @@ fn compile_run_properties(props: &Map<String, Value>, path: &str) -> Result<Run>
     if let Some(highlight) = string_prop(props, "highlight", path)? {
         run = run.highlight(highlight);
     }
+    compile_complex_script_run_properties(&mut run.run_property, props, path)?;
     Ok(run)
 }
 
@@ -7131,6 +7350,7 @@ fn compile_list_level_run(
     if let Some(spacing) = number_prop(props, "characterSpacing", path)? {
         level = level.spacing(to_twips_i32(spacing, path)?);
     }
+    compile_complex_script_run_properties(&mut level.run_property, props, path)?;
     Ok(level)
 }
 

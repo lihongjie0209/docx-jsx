@@ -798,6 +798,147 @@ export default <Document><Section><Paragraph><Run underline="dotted-heavy">text<
 }
 
 #[test]
+fn cli_should_roundtrip_complex_script_run_properties_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("complex-script.tsx");
+    let compiled = directory.path().join("complex-script.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    let rebuilt_external = directory.path().join("rebuilt-external.docx");
+    let reversed_again = directory.path().join("reversed-again.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph, Run, List, ListItem } from "docx-jsx";
+export default <Document styles={[{id:"ComplexScriptStyle",name:"Complex Script Style",type:"character",run:{size:10,sizeCs:14,bold:true,boldCs:false,italic:false,italicCs:true}}]}><Section><Paragraph><Run style="Emphasis" size={12} sizeCs={18} bold={false} boldCs italic italicCs={false}>mixed script</Run></Paragraph><Paragraph><Run style="ComplexScriptStyle">styled script</Run></Paragraph><List type="ordered" levels={[{format:"decimal",text:"%1.",size:11,sizeCs:16,bold:false,boldCs:true,italic:true,italicCs:false}]}><ListItem>numbered script</ListItem></List></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    assert_complex_script_compiled_xml(&compiled);
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    for expected in [
+        "size={12}",
+        "sizeCs={18}",
+        "bold={false}",
+        "boldCs",
+        "italic",
+        "italicCs={false}",
+        "style=\"Emphasis\"",
+        "ComplexScriptStyle",
+        "numbered script",
+        "styled script",
+        r#""sizeCs":14"#,
+        r#""boldCs":false"#,
+        r#""italicCs":true"#,
+        r#""sizeCs":16"#,
+        r#""boldCs":true"#,
+        r#""italicCs":false"#,
+    ] {
+        assert!(
+            jsx.contains(expected),
+            "external reverse should preserve {expected}: {jsx}"
+        );
+    }
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    fs::write(
+        &rebuilt_external,
+        strip_ir_manifest(&fs::read(&rebuilt).expect("rebuilt DOCX should exist")),
+    )
+    .expect("rebuilt manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&rebuilt_external)
+        .args(["-o"])
+        .arg(&reversed_again)
+        .assert()
+        .success();
+    let jsx_again = fs::read_to_string(&reversed_again).expect("second reverse should exist");
+    for expected in [
+        "sizeCs={18}",
+        r#""sizeCs":14"#,
+        r#""boldCs":false"#,
+        r#""italicCs":true"#,
+        r#""sizeCs":16"#,
+        r#""boldCs":true"#,
+        r#""italicCs":false"#,
+    ] {
+        assert!(
+            jsx_again.contains(expected),
+            "reverse/recompile should preserve {expected}: {jsx_again}"
+        );
+    }
+}
+
+fn assert_complex_script_compiled_xml(compiled: &std::path::Path) {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+        fs::read(compiled).expect("DOCX should exist"),
+    ))
+    .expect("compiled DOCX should be ZIP");
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part should exist")
+        .read_to_string(&mut document_xml)
+        .expect("document XML should read");
+    for expected in [
+        r#"<w:rStyle w:val="Emphasis" />"#,
+        r#"<w:b w:val="false" />"#,
+        r"<w:bCs />",
+        r"<w:i />",
+        r#"<w:iCs w:val="0" />"#,
+        r#"<w:sz w:val="24" />"#,
+        r#"<w:szCs w:val="36" />"#,
+    ] {
+        assert!(
+            document_xml.contains(expected),
+            "compiled OOXML should contain {expected}: {document_xml}"
+        );
+    }
+    let mut styles_xml = String::new();
+    archive
+        .by_name("word/styles.xml")
+        .expect("styles part should exist")
+        .read_to_string(&mut styles_xml)
+        .expect("styles XML should read");
+    assert!(styles_xml.contains(r#"<w:bCs w:val="0" />"#));
+    assert!(styles_xml.contains(r"<w:iCs />"));
+    let mut numbering_xml = String::new();
+    archive
+        .by_name("word/numbering.xml")
+        .expect("numbering part should exist")
+        .read_to_string(&mut numbering_xml)
+        .expect("numbering XML should read");
+    assert!(numbering_xml.contains(r"<w:bCs />"));
+    assert!(numbering_xml.contains(r#"<w:iCs w:val="0" />"#));
+}
+
+#[test]
 fn cli_should_roundtrip_run_caps_on_and_off_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("run-caps.tsx");
