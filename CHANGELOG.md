@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1 - 2026-10-13
+
+- Fix Rust 1.99 Clippy's single-element-loop lint in image accessibility
+  reverse validation so the v0.8.0 feature set passes the hosted CI toolchain.
+
 ## 0.8.0 - 2026-10-13
 
 - Add `Image.decorative` to explicitly mark an image as decorative, compiling

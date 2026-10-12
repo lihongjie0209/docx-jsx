@@ -7560,12 +7560,10 @@ fn collect_drawing_accessibility(
         let attributes = reverse_xml_attributes(&drawing[doc_pr_start..tag_end])?;
         let raw_description = attributes.get("descr").cloned();
         let title = attributes.get("title").cloned();
-        for (name, value) in [("title", &title)] {
-            if value.as_deref() == Some("") {
-                return Err(Error::Reverse(format!(
-                    "image relationship `{relationship_id}` has an empty wp:docPr `{name}` value; use non-empty text or remove the attribute before reverse conversion"
-                )));
-            }
+        if title.as_deref() == Some("") {
+            return Err(Error::Reverse(format!(
+                "image relationship `{relationship_id}` has an empty wp:docPr `title` value; use non-empty text or remove the attribute before reverse conversion"
+            )));
         }
         let decorative = raw_description.as_deref() == Some("");
         let description = raw_description.filter(|value| !value.is_empty());
