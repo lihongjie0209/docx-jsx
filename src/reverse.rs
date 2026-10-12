@@ -956,9 +956,16 @@ struct ImageAsset {
 }
 
 #[derive(Clone, Debug, Default)]
+struct ImageAccessibility {
+    description: Option<String>,
+    title: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
 struct ImageCatalog {
     scoped: HashMap<String, HashMap<String, ImageAsset>>,
     by_id: HashMap<String, ImageAsset>,
+    accessibility: HashMap<String, HashMap<String, VecDeque<ImageAccessibility>>>,
     used_names: BTreeSet<String>,
 }
 
@@ -975,6 +982,14 @@ impl ImageCatalog {
         owner
             .and_then(|owner| self.scoped.get(owner)?.get(id))
             .or_else(|| self.by_id.get(id))
+    }
+
+    fn take_accessibility(&mut self, owner: Option<&str>, id: &str) -> ImageAccessibility {
+        owner
+            .and_then(|owner| self.accessibility.get_mut(owner))
+            .and_then(|images| images.get_mut(id))
+            .and_then(VecDeque::pop_front)
+            .unwrap_or_default()
     }
 }
 
@@ -2159,11 +2174,20 @@ impl Writer {
                 asset.src
             )));
         }
+        let accessibility = self
+            .images
+            .take_accessibility(self.image_scope.as_deref(), &picture.id);
         self.components.insert("Image");
         self.assets.insert(asset.src.clone(), asset.bytes);
         let mut attrs = attr("src", &asset.src);
         attrs.push_str(&emu_point_attr("width", i64::from(picture.size.0)));
         attrs.push_str(&emu_point_attr("height", i64::from(picture.size.1)));
+        if let Some(description) = accessibility.description {
+            attrs.push_str(&attr("description", &description));
+        }
+        if let Some(title) = accessibility.title {
+            attrs.push_str(&attr("title", &title));
+        }
         if !picture.id.is_empty() {
             attrs.push_str(&attr("relationshipId", &picture.id));
         }
@@ -7453,6 +7477,16 @@ fn collect_package_images(bytes: &[u8]) -> Result<ImageCatalog> {
             Error::Reverse(format!("cannot read relationships `{rels_part}`: {error}"))
         })?;
         drop(rels_file);
+        let mut accessibility = match archive.by_name(&owner) {
+            Ok(mut owner_file) => {
+                let mut xml = String::new();
+                owner_file.read_to_string(&mut xml).map_err(|error| {
+                    Error::Reverse(format!("cannot read image owner part `{owner}`: {error}"))
+                })?;
+                collect_drawing_accessibility(&xml)?
+            }
+            Err(_) => HashMap::new(),
+        };
         for (id, target) in relationships_ending_with(&rels, "/image")? {
             let part = resolve_word_target(&target);
             let Ok(mut file) = archive.by_name(&part) else {
@@ -7479,15 +7513,62 @@ fn collect_package_images(bytes: &[u8]) -> Result<ImageCatalog> {
             };
             images.insert(
                 &owner,
-                id,
+                id.clone(),
                 ImageAsset {
                     src,
                     bytes: image_bytes,
                 },
             );
+            images
+                .accessibility
+                .entry(owner.clone())
+                .or_default()
+                .insert(id.clone(), accessibility.remove(&id).unwrap_or_default());
         }
     }
     Ok(images)
+}
+
+fn collect_drawing_accessibility(
+    xml: &str,
+) -> Result<HashMap<String, VecDeque<ImageAccessibility>>> {
+    let mut output = HashMap::<String, VecDeque<ImageAccessibility>>::new();
+    for (start, end) in reverse_element_content_ranges(xml, "w:drawing")? {
+        let drawing = &xml[start..end];
+        let Some(embed_start) = drawing.find("r:embed=\"") else {
+            continue;
+        };
+        let value_start = embed_start + "r:embed=\"".len();
+        let id_end = drawing[value_start..]
+            .find('"')
+            .map(|offset| value_start + offset)
+            .ok_or_else(|| Error::Reverse("unterminated image relationship id".to_owned()))?;
+        let relationship_id = &drawing[value_start..id_end];
+        let Some(doc_pr_start) = drawing.find("<wp:docPr") else {
+            return Err(Error::Reverse(format!(
+                "image relationship `{relationship_id}` has no wp:docPr metadata; restore the drawing properties or replace the image"
+            )));
+        };
+        let tag_end = drawing[doc_pr_start..]
+            .find('>')
+            .map(|offset| doc_pr_start + offset + 1)
+            .ok_or_else(|| Error::Reverse("unterminated wp:docPr element".to_owned()))?;
+        let attributes = reverse_xml_attributes(&drawing[doc_pr_start..tag_end])?;
+        let description = attributes.get("descr").cloned();
+        let title = attributes.get("title").cloned();
+        for (name, value) in [("descr", &description), ("title", &title)] {
+            if value.as_deref() == Some("") {
+                return Err(Error::Reverse(format!(
+                    "image relationship `{relationship_id}` has an empty wp:docPr `{name}` value; use non-empty text or remove the attribute before reverse conversion"
+                )));
+            }
+        }
+        output
+            .entry(relationship_id.to_owned())
+            .or_default()
+            .push_back(ImageAccessibility { description, title });
+    }
+    Ok(output)
 }
 
 fn collect_header_footer_parts(bytes: &[u8]) -> Result<HashMap<String, String>> {

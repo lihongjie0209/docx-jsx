@@ -83,6 +83,7 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("lineNumbering?:"))
         .stdout(predicate::str::contains("docx-jsx pdf"))
         .stdout(predicate::str::contains("-o <OUTPUT.docx|pdf>"))
+        .stdout(predicate::str::contains("wp:docPr/@descr"))
         .stdout(predicate::str::contains("inferred from the `-o` suffix"))
         .stdout(predicate::str::contains("DOCX_JSX_SOFFICE"))
         .stdout(predicate::str::contains("--engine"));
@@ -1626,6 +1627,88 @@ fn cli_should_reverse_and_rebuild_external_simple_position_image() {
             && document.contains("allowOverlap=\"0\"")
             && document.contains("<wp:simplePos x=\"25400\" y=\"-12700\" />"),
         "{document}"
+    );
+}
+
+#[test]
+fn cli_should_roundtrip_image_accessibility_metadata_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let image_path = directory.path().join("figure.png");
+    let mut image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1)
+        .write_to(&mut image, image::ImageFormat::Png)
+        .expect("PNG should encode");
+    fs::write(&image_path, image.into_inner()).expect("image should write");
+
+    let input = directory.path().join("input.tsx");
+    let compiled = directory.path().join("compiled.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph, Image } from "docx-jsx";
+export default <Document><Section><Paragraph><Image src="figure.png" width={24} height={24} description="Revenue &amp; profit &lt;forecast&gt;" title={'Quarterly "Revenue"'} /></Paragraph></Section></Document>;"#,
+    )
+    .expect("JSX should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    let bytes = fs::read(&compiled).expect("DOCX should exist");
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("valid ZIP");
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part")
+        .read_to_string(&mut document_xml)
+        .expect("document XML should read");
+    assert!(
+        document_xml.contains(r#"descr="Revenue &amp; profit &lt;forecast&gt;""#)
+            && document_xml.contains(r#"title="Quarterly &quot;Revenue&quot;""#),
+        "writer should emit image accessibility metadata in wp:docPr: {document_xml}"
+    );
+
+    fs::write(&external, strip_ir_manifest(&bytes)).expect("external DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        jsx.contains("description=\"Revenue &amp; profit &lt;forecast&gt;\"")
+            && jsx.contains("title=\"Quarterly &quot;Revenue&quot;\""),
+        "external reverse should preserve image accessibility metadata: {jsx}"
+    );
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    let rebuilt_bytes = fs::read(&rebuilt).expect("rebuilt DOCX should exist");
+    let mut rebuilt_archive =
+        zip::ZipArchive::new(std::io::Cursor::new(&rebuilt_bytes)).expect("valid ZIP");
+    let mut rebuilt_xml = String::new();
+    rebuilt_archive
+        .by_name("word/document.xml")
+        .expect("rebuilt document part")
+        .read_to_string(&mut rebuilt_xml)
+        .expect("rebuilt document XML should read");
+    assert!(
+        rebuilt_xml.contains(r#"descr="Revenue &amp; profit &lt;forecast&gt;""#)
+            && rebuilt_xml.contains(r#"title="Quarterly &quot;Revenue&quot;""#),
+        "recompiled DOCX should retain image accessibility metadata: {rebuilt_xml}"
     );
 }
 

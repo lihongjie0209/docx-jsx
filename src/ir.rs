@@ -1335,6 +1335,8 @@ fn image_props() -> &'static [&'static str] {
         "src",
         "width",
         "height",
+        "description",
+        "title",
         "relationshipId",
         "rotate",
         "floating",
@@ -1681,6 +1683,18 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| validation(path, "Image `src` must be a non-empty string"))?;
+    for key in ["description", "title"] {
+        if node
+            .props
+            .get(key)
+            .is_some_and(|value| value.as_str().is_none_or(str::is_empty))
+        {
+            return Err(validation(
+                path,
+                format!("Image `{key}` must be a non-empty string"),
+            ));
+        }
+    }
     if node
         .props
         .get("relationshipId")
@@ -1690,6 +1704,24 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
             path,
             "`relationshipId` must be a non-empty string",
         ));
+    }
+    if (node.props.contains_key("simplePosition")
+        || node.props.contains_key("description")
+        || node.props.contains_key("title"))
+        && let Some(id) = node.props.get("relationshipId").and_then(Value::as_str)
+    {
+        if !is_xml_ncname(id) {
+            return Err(validation(
+                path,
+                "`relationshipId` must be a valid XML NCName when image metadata or `simplePosition` is supplied",
+            ));
+        }
+        if id.starts_with("rIdDocxJsxImage_") {
+            return Err(validation(
+                path,
+                "`relationshipId` uses the reserved `rIdDocxJsxImage_` prefix; choose a different relationship id",
+            ));
+        }
     }
     if let Some(value) = node.props.get("simplePosition") {
         let position = value.as_object().ok_or_else(|| {
@@ -1718,11 +1750,11 @@ fn validate_image_semantics(node: &Node, path: &str) -> Result<()> {
             .props
             .get("relationshipId")
             .and_then(Value::as_str)
-            .is_some_and(|id| !is_xml_ncname(id) || id.starts_with("rIdDocxJsxSimplePosition_"))
+            .is_some_and(|id| !is_xml_ncname(id) || id.starts_with("rIdDocxJsxImage_"))
         {
             return Err(validation(
                 path,
-                "`relationshipId` used with `simplePosition` must be an XML NCName and must not use the reserved `rIdDocxJsxSimplePosition_` prefix",
+                "`relationshipId` used with `simplePosition` must be an XML NCName and must not use the reserved `rIdDocxJsxImage_` prefix",
             ));
         }
     }
@@ -6315,7 +6347,7 @@ mod tests {
     #[test]
     fn validate_should_accept_advanced_image_properties() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Image","props":{"src":"figure.png","width":120,"height":80,"relationshipId":"rIdHero","rotate":45,"floating":true,"allowOverlap":true,"layoutInCell":true,"positionH":"right","positionV":18.5,"relativeFromH":"page","relativeFromV":"paragraph","simplePosition":{"x":25400,"y":-12700},"distanceTop":2,"distanceBottom":3,"distanceLeft":4,"distanceRight":5,"relativeHeight":251658240},"children":[]}]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Image","props":{"src":"figure.png","width":120,"height":80,"description":"Accessible diagram","title":"System overview","relationshipId":"rIdHero","rotate":45,"floating":true,"allowOverlap":true,"layoutInCell":true,"positionH":"right","positionV":18.5,"relativeFromH":"page","relativeFromV":"paragraph","simplePosition":{"x":25400,"y":-12700},"distanceTop":2,"distanceBottom":3,"distanceLeft":4,"distanceRight":5,"relativeHeight":251658240},"children":[]}]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
     }
@@ -6354,6 +6386,14 @@ mod tests {
             (
                 r#"{"src":"x.png","width":1,"height":1,"floating":true,"simplePosition":{"x":2147483648,"y":0}}"#,
                 "signed 32-bit integer",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"description":""}"#,
+                "description` must be a non-empty string",
+            ),
+            (
+                r#"{"src":"x.png","width":1,"height":1,"title":42}"#,
+                "title` must be a non-empty string",
             ),
         ] {
             let ir = parse(&format!(

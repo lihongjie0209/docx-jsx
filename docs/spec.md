@@ -485,8 +485,12 @@ error instead of a silent drop.
   adjacent words together, exposing an optional hyphenation point, or keeping
   a hyphenated term together. They are valid wherever run-level text is valid.
 - `Image`: required `src`, `width`, and `height` in points. Optional
-  `relationshipId` overrides the generated image relationship identifier and
-  must be non-empty. `rotate` is an integer angle from 0 through 65535 degrees.
+  `description` supplies accessible alternative text and maps to
+  `wp:docPr/@descr`; `title` maps to `wp:docPr/@title`. Both must be non-empty
+  strings when supplied and are preserved by external DOCX reverse without
+  relying on the embedded IR manifest. `relationshipId` overrides the generated
+  image relationship identifier and must be non-empty. `rotate` is an integer
+  angle from 0 through 65535 degrees.
   `floating` switches from inline layout to an anchored drawing. Anchored
   images support `allowOverlap`, `positionH` (`left`, `center`, `right`, or a
   point offset), `positionV` (`top`, `center`, `bottom`, or a point offset),
@@ -506,7 +510,8 @@ error instead of a silent drop.
   external reverse emits the reader's effective boolean so recompilation keeps
   the same layout behavior.
   Image sources resolve from the entry module directory. External reverse
-  extracts raster media from the package and points `src` at
+  extracts raster media from the package, restores `wp:docPr/@descr` and
+  `wp:docPr/@title`, and points `src` at
   `media/<filename>` next to the emitted JSX, including pictures whose
   relationships live on a header or footer part. `docx-jsx reverse` writes
   those sidecar files beside the JSX output. The pinned writer hardcodes
