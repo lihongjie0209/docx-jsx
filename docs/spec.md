@@ -695,8 +695,17 @@ error instead of a silent drop.
   appear at most once. They preserve ordered content around the generated
   field/static entries and are restored from external DOCX without the IR
   manifest. The blank paragraph docx-rs inserts before a first after-table is
-  treated as a writer artifact. Deleted index fields, custom field paragraph
-  properties, and `withoutSdt` are not part of this wrapper contract yet.
+  treated as a writer artifact. The public docx-rs `delete` setter is not
+  exposed: it is ignored when static `TocItem` rows are present, and its
+  empty-index output wraps field markers in a tracked deletion that the reverse
+  reader cannot currently reconstruct. The `paragraph_property` setter is
+  also not exposed because it applies only to the generated automatic-field
+  paragraph and arbitrary paragraph properties have no lossless index-property
+  representation. `without_sdt` is not exposed because its unwrapped dynamic
+  field cannot yet be reconstructed as one index by external reverse; static
+  rows also retain their own nested SDT in this mode. These writer APIs become
+  DSL features only when legal serialization and manifest-free reverse are
+  covered.
 - `TableOfFigures`: required non-empty `label` (for example `Figure`),
   `includeLabelAndNumber?: boolean`, `separator?: string`,
   `entryBookmarkName?: string`, `entryAndPageNumberSeparator?: string`,
