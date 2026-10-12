@@ -164,6 +164,10 @@ instead of being silently discarded. Bookmark, comment, and hyperlink range
 markers are reconstructed into nested `Bookmark` / `InlineBookmark` /
 `Comment` JSX by matching IDs. Overlapping or unmatched range markers return
 a reason and a repair suggestion instead of empty adjacent markers.
+Wordprocessing text boxes (`w:drawing` with `wps:wsp`) are rejected with an
+explanation and repair suggestion: docx-rs 0.4.22 has reader models for them
+but its `Drawing` writer panics for text boxes, so flattening their paragraphs
+would lose geometry and prevent a 1:1 reverse/recompile round trip.
 Body-level `w:sdt` that is a table of contents, figures, or entries field
 reverses as `TableOfContents` / `TableOfFigures` / `TableOfEntries`. Other
 body-level and table-cell structured tags reverse as `ContentControl`.

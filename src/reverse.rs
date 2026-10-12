@@ -11,7 +11,6 @@ use docx_rs::{
     Insert, InsertChild, Level, MoveFrom, MoveFromChild, MoveTo, MoveToChild, Numbering,
     ParagraphChild, Pic, PicAlign, RelativeFromHType, RelativeFromVType, RunChild,
     StructuredDataTag, StructuredDataTagChild, TableCellContent, TableChild, TableRowChild,
-    TextBoxContentChild,
 };
 use num_traits::ToPrimitive;
 use quick_xml::events::{BytesStart, Event};
@@ -1108,7 +1107,6 @@ impl Writer {
     }
 
     fn footer_paragraph(&mut self, paragraph: &docx_rs::Paragraph, depth: usize) -> Result<()> {
-        let mut text_box_found = false;
         for child in &paragraph.children {
             let ParagraphChild::Run(run) = child else {
                 continue;
@@ -1117,22 +1115,13 @@ impl Writer {
                 let RunChild::Drawing(drawing) = child else {
                     continue;
                 };
-                let Some(DrawingData::TextBox(text_box)) = &drawing.data else {
+                let Some(DrawingData::TextBox(_)) = &drawing.data else {
                     continue;
                 };
-                text_box_found = true;
-                for child in &text_box.children {
-                    match child {
-                        TextBoxContentChild::Paragraph(value) => self.paragraph(value, depth)?,
-                        TextBoxContentChild::Table(value) => self.table(value, depth)?,
-                    }
-                }
+                return Err(text_box_reverse_error("footer"));
             }
         }
-        if !text_box_found {
-            self.paragraph(paragraph, depth)?;
-        }
-        Ok(())
+        self.paragraph(paragraph, depth)
     }
 
     #[expect(
@@ -1696,7 +1685,7 @@ impl Writer {
         };
         match data {
             DrawingData::Pic(picture) => self.image(picture, depth),
-            DrawingData::TextBox(_) => Err(unsupported("run", data)),
+            DrawingData::TextBox(_) => Err(text_box_reverse_error("run")),
         }
     }
 
@@ -9096,6 +9085,12 @@ fn unsupported(context: &str, value: &impl std::fmt::Debug) -> Error {
     Error::Reverse(format!("unsupported {context} structure: {value:?}"))
 }
 
+fn text_box_reverse_error(context: &str) -> Error {
+    Error::Reverse(format!(
+        "{context} text box cannot be represented as JSX without losing position and geometry; replace it with ordinary paragraphs and images, or use a docx-rs version with a text-box writer before round-tripping"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9837,6 +9832,58 @@ mod tests {
         assert!(
             jsx.contains("<Footer type=\"default\">") && jsx.contains(r#"{"footer text"}"#),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_footer_text_box_should_error_instead_of_flattening_geometry() {
+        let text_box = docx_rs::TextBox {
+            children: vec![docx_rs::TextBoxContentChild::Paragraph(Box::new(
+                Paragraph::new().add_run(Run::new().add_text("boxed footer")),
+            ))],
+            ..docx_rs::TextBox::new()
+        };
+        let mut run = Run::new();
+        run.children.push(RunChild::Drawing(Box::new(
+            docx_rs::Drawing::new().text_box(text_box),
+        )));
+        let paragraph = Paragraph::new().add_run(run);
+        let error = Writer::default()
+            .footer_paragraph(&paragraph, 0)
+            .expect_err("text box geometry cannot be represented by current JSX");
+
+        assert!(
+            error.to_string().contains("footer text box")
+                && error.to_string().contains("position and geometry"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_footer_text_box_should_report_unrepresentable_geometry() {
+        let packed = pack_docx(
+            Docx::new()
+                .footer(Footer::new().add_paragraph(Paragraph::new()))
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("body"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut footer = String::new();
+        archive
+            .by_name("word/footer1.xml")
+            .expect("default footer part")
+            .read_to_string(&mut footer)
+            .expect("footer XML should be readable");
+        let text_box = r#"<w:r><w:drawing><wp:inline><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>boxed footer</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#;
+        footer = footer.replacen("</w:p>", &format!("{text_box}</w:p>"), 1);
+        let external = rewrite_package_parts(&packed, &[("word/footer1.xml", footer.as_bytes())]);
+
+        let error = reverse_document(&external)
+            .expect_err("text box shape data cannot be represented without loss");
+
+        assert!(
+            error.to_string().contains("footer text box")
+                && error.to_string().contains("position and geometry"),
+            "{error}"
         );
     }
 
