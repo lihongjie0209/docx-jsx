@@ -361,6 +361,7 @@ impl IrEnvelope {
         validate_node(&self.document, "Document")?;
         validate_deleted_instruction_context(&self.document, false, "Document")?;
         validate_bookmark_references(&self.document)?;
+        validate_comment_relationships(&self.document)?;
         validate_style_relationships(&self.document)
     }
 }
@@ -1300,7 +1301,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::TocEntry => &["text", "level", "omitPageNumber", "identifier"],
         NodeKind::Index => index_props(),
         NodeKind::IndexEntry => index_entry_props(),
-        NodeKind::Comment => &["text", "author", "date"],
+        NodeKind::Comment => &["text", "author", "date", "id", "parentCommentId", "done"],
         NodeKind::Symbol => &["font", "char"],
         NodeKind::Inserted | NodeKind::Deleted | NodeKind::MovedFrom | NodeKind::MovedTo => {
             &["author", "date"]
@@ -4917,6 +4918,35 @@ fn validate_annotation_semantics(node: &Node, path: &str) -> Result<()> {
                 ));
             }
         }
+        if node
+            .props
+            .get("done")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(validation(path, "Comment `done` must be a boolean"));
+        }
+        for key in ["id", "parentCommentId"] {
+            if let Some(value) = node.props.get(key) {
+                let id = value.as_u64().ok_or_else(|| {
+                    validation(
+                        path,
+                        format!("Comment `{key}` must be a non-negative integer"),
+                    )
+                })?;
+                usize::try_from(id).map_err(|_| {
+                    validation(
+                        path,
+                        format!("Comment `{key}` exceeds this platform's range"),
+                    )
+                })?;
+            }
+        }
+        if node.props.contains_key("parentCommentId") && !node.props.contains_key("id") {
+            return Err(validation(
+                path,
+                "Comment `parentCommentId` requires an explicit `id`; assign a stable id to the reply",
+            ));
+        }
     }
     if node.kind == NodeKind::Footnote && node.children.is_empty() {
         return Err(validation(path, "Footnote requires content"));
@@ -4941,6 +4971,88 @@ fn validate_annotation_semantics(node: &Node, path: &str) -> Result<()> {
                 path,
                 "Symbol `char` must be four hexadecimal digits",
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_comment_relationships(root: &Node) -> Result<()> {
+    fn collect(
+        node: &Node,
+        path: &str,
+        comments: &mut HashMap<usize, (Option<usize>, String)>,
+    ) -> Result<()> {
+        if node.kind == NodeKind::Comment
+            && let Some(id) = node.props.get("id").and_then(Value::as_u64)
+        {
+            let id = usize::try_from(id)
+                .map_err(|_| validation(path, "Comment `id` exceeds this platform's range"))?;
+            let parent = node
+                .props
+                .get("parentCommentId")
+                .and_then(Value::as_u64)
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| {
+                    validation(
+                        path,
+                        "Comment `parentCommentId` exceeds this platform's range",
+                    )
+                })?;
+            if comments.insert(id, (parent, path.to_owned())).is_some() {
+                return Err(validation(
+                    path,
+                    format!("duplicate Comment `id` {id}; assign every comment a unique id"),
+                ));
+            }
+        }
+        for (index, child) in node.children.iter().enumerate() {
+            if let Child::Node(child) = child {
+                collect(
+                    child,
+                    &format!("{path}/{}[{index}]", child.kind.name()),
+                    comments,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut comments = HashMap::new();
+    collect(root, "Document", &mut comments)?;
+    for (&id, (parent, path)) in &comments {
+        let Some(parent) = parent else {
+            continue;
+        };
+        if !comments.contains_key(parent) {
+            return Err(validation(
+                path,
+                format!(
+                    "Comment `parentCommentId` {parent} does not match an explicit comment `id`; add the parent comment or correct the id"
+                ),
+            ));
+        }
+        if id == *parent {
+            return Err(validation(
+                path,
+                "Comment cannot reply to itself; choose a different `parentCommentId`",
+            ));
+        }
+    }
+    for &start in comments.keys() {
+        let mut visited = HashSet::new();
+        let mut current = start;
+        while let Some(Some(parent)) = comments.get(&current).map(|(parent, _)| parent) {
+            if !visited.insert(current) {
+                let path = comments
+                    .get(&current)
+                    .map_or("Document", |(_, path)| path.as_str());
+                return Err(validation(
+                    path,
+                    "comment reply relationships contain a cycle; make parentCommentId chains lead to a root comment",
+                ));
+            }
+            current = *parent;
         }
     }
     Ok(())
@@ -6449,6 +6561,67 @@ mod tests {
                 .to_string()
                 .contains("hexadecimal")
         );
+    }
+
+    #[test]
+    fn validate_should_accept_comment_reply_with_explicit_parent_id() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Comment","props":{"id":10,"text":"Root"},"children":["root selection"]},{"type":"Comment","props":{"id":20,"parentCommentId":10,"text":"Reply"},"children":["reply selection"]}]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("threaded comments with explicit unique ids should validate");
+    }
+
+    #[test]
+    fn validate_should_reject_non_boolean_comment_done_state() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Comment","props":{"text":"Resolved","done":"yes"},"children":["selected"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("Comment done state must be a boolean");
+        assert!(
+            error
+                .to_string()
+                .contains("Comment `done` must be a boolean")
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_duplicate_explicit_comment_ids() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Comment","props":{"id":7,"text":"One"},"children":["first"]},{"type":"Comment","props":{"id":7,"text":"Two"},"children":["second"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("comment ids must be unique across the document");
+        assert!(error.to_string().contains("duplicate Comment `id` 7"));
+    }
+
+    #[test]
+    fn validate_should_reject_missing_comment_reply_parent() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Comment","props":{"id":7,"parentCommentId":8,"text":"Reply"},"children":["reply"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("reply parents must resolve to an explicit comment id");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match an explicit comment `id`")
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_cyclic_comment_reply_relationships() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":[{"type":"Comment","props":{"id":7,"parentCommentId":8,"text":"One"},"children":["first"]},{"type":"Comment","props":{"id":8,"parentCommentId":7,"text":"Two"},"children":["second"]}]}]}]}}"#,
+        );
+        let error = ir
+            .validate()
+            .expect_err("comment reply parent chains must be acyclic");
+        assert!(error.to_string().contains("contain a cycle"));
     }
 
     #[test]

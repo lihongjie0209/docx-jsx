@@ -88,6 +88,12 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         images,
         image_scope: Some("word/document.xml".to_owned()),
         header_footer_parts: collect_header_footer_parts(bytes)?,
+        comment_done: docx
+            .comments_extended
+            .children
+            .iter()
+            .map(|extended| (extended.paragraph_id.clone(), extended.done))
+            .collect(),
         style_theme_colors: theme_colors.styles,
         run_theme_colors: theme_colors.runs,
         abstract_nums: docx.numberings.abstract_nums.clone(),
@@ -533,6 +539,7 @@ struct Writer {
     output: String,
     components: BTreeSet<&'static str>,
     comments: HashMap<usize, Comment>,
+    comment_done: HashMap<String, bool>,
     hyperlink_targets: HashMap<String, String>,
     hyperlink_histories: HashMap<String, VecDeque<Option<usize>>>,
     sdt_plan: SdtPlan,
@@ -1280,10 +1287,11 @@ impl Writer {
         self.line(
             depth,
             &format!(
-                "<Comment{}{}{}>",
+                "<Comment{}{}{}{}>",
                 attr("text", &text),
                 attr("author", &comment.author),
-                attr("date", &comment.date)
+                attr("date", &comment.date),
+                comment_identity_attrs(comment, comment_done(comment, &self.comment_done))
             ),
         );
         for child in children {
@@ -1506,10 +1514,11 @@ impl Writer {
                 self.line(
                     depth,
                     &format!(
-                        "<Comment{}{}{}>",
+                        "<Comment{}{}{}{}>",
                         attr("text", &text),
                         attr("author", &comment.author),
-                        attr("date", &comment.date)
+                        attr("date", &comment.date),
+                        comment_identity_attrs(comment, comment_done(comment, &self.comment_done))
                     ),
                 );
                 for child in children {
@@ -2646,6 +2655,24 @@ fn comment_text(comment: &Comment) -> Result<String> {
         )));
     }
     Ok(text)
+}
+
+fn comment_identity_attrs(comment: &Comment, done: Option<bool>) -> String {
+    let mut attributes = format!(" id={{{}}}", comment.id);
+    if let Some(parent) = comment.parent_comment_id {
+        let _ = write!(attributes, " parentCommentId={{{parent}}}");
+    }
+    if let Some(done) = done {
+        let _ = write!(attributes, " done={{{done}}}");
+    }
+    attributes
+}
+
+fn comment_done(comment: &Comment, states: &HashMap<String, bool>) -> Option<bool> {
+    comment.children.iter().find_map(|child| match child {
+        CommentChild::Paragraph(paragraph) => states.get(&paragraph.id).copied(),
+        CommentChild::Table(_) => None,
+    })
 }
 
 fn range_error(kind: &str, id: usize, suggestion: &str) -> Error {
@@ -10025,8 +10052,9 @@ mod tests {
         let jsx = reverse_document(&bytes).expect("external DOCX should reverse");
 
         assert!(
-            jsx.contains(r#"<Comment text="review" author="Grace" date="2026-08-14T00:00:00Z">"#)
-                && jsx.contains(r#"{"commented"}"#)
+            jsx.contains(
+                r#"<Comment text="review" author="Grace" date="2026-08-14T00:00:00Z" id={1} done={false}>"#
+            ) && jsx.contains(r#"{"commented"}"#)
                 && jsx.contains("</Comment>"),
             "{jsx}"
         );

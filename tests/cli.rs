@@ -431,6 +431,98 @@ export default <Document><Section><TableOfContents fieldParagraph={{align:"cente
 }
 
 #[test]
+fn cli_should_roundtrip_external_threaded_comments_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("comments.tsx");
+    let compiled = directory.path().join("comments.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    let rebuilt_external = directory.path().join("rebuilt-external.docx");
+    let rebuilt_jsx = directory.path().join("rebuilt.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph, Comment } from "docx-jsx";
+export default <Document><Section><Paragraph><Comment text="Automatic">automatic selection</Comment><Comment id={10} text="Root" author="Ada">root selection</Comment><Comment id={20} parentCommentId={10} done={true} text="Reply" author="Lin">reply selection</Comment></Paragraph></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+        fs::read(&compiled).expect("DOCX should exist"),
+    ))
+    .expect("compiled DOCX should be ZIP");
+    let mut comment_replies = String::new();
+    archive
+        .by_name("word/commentsExtended.xml")
+        .expect("commentsExtended part should be present for reply relationships")
+        .read_to_string(&mut comment_replies)
+        .expect("commentsExtended should be readable");
+    assert!(
+        comment_replies.contains("w15:paraIdParent=") && comment_replies.contains("w15:done=\"1\""),
+        "the writer should emit the reply relationship: {comment_replies}"
+    );
+
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        jsx.contains("id={1}")
+            && jsx.contains("id={10}")
+            && jsx.contains("id={20}")
+            && jsx.contains("parentCommentId={10}")
+            && jsx.contains("done={true}"),
+        "external reverse should preserve comment ids, reply parent, and resolved state: {jsx}"
+    );
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&reversed)
+        .args(["-o"])
+        .arg(&rebuilt)
+        .assert()
+        .success();
+    fs::write(
+        &rebuilt_external,
+        strip_ir_manifest(&fs::read(&rebuilt).expect("rebuilt DOCX should exist")),
+    )
+    .expect("rebuilt external DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&rebuilt_external)
+        .args(["-o"])
+        .arg(&rebuilt_jsx)
+        .assert()
+        .success();
+    let rebuilt_jsx = fs::read_to_string(rebuilt_jsx).expect("rebuilt JSX should exist");
+    assert!(
+        rebuilt_jsx.contains("id={1}")
+            && rebuilt_jsx.contains("id={10}")
+            && rebuilt_jsx.contains("id={20}")
+            && rebuilt_jsx.contains("parentCommentId={10}")
+            && rebuilt_jsx.contains("done={true}"),
+        "reply relationships and resolved state should survive recompilation: {rebuilt_jsx}"
+    );
+}
+
+#[test]
 fn cli_should_reverse_style_line_number_suppression_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("style.tsx");

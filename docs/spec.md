@@ -512,8 +512,15 @@ error instead of a silent drop.
   rather than emitting an empty marker beside the marked runs.
 - `PageNumber`, `TotalPages`: no properties. They emit dynamic Word fields.
 - `Comment`: required non-empty `text` plus selected inline children;
-  `author?: string`, `date?: string`. It emits a comment range, reference, and
-  an entry in `comments.xml`.
+  `author?: string`, `date?: string`, `id?: non-negative integer`, and
+  `parentCommentId?: non-negative integer`, `done?: boolean`. Omitted IDs are
+  assigned the next unused positive comment ID; explicit IDs are preserved.
+  IDs are unique document-wide. A reply's `parentCommentId` must reference
+  another comment with an explicit `id`, and reply cycles are invalid. It emits
+  a comment range/reference in `comments.xml` and the parent relationship in
+  `commentsExtended.xml`; `done` maps to the comment's resolved state in
+  `commentsExtended.xml`. Reverse preserves IDs, reply relationships, and
+  resolved state from external DOCX without relying on the IR manifest.
 - `Footnote`: requires inline content and emits a native footnote reference and
   entry in `footnotes.xml`.
 - `Tab`: no properties or children; emits a run-level tab.

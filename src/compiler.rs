@@ -36,6 +36,8 @@ struct CompileContext {
     next_numbering_id: usize,
     next_bookmark_id: usize,
     next_comment_id: usize,
+    reserved_comment_ids: BTreeSet<usize>,
+    used_comment_ids: BTreeSet<usize>,
     numberings: Vec<(AbstractNumbering, Numbering)>,
     character_indent_patches: Vec<ParagraphPropertyPatch>,
     numbering_style_links: Vec<(usize, Option<String>, Option<String>)>,
@@ -90,6 +92,8 @@ impl Default for CompileContext {
             next_numbering_id: 1,
             next_bookmark_id: 0,
             next_comment_id: 0,
+            reserved_comment_ids: BTreeSet::new(),
+            used_comment_ids: BTreeSet::new(),
             numberings: Vec::new(),
             character_indent_patches: Vec::new(),
             numbering_style_links: Vec::new(),
@@ -152,7 +156,10 @@ pub fn compile_document(ir: &IrEnvelope, entry_dir: &Path) -> Result<Vec<u8>> {
         }
     }
     docx = compile_package_parts(docx, &ir.document.props)?;
+    let mut reserved_comment_ids = BTreeSet::new();
+    collect_explicit_comment_ids(&ir.document, &mut reserved_comment_ids)?;
     let mut context = CompileContext {
+        reserved_comment_ids,
         toc_marker_occupied_text: serde_json::to_string(&ir.document)
             .map_err(|error| Error::Compile(format!("cannot inspect document text: {error}")))?,
         ..CompileContext::default()
@@ -3638,15 +3645,56 @@ fn patch_comment_parts(
     if comments.is_empty() {
         return Ok(());
     }
+    let mut source_comments_xml = String::new();
+    source
+        .by_name("word/comments.xml")
+        .map_err(|error| Error::Compile(format!("missing writer comments.xml: {error}")))?
+        .read_to_string(&mut source_comments_xml)
+        .map_err(|error| Error::Compile(format!("cannot read writer comments.xml: {error}")))?;
+    let source_comments = source_comment_paragraph_ids(&source_comments_xml)?;
+    if source_comments.len() != comments.len() {
+        return Err(Error::Compile(format!(
+            "docx-rs emitted {} comment records for {} JSX Comment components; preserve matching comment ranges before packaging",
+            source_comments.len(),
+            comments.len()
+        )));
+    }
     let mut comments_xml = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">"#,
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">"#,
     );
     comments_xml.push('\n');
-    for (index, node) in comments.iter().enumerate() {
-        append_comment_xml(&mut comments_xml, index + 1, node)?;
+    for (node, (id, paragraph_id)) in comments.iter().zip(&source_comments) {
+        let requested_id = node
+            .props
+            .get("id")
+            .and_then(Value::as_u64)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| Error::Compile("Comment `id` exceeds this platform's range".to_owned()))?;
+        if requested_id.is_some_and(|requested| requested != *id) {
+            return Err(Error::Compile(format!(
+                "docx-rs comment order does not match explicit Comment id {requested_id:?}; retain comments in document order so replies stay attached"
+            )));
+        }
+        append_comment_xml(&mut comments_xml, *id, paragraph_id, node)?;
     }
     comments_xml.push_str("</w:comments>");
     replacements.insert("word/comments.xml".to_owned(), comments_xml);
+
+    let mut comments_extended_xml = String::new();
+    source
+        .by_name("word/commentsExtended.xml")
+        .map_err(|error| Error::Compile(format!("missing writer commentsExtended.xml: {error}")))?
+        .read_to_string(&mut comments_extended_xml)
+        .map_err(|error| {
+            Error::Compile(format!("cannot read writer commentsExtended.xml: {error}"))
+        })?;
+    let comments_extended_xml =
+        patch_comment_done_states(&comments_extended_xml, comments, &source_comments)?;
+    replacements.insert(
+        "word/commentsExtended.xml".to_owned(),
+        comments_extended_xml,
+    );
 
     let mut relationships = replacements
         .get("word/_rels/document.xml.rels")
@@ -3671,11 +3719,103 @@ fn patch_comment_parts(
     Ok(())
 }
 
-fn append_comment_xml(output: &mut String, id: usize, node: &Node) -> Result<()> {
+fn patch_comment_done_states(
+    xml: &str,
+    comments: &[&Node],
+    source_comments: &[(usize, String)],
+) -> Result<String> {
+    if comments.len() != source_comments.len() {
+        return Err(Error::Compile(format!(
+            "cannot map {} JSX comments to {} comment paragraph IDs while patching resolved state",
+            comments.len(),
+            source_comments.len()
+        )));
+    }
+    let mut output = xml.to_owned();
+    for (node, (_, paragraph_id)) in comments.iter().zip(source_comments) {
+        let needle = format!(r#"w15:paraId="{paragraph_id}""#);
+        let Some(attribute_offset) = output.find(&needle) else {
+            return Err(Error::Compile(format!(
+                "commentsExtended.xml has no record for comment paragraph {paragraph_id}; preserve the comment metadata before packaging"
+            )));
+        };
+        let tag_start = output[..attribute_offset]
+            .rfind("<w15:commentEx")
+            .ok_or_else(|| Error::Compile(format!(
+                "commentsExtended.xml paragraph {paragraph_id} is not inside a commentEx element"
+            )))?;
+        let tag_end = output[attribute_offset..]
+            .find('>')
+            .map(|offset| attribute_offset + offset + 1)
+            .ok_or_else(|| Error::Compile("unterminated commentEx element".to_owned()))?;
+        let tag = &output[tag_start..tag_end];
+        let done = node
+            .props
+            .get("done")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let patched = set_xml_attribute(tag, "w15:done", if done { "1" } else { "0" })?;
+        output.replace_range(tag_start..tag_end, &patched);
+    }
+    Ok(output)
+}
+
+fn source_comment_paragraph_ids(xml: &str) -> Result<Vec<(usize, String)>> {
+    fn attribute(tag: &str, name: &str) -> Option<String> {
+        let needle = format!("{name}=\"");
+        let start = tag.find(&needle)? + needle.len();
+        let end = tag[start..].find('"')? + start;
+        Some(tag[start..end].to_owned())
+    }
+
+    let mut comments = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative_start) = xml[cursor..].find("<w:comment ") {
+        let start = cursor + relative_start;
+        let start_end = xml[start..]
+            .find('>')
+            .map(|offset| start + offset + 1)
+            .ok_or_else(|| Error::Compile("unterminated writer comment element".to_owned()))?;
+        let comment_end = xml[start_end..]
+            .find("</w:comment>")
+            .map(|offset| start_end + offset)
+            .ok_or_else(|| Error::Compile("writer comment has no closing tag".to_owned()))?;
+        let comment_tag = &xml[start..start_end];
+        let id = attribute(comment_tag, "w:id")
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| Error::Compile("writer comment has no valid w:id".to_owned()))?;
+        let body = &xml[start_end..comment_end];
+        let paragraph_start = body
+            .find("<w:p ")
+            .ok_or_else(|| Error::Compile(format!("writer comment {id} has no paragraph")))?;
+        let paragraph_end = body[paragraph_start..]
+            .find('>')
+            .map(|offset| paragraph_start + offset + 1)
+            .ok_or_else(|| {
+                Error::Compile(format!("writer comment {id} has an invalid paragraph"))
+            })?;
+        let paragraph_tag = &body[paragraph_start..paragraph_end];
+        let paragraph_id = attribute(paragraph_tag, "w14:paraId").ok_or_else(|| {
+            Error::Compile(format!(
+                "writer comment {id} has no w14:paraId; reply relationships cannot be preserved"
+            ))
+        })?;
+        comments.push((id, paragraph_id));
+        cursor = comment_end + "</w:comment>".len();
+    }
+    Ok(comments)
+}
+
+fn append_comment_xml(
+    output: &mut String,
+    id: usize,
+    paragraph_id: &str,
+    node: &Node,
+) -> Result<()> {
     let text = required_string(&node.props, "text", "Comment")?;
     let author = string_prop(&node.props, "author", "Comment")?.unwrap_or("unnamed");
     let date = string_prop(&node.props, "date", "Comment")?.unwrap_or("1970-01-01T00:00:00Z");
-    write!(output, r#"<w:comment w:id="{id}" w:author="{}" w:date="{}"><w:p><w:r><w:t xml:space="preserve">{}</w:t></w:r></w:p></w:comment>"#, xml_escape(author), xml_escape(date), xml_escape(text))
+    write!(output, r#"<w:comment w:id="{id}" w:author="{}" w:date="{}"><w:p w14:paraId="{paragraph_id}"><w:r><w:t xml:space="preserve">{}</w:t></w:r></w:p></w:comment>"#, xml_escape(author), xml_escape(date), xml_escape(text))
         .expect("writing to String cannot fail");
     Ok(())
 }
@@ -4540,17 +4680,7 @@ fn compile_comment_range(
     path: &str,
     context: &mut CompileContext,
 ) -> Result<Paragraph> {
-    context.next_comment_id += 1;
-    let id = context.next_comment_id;
-    let body =
-        Paragraph::new().add_run(Run::new().add_text(required_string(&node.props, "text", path)?));
-    let mut comment = Comment::new(id).add_paragraph(body);
-    if let Some(author) = string_prop(&node.props, "author", path)? {
-        comment = comment.author(author);
-    }
-    if let Some(date) = string_prop(&node.props, "date", path)? {
-        comment = comment.date(date);
-    }
+    let (id, comment) = compile_comment_node(node, path, context)?;
     paragraph = paragraph.add_comment_start(comment);
     for (index, child) in node.children.iter().enumerate() {
         let child_path = format!("{path}/child[{index}]");
@@ -4577,6 +4707,64 @@ fn compile_comment_range(
         }
     }
     Ok(paragraph.add_comment_end(id))
+}
+
+fn collect_explicit_comment_ids(node: &Node, ids: &mut BTreeSet<usize>) -> Result<()> {
+    if node.kind == NodeKind::Comment
+        && let Some(value) = node.props.get("id").and_then(Value::as_u64)
+    {
+        let id = usize::try_from(value)
+            .map_err(|_| validation("Comment", "`id` exceeds this platform's range"))?;
+        ids.insert(id);
+    }
+    for child in &node.children {
+        if let Child::Node(child) = child {
+            collect_explicit_comment_ids(child, ids)?;
+        }
+    }
+    Ok(())
+}
+
+fn compile_comment_node(
+    node: &Node,
+    path: &str,
+    context: &mut CompileContext,
+) -> Result<(usize, Comment)> {
+    let id = if let Some(value) = node.props.get("id").and_then(Value::as_u64) {
+        usize::try_from(value)
+            .map_err(|_| validation(path, "Comment `id` exceeds this platform's range"))?
+    } else {
+        loop {
+            context.next_comment_id += 1;
+            let id = context.next_comment_id;
+            if !context.reserved_comment_ids.contains(&id)
+                && !context.used_comment_ids.contains(&id)
+            {
+                break id;
+            }
+        }
+    };
+    context.used_comment_ids.insert(id);
+
+    let body =
+        Paragraph::new().add_run(Run::new().add_text(required_string(&node.props, "text", path)?));
+    let mut comment = Comment::new(id).add_paragraph(body);
+    if let Some(author) = string_prop(&node.props, "author", path)? {
+        comment = comment.author(author);
+    }
+    if let Some(date) = string_prop(&node.props, "date", path)? {
+        comment = comment.date(date);
+    }
+    if let Some(parent) = node.props.get("parentCommentId").and_then(Value::as_u64) {
+        let parent = usize::try_from(parent).map_err(|_| {
+            validation(
+                path,
+                "Comment `parentCommentId` exceeds this platform's range",
+            )
+        })?;
+        comment = comment.parent_comment_id(parent);
+    }
+    Ok((id, comment))
 }
 
 fn compile_inserted(node: &Node, entry_dir: &Path, path: &str) -> Result<Insert> {
@@ -4613,17 +4801,7 @@ fn compile_deleted(node: &Node, path: &str, context: &mut CompileContext) -> Res
         if let Child::Node(comment_node) = child
             && comment_node.kind == NodeKind::Comment
         {
-            context.next_comment_id += 1;
-            let id = context.next_comment_id;
-            let text = required_string(&comment_node.props, "text", &child_path)?;
-            let comment_run = Run::new().add_text(text);
-            let mut comment = Comment::new(id).add_paragraph(Paragraph::new().add_run(comment_run));
-            if let Some(author) = string_prop(&comment_node.props, "author", &child_path)? {
-                comment = comment.author(author);
-            }
-            if let Some(date) = string_prop(&comment_node.props, "date", &child_path)? {
-                comment = comment.date(date);
-            }
+            let (id, comment) = compile_comment_node(comment_node, &child_path, context)?;
             context.deleted_comment_dependencies.push(comment.clone());
             deleted = deleted.add_comment_start(comment);
             for (selected_index, selected) in comment_node.children.iter().enumerate() {
@@ -4738,20 +4916,7 @@ fn compile_hyperlink_child(
             Ok(hyperlink.add_bookmark_end(id))
         }
         NodeKind::Comment => {
-            context.next_comment_id += 1;
-            let id = context.next_comment_id;
-            let body = Paragraph::new().add_run(Run::new().add_text(required_string(
-                &node.props,
-                "text",
-                path,
-            )?));
-            let mut comment = Comment::new(id).add_paragraph(body);
-            if let Some(author) = string_prop(&node.props, "author", path)? {
-                comment = comment.author(author);
-            }
-            if let Some(date) = string_prop(&node.props, "date", path)? {
-                comment = comment.date(date);
-            }
+            let (id, comment) = compile_comment_node(node, path, context)?;
             hyperlink = hyperlink.add_comment_start(comment);
             for (index, child) in node.children.iter().enumerate() {
                 hyperlink = compile_hyperlink_child(
