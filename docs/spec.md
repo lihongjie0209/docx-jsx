@@ -710,14 +710,18 @@ error instead of a silent drop.
   `spacingBefore`, `spacingAfter`, `lineSpacing`, `spacingBeforeLines`,
   `spacingAfterLines`, `lineRule`, `indentLeft`, `indentRight`, `firstLine`,
   `hanging`, `keepNext`, `keepLines`, `pageBreakBefore`, `snapToGrid`,
-  `widowControl`, `bidi`, `textAlign`, `shading`, and `outlineLevel`. Point-
+  `widowControl`, `bidi`, `textAlign`, `shading`, `outlineLevel`, and
+  `suppressLineNumbers`. Point-
   valued spacing and indentation use points. It is valid only without static
   `TocItem` rows because docx-rs ignores paragraph properties in its static-
   items branch. Character-unit indentation, `false` for `keepNext`,
   `keepLines`, or `pageBreakBefore`, and properties not listed here are
   rejected; reverse restores the listed values (including unwrapped indexes)
   from external DOCX and errors on unsupported properties rather than
-  silently dropping them.
+  silently dropping them. The pinned `docx-rs` version has no paragraph writer
+  setter for `suppressLineNumbers`; the compiler emits the equivalent
+  schema-valid `w:suppressLineNumbers` element and reverse reads it from the
+  field paragraph XML.
   `withoutSdt?: boolean` omits the outer structured document
   tag and leaves only the native field paragraphs. It is valid only when the
   index is a direct `Section` child and has no `TocItem`, `TocBefore`, or

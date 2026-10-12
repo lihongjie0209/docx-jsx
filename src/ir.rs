@@ -4577,6 +4577,7 @@ fn validate_index_field_paragraph(node: &Node, path: &str) -> Result<()> {
         "textAlign",
         "shading",
         "outlineLevel",
+        "suppressLineNumbers",
     ];
     validate_object_keys(properties, &format!("{path}.fieldParagraph"), &supported)?;
     for key in ["keepNext", "keepLines", "pageBreakBefore"] {
@@ -5673,10 +5674,19 @@ mod tests {
     #[test]
     fn validate_should_accept_index_field_paragraph_formatting() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"align":"center","spacingBefore":6,"lineSpacing":28,"lineRule":"exact","firstLine":32,"keepNext":true,"bidi":true,"shading":"EEF2F7"}},"children":[]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"align":"center","spacingBefore":6,"lineSpacing":28,"lineRule":"exact","firstLine":32,"keepNext":true,"bidi":true,"shading":"EEF2F7","suppressLineNumbers":true}},"children":[]}]}]}}"#,
         );
         ir.validate()
             .expect("supported field paragraph formatting should validate");
+    }
+
+    #[test]
+    fn validate_should_accept_line_number_suppression_on_index_field_paragraph() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"TableOfContents","props":{"fieldParagraph":{"suppressLineNumbers":true}},"children":[]}]}]}}"#,
+        );
+        ir.validate()
+            .expect("field paragraphs should support line-number suppression");
     }
 
     #[test]

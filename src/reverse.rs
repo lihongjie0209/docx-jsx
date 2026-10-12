@@ -5303,8 +5303,13 @@ fn raw_index_field_paragraph_properties(
                     raw_mark_unsupported(&mut properties, "character-unit indentation");
                 }
             }
-            "keepNext" | "keepLines" | "pageBreakBefore" | "snapToGrid" | "widowControl"
-            | "bidi" => {
+            "keepNext"
+            | "keepLines"
+            | "pageBreakBefore"
+            | "snapToGrid"
+            | "widowControl"
+            | "bidi"
+            | "suppressLineNumbers" => {
                 let value = attributes
                     .get("val")
                     .map(|value| parse_on_off(value))
@@ -10418,6 +10423,54 @@ mod tests {
                 r#"fieldParagraph={{"align":"center","indentLeft":4,"indentRight":3,"spacingBefore":6,"lineSpacing":28,"lineRule":"exact","keepNext":true,"firstLine":32}}"#
             ),
             "index paragraph formatting should be restored as fieldParagraph: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_restore_index_field_line_number_suppression() {
+        let packed = pack_docx(
+            Docx::new().add_table_of_contents(TableOfContents::new().heading_styles_range(1, 3)),
+        );
+        let mut document =
+            read_zip_text(&packed, "word/document.xml").expect("document part should be readable");
+        let instruction = document
+            .find("<w:instrText>TOC ")
+            .expect("TOC instruction should exist");
+        let paragraph_start = ["<w:p>", "<w:p "]
+            .iter()
+            .filter_map(|marker| document[..instruction].rfind(marker))
+            .max()
+            .expect("field paragraph should start");
+        let paragraph_end = document[instruction..]
+            .find("</w:p>")
+            .map(|end| instruction + end)
+            .expect("field paragraph should end");
+        let ppr_end = document[paragraph_start..paragraph_end]
+            .find("</w:pPr>")
+            .map(|end| paragraph_start + end)
+            .expect("field paragraph properties should exist");
+        document.insert_str(ppr_end, "<w:suppressLineNumbers />");
+        let external = strip_ir_manifest(&rewrite_package_parts(
+            &packed,
+            &[("word/document.xml", document.as_bytes())],
+        ));
+        let jsx = reverse_document(&external).expect("external field property should reverse");
+        assert!(
+            jsx.contains(r#"fieldParagraph={{"suppressLineNumbers":true}}"#),
+            "index field paragraph should preserve line-number suppression: {jsx}"
+        );
+        let document = document.replace(
+            "<w:suppressLineNumbers />",
+            "<w:suppressLineNumbers w:val=\"0\" />",
+        );
+        let external = strip_ir_manifest(&rewrite_package_parts(
+            &packed,
+            &[("word/document.xml", document.as_bytes())],
+        ));
+        let jsx = reverse_document(&external).expect("explicit false should reverse");
+        assert!(
+            jsx.contains(r#"fieldParagraph={{"suppressLineNumbers":false}}"#),
+            "index field paragraph should preserve explicit false: {jsx}"
         );
     }
 

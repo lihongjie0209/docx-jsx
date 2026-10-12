@@ -345,8 +345,8 @@ fn cli_should_reverse_and_recompile_external_index_field_paragraph_formatting() 
     let rebuilt = directory.path().join("rebuilt.docx");
     fs::write(
         &input,
-        r#"import { Document, Section, TableOfContents } from "docx-jsx";
-export default <Document><Section><TableOfContents fieldParagraph={{align:"center",spacingBefore:6,lineSpacing:28,lineRule:"exact",firstLine:32,keepNext:true,bidi:true,shading:"EEF2F7"}} /></Section></Document>;"#,
+        r#"import { Document, Section, TableOfContents, TableOfFigures } from "docx-jsx";
+export default <Document><Section><TableOfContents fieldParagraph={{align:"center",spacingBefore:6,lineSpacing:28,lineRule:"exact",firstLine:32,keepNext:true,bidi:true,shading:"EEF2F7",suppressLineNumbers:true}} /><TableOfFigures label="Figure" fieldParagraph={{suppressLineNumbers:false}} /></Section></Document>;"#,
     )
     .expect("input should write");
     Command::cargo_bin("docx-jsx")
@@ -375,6 +375,11 @@ export default <Document><Section><TableOfContents fieldParagraph={{align:"cente
             && jsx.contains(r#""lineSpacing":28"#)
             && jsx.contains(r#""bidi":true"#),
         "reverse should restore field paragraph properties without a manifest: {jsx}"
+    );
+    assert!(
+        jsx.contains(r#""suppressLineNumbers":true"#)
+            && jsx.contains(r#""suppressLineNumbers":false"#),
+        "reverse should restore both line-number suppression values from external XML: {jsx}"
     );
     Command::cargo_bin("docx-jsx")
         .expect("binary should build")

@@ -369,6 +369,9 @@ fn package_document(
     let bytes = omit_unused_default_parts(bytes, &ir.document)?;
     let bytes = normalize_ooxml_element_order(bytes)?;
     let bytes = patch_index_dirty_values(bytes, &ir.document)?;
+    let mut index_suppress_line_numbers = Vec::new();
+    collect_index_field_suppress_line_numbers(&ir.document, &mut index_suppress_line_numbers);
+    let bytes = patch_index_field_suppress_line_numbers(bytes, &index_suppress_line_numbers)?;
     let bytes = patch_toc_item_tabs(bytes, toc_item_tab_patches)?;
     let bytes = patch_numbering_style_links(bytes, numbering_style_links)?;
     let bytes = patch_simple_position_images(bytes)?;
@@ -432,6 +435,105 @@ fn patch_index_dirty_values(bytes: Vec<u8>, document: &Node) -> Result<Vec<u8>> 
             dirty_values.len()
         )));
     }
+    let archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
+}
+
+fn collect_index_field_suppress_line_numbers(node: &Node, values: &mut Vec<Option<bool>>) {
+    if matches!(
+        node.kind,
+        NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
+    ) {
+        values.push(
+            node.props
+                .get("fieldParagraph")
+                .and_then(Value::as_object)
+                .and_then(|properties| properties.get("suppressLineNumbers"))
+                .and_then(Value::as_bool),
+        );
+    }
+    for child in &node.children {
+        if let Child::Node(child) = child {
+            collect_index_field_suppress_line_numbers(child, values);
+        }
+    }
+}
+
+fn patch_index_field_suppress_line_numbers(
+    bytes: Vec<u8>,
+    values: &[Option<bool>],
+) -> Result<Vec<u8>> {
+    if !values.iter().any(Option::is_some) {
+        return Ok(bytes);
+    }
+    let mut xml = read_zip_text_entry(&bytes, "word/document.xml")?;
+    let mut search_from = 0;
+    let mut index_number = 0;
+    while let Some((relative_start, _instruction_prefix)) =
+        next_toc_instruction(&xml[search_from..])
+    {
+        let instruction_start = search_from + relative_start;
+        let Some(value) = values.get(index_number) else {
+            return Err(Error::Compile(format!(
+                "more serialized index fields exist than index components in the DSL (found field {}, expected {}); keep the DOCX structure aligned with the document tree",
+                index_number + 1,
+                values.len()
+            )));
+        };
+        let paragraph_start = ["<w:p>", "<w:p "]
+            .iter()
+            .filter_map(|marker| xml[..instruction_start].rfind(marker))
+            .max()
+            .ok_or_else(|| Error::Compile("index instruction has no paragraph".to_owned()))?;
+        let paragraph_end = xml[instruction_start..]
+            .find("</w:p>")
+            .map(|offset| instruction_start + offset)
+            .ok_or_else(|| {
+                Error::Compile("index instruction paragraph is unterminated".to_owned())
+            })?;
+        if let Some(value) = value {
+            let paragraph = &xml[paragraph_start..paragraph_end];
+            let ppr_start = paragraph
+                .find("<w:pPr")
+                .map(|offset| paragraph_start + offset)
+                .ok_or_else(|| Error::Compile("index field paragraph has no w:pPr".to_owned()))?;
+            let ppr_open_end = xml[ppr_start..paragraph_end]
+                .find('>')
+                .map(|offset| ppr_start + offset + 1)
+                .ok_or_else(|| {
+                    Error::Compile("index field paragraph has malformed w:pPr".to_owned())
+                })?;
+            let suppress = if *value {
+                "<w:suppressLineNumbers />"
+            } else {
+                "<w:suppressLineNumbers w:val=\"0\" />"
+            };
+            if xml[ppr_start..ppr_open_end].ends_with("/>") {
+                xml.replace_range(
+                    ppr_start..ppr_open_end,
+                    &format!("<w:pPr>{suppress}</w:pPr>"),
+                );
+            } else {
+                let ppr_end = xml[ppr_open_end..paragraph_end]
+                    .find("</w:pPr>")
+                    .map(|offset| ppr_open_end + offset)
+                    .ok_or_else(|| {
+                        Error::Compile("index field paragraph has unclosed w:pPr".to_owned())
+                    })?;
+                xml.insert_str(ppr_end, suppress);
+            }
+        }
+        index_number += 1;
+        search_from = paragraph_end + "</w:p>".len();
+    }
+    if index_number != values.len() {
+        return Err(Error::Compile(format!(
+            "DSL defines {} index components, but only {index_number} were serialized; repair index placement before compiling",
+            values.len()
+        )));
+    }
+    reorder_element_children(&mut xml, "w:pPr", paragraph_property_rank)?;
     let archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
     replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
@@ -6302,12 +6404,14 @@ fn configure_index_field_paragraph(
     path: &str,
     context: &mut CompileContext,
 ) -> Result<TableOfContents> {
-    let properties = value
+    let mut properties = value
         .as_object()
-        .ok_or_else(|| validation(path, "`fieldParagraph` must be an object"))?;
+        .ok_or_else(|| validation(path, "`fieldParagraph` must be an object"))?
+        .clone();
+    properties.remove("suppressLineNumbers");
     let paragraph = Node {
         kind: NodeKind::Paragraph,
-        props: properties.clone(),
+        props: properties,
         children: Vec::new(),
     };
     let paragraph_path = format!("{path}.fieldParagraph");
@@ -9142,8 +9246,12 @@ mod tests {
                     "props": {"fieldParagraph": {
                         "align": "center", "spacingBefore": 6, "lineSpacing": 28,
                         "lineRule": "exact", "firstLine": 32, "keepNext": true,
-                        "bidi": true, "shading": "EEF2F7"
+                        "bidi": true, "shading": "EEF2F7", "suppressLineNumbers": true
                     }},
+                    "children": []
+                }, {
+                    "type": "TableOfFigures",
+                    "props": {"label": "Figure", "fieldParagraph": {"suppressLineNumbers": false}},
                     "children": []
                 }]
             }]}
@@ -9164,6 +9272,8 @@ mod tests {
                 && document.contains("w:firstLine=\"640\"")
                 && document.contains("<w:keepNext />")
                 && document.contains("<w:bidi />")
+                && document.contains("<w:suppressLineNumbers />")
+                && document.contains("<w:suppressLineNumbers w:val=\"0\" />")
                 && document.contains("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"EEF2F7\""),
             "the generated index paragraph should contain all requested formatting: {document}"
         );
