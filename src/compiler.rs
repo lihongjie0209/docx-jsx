@@ -5211,6 +5211,12 @@ fn compile_run_properties(props: &Map<String, Value>, path: &str) -> Result<Run>
             Caps::new().disable()
         });
     }
+    if bool_prop(props, "hidden", path)? == Some(true) {
+        run = run.vanish();
+    }
+    if bool_prop(props, "specVanish", path)? == Some(true) {
+        run.run_property = std::mem::take(&mut run.run_property).spec_vanish();
+    }
     if bool_prop(props, "underline", path)?.unwrap_or(false) {
         run = run.underline("single");
     }

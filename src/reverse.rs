@@ -57,7 +57,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
             assets: BTreeMap::new(),
         });
     }
-    validate_character_indent_xml(bytes)?;
+    validate_external_xml_features(bytes)?;
     let style_metadata = read_style_metadata(bytes)?;
     let theme_colors = parse_theme_colors(bytes)?;
     let section_columns = collect_section_columns(bytes)?;
@@ -1573,6 +1573,12 @@ impl Writer {
                 "caps",
                 &Value::Bool(property_enabled(property, "caps")),
             )?);
+        }
+        if property.get("vanish").is_some() {
+            attrs.push(jsx_prop("hidden", &Value::Bool(true))?);
+        }
+        if property.get("specVanish").is_some() {
+            attrs.push(jsx_prop("specVanish", &Value::Bool(true))?);
         }
         if property.get("underline").is_some() {
             attrs.push(" underline".to_owned());
@@ -8747,6 +8753,69 @@ fn xml_on_off(reader: &Reader<&[u8]>, element: &BytesStart<'_>) -> Result<bool> 
         .is_none_or(|value| !matches!(value.as_str(), "0" | "false" | "off")))
 }
 
+fn validate_run_visibility_xml(bytes: &[u8]) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Reverse(format!("invalid DOCX archive: {error}")))?;
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|error| Error::Reverse(format!("cannot read DOCX part: {error}")))?;
+        let part = file.name().to_owned();
+        if !part.starts_with("word/")
+            || !Path::new(&part)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        {
+            continue;
+        }
+        let mut xml = String::new();
+        file.read_to_string(&mut xml)
+            .map_err(|error| Error::Reverse(format!("cannot read `{part}`: {error}")))?;
+        let mut reader = Reader::from_str(&xml);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if matches!(element.local_name().as_ref(), b"vanish" | b"specVanish") =>
+                {
+                    let name = if element.local_name().as_ref() == b"vanish" {
+                        "w:vanish"
+                    } else {
+                        "w:specVanish"
+                    };
+                    if let Some(value) = xml_attribute(&reader, &element, b"val")? {
+                        match value.as_str() {
+                            "0" | "false" | "off" => {
+                                return Err(Error::Reverse(format!(
+                                    "`{part}` contains `{name} w:val=\"{value}\"`, but docx-rs 0.4.22's reader treats this explicit off value as on; preserving it as JSX would change the document. Keep the original DOCX or remove the explicit off override before reversing"
+                                )));
+                            }
+                            "1" | "true" | "on" => {}
+                            _ => {
+                                return Err(Error::Reverse(format!(
+                                    "`{part}` contains unsupported `{name} w:val=\"{value}\"`; use true, false, 1, 0, on, or off"
+                                )));
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "invalid `{part}` while checking hidden-text overrides: {error}"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_external_xml_features(bytes: &[u8]) -> Result<()> {
+    validate_run_visibility_xml(bytes)?;
+    validate_character_indent_xml(bytes)
+}
+
 fn xml_attribute(
     reader: &Reader<&[u8]>,
     element: &BytesStart<'_>,
@@ -9866,7 +9935,10 @@ mod tests {
                 r#"<w:w w:val="700"/>"#,
                 "stretch percentage from 1 through 600",
             ),
-            (r#"<w:specVanish w:val="false"/>"#, "cannot represent"),
+            (
+                r#"<w:specVanish w:val="false"/>"#,
+                "explicit off value as on",
+            ),
             (
                 r#"<w:shd w:val="waves" w:fill="FFF2CC"/>"#,
                 "unsupported w:shd pattern",
@@ -9895,7 +9967,9 @@ mod tests {
             let error = reverse_document(&modified)
                 .expect_err("unrepresentable external style must be rejected");
             assert!(error.to_string().contains(expected), "{error}");
-            assert!(error.to_string().contains("style `Effects`"), "{error}");
+            if !properties.contains("specVanish") {
+                assert!(error.to_string().contains("style `Effects`"), "{error}");
+            }
         }
     }
 
@@ -10531,6 +10605,47 @@ mod tests {
                 .contains("schema-invalid in this location"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_explicit_off_visibility_flags() {
+        for (run_property, element, property_name) in [
+            (
+                docx_rs::RunProperty::new().vanish(),
+                "<w:vanish />",
+                "w:vanish",
+            ),
+            (
+                docx_rs::RunProperty::new().spec_vanish(),
+                "<w:specVanish />",
+                "w:specVanish",
+            ),
+        ] {
+            let mut run = Run::new().add_text("hidden");
+            run.run_property = run_property;
+            let packed = external_docx(Paragraph::new().add_run(run));
+            let mut archive = zip::ZipArchive::new(Cursor::new(&packed)).expect("valid ZIP");
+            let mut document = String::new();
+            archive
+                .by_name("word/document.xml")
+                .expect("document part")
+                .read_to_string(&mut document)
+                .expect("document XML");
+            let changed = document.replace(element, &element.replace(" />", " w:val=\"0\" />"));
+            assert_ne!(changed, document, "fixture should contain {element}");
+            let external =
+                rewrite_package_parts(&packed, &[("word/document.xml", changed.as_bytes())]);
+
+            let error = reverse_document(&external)
+                .expect_err("docx-rs reader loses explicit off visibility values");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("{property_name} w:val=\"0\"")),
+                "{error}"
+            );
+        }
     }
 
     #[test]

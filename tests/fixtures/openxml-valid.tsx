@@ -9,6 +9,7 @@ import {
   Footer,
   Header,
   Heading,
+  HiddenText,
   Hyperlink,
   Image,
   InlineBookmark,
@@ -17,6 +18,7 @@ import {
   Paragraph,
   Run,
   Section,
+  SpecialHiddenText,
   Table,
   TableCell,
   TableOfContents,
@@ -132,6 +134,7 @@ export default (
       <Paragraph><Deleted author="Open XML SDK"><Run><DeletedInstruction instruction={'HYPERLINK "https://example.com"'} /></Run></Deleted></Paragraph>
       <Paragraph><Run verticalAlign="baseline">Baseline alignment</Run><Run verticalAlign="superscript">Superscript alignment</Run><Run verticalAlign="subscript">Subscript alignment</Run></Paragraph>
       <Paragraph><Run caps={true}>Explicit caps</Run><Run caps={false}>Explicit no-caps</Run></Paragraph>
+      <Paragraph><Run hidden={true} specVanish={true}>Hidden run properties</Run><HiddenText>Hidden semantic wrapper</HiddenText><SpecialHiddenText>Special-hidden semantic wrapper</SpecialHiddenText></Paragraph>
       <Bookmark name="validation-heading"><Heading level={1}>Open XML validation fixture</Heading></Bookmark>
       <Paragraph style="Body">
         This document exercises <Bold>typed JSX</Bold> and package parts.

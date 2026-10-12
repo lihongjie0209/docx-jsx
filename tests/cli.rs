@@ -738,6 +738,46 @@ export default <Document><Section><Paragraph><Run caps={true}>caps on</Run><Run 
 }
 
 #[test]
+fn cli_should_roundtrip_run_hidden_properties_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("run-hidden.tsx");
+    let compiled = directory.path().join("run-hidden.docx");
+    let external = directory.path().join("external.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph, Run, HiddenText, SpecialHiddenText } from "docx-jsx";
+export default <Document><Section><Paragraph><Run hidden={true} specVanish={true}>direct</Run><HiddenText>hidden wrapper</HiddenText><SpecialHiddenText>special hidden wrapper</SpecialHiddenText></Paragraph></Section></Document>;"#,
+    )
+    .expect("fixture should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .arg(&input)
+        .args(["-o"])
+        .arg(&compiled)
+        .assert()
+        .success();
+    fs::write(
+        &external,
+        strip_ir_manifest(&fs::read(&compiled).expect("DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["reverse"])
+        .arg(&external)
+        .args(["-o"])
+        .arg(&reversed)
+        .assert()
+        .success();
+    let jsx = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(
+        jsx.contains("hidden={true}") && jsx.contains("specVanish={true}"),
+        "external reverse should preserve hidden and special-hidden run properties: {jsx}"
+    );
+}
+
+#[test]
 fn cli_should_reverse_style_line_number_suppression_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("style.tsx");

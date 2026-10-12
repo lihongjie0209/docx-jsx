@@ -1162,6 +1162,8 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "doubleStrike",
             "verticalAlign",
             "caps",
+            "hidden",
+            "specVanish",
         ],
         NodeKind::Text => &["value"],
         NodeKind::Break | NodeKind::Header | NodeKind::Footer => &["type"],
@@ -3935,9 +3937,31 @@ fn validate_run_defaults(node: &Node, path: &str) -> Result<()> {
             }
         }
     }
-    for key in ["bold", "italic", "strike", "doubleStrike", "caps"] {
+    for key in [
+        "bold",
+        "italic",
+        "strike",
+        "doubleStrike",
+        "caps",
+        "hidden",
+        "specVanish",
+    ] {
         if node.props.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(validation(path, format!("`{key}` must be a boolean")));
+        }
+    }
+    for key in ["hidden", "specVanish"] {
+        if node
+            .props
+            .get(key)
+            .is_some_and(|value| value.as_bool() != Some(true))
+        {
+            return Err(validation(
+                path,
+                format!(
+                    "Run `{key}` only accepts `true`; docx-rs 0.4.22 has no explicit-off writer value"
+                ),
+            ));
         }
     }
     if node.props.get("strike").and_then(Value::as_bool) == Some(true)
@@ -6145,6 +6169,22 @@ mod tests {
             error.to_string().contains("`caps` must be a boolean"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn validate_should_reject_run_visibility_off_without_writer_support() {
+        for (key, value) in [("hidden", "false"), ("specVanish", "false")] {
+            let ir = parse(&format!(
+                r#"{{"version":1,"document":{{"type":"Document","props":{{}},"children":[{{"type":"Section","props":{{}},"children":[{{"type":"Paragraph","props":{{}},"children":[{{"type":"Run","props":{{"{key}":{value}}},"children":["text"]}}]}}]}}]}}}}"#
+            ));
+            let error = ir
+                .validate()
+                .expect_err("docx-rs does not expose an explicit-off writer for visibility flags");
+            assert!(
+                error.to_string().contains("only accepts `true`"),
+                "{key}: {error}"
+            );
+        }
     }
 
     #[test]
