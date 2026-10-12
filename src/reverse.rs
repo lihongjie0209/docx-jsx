@@ -19,7 +19,7 @@ use quick_xml::{Reader, XmlVersion};
 use serde::Serialize;
 use serde_json::{Map, Number, Value};
 
-use crate::ir::{Child, IrEnvelope, Node};
+use crate::ir::{Child, IrEnvelope, Node, PAGE_NUMBER_CHAPTER_SEPARATORS, PAGE_NUMBER_FORMATS};
 use crate::{Error, Result};
 
 /// JSX module plus sidecar files produced by external DOCX reverse conversion.
@@ -62,6 +62,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let section_columns = collect_section_columns(bytes)?;
     let section_types = collect_section_types(bytes)?;
     let section_line_numbering = collect_section_line_numbering(bytes)?;
+    let section_page_numbering = collect_section_page_numbering(bytes)?;
     let numbering_multi_level_types = collect_numbering_multi_level_types(bytes)?;
     let table_row_xml = collect_table_row_xml_metadata(bytes)?;
     let table_xml = collect_table_xml_metadata(bytes)?;
@@ -86,6 +87,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         section_columns,
         section_types,
         section_line_numbering,
+        section_page_numbering,
         table_row_xml,
         table_xml,
         paragraph_indent_xml,
@@ -250,6 +252,7 @@ struct Writer {
     section_columns: Vec<SectionColumnsMetadata>,
     section_types: Vec<Option<String>>,
     section_line_numbering: Vec<Option<Map<String, Value>>>,
+    section_page_numbering: Vec<Option<Map<String, Value>>>,
     table_row_xml: HashMap<String, Vec<TableRowXmlMetadata>>,
     table_row_indices: HashMap<String, usize>,
     table_xml: HashMap<String, Vec<TableXmlMetadata>>,
@@ -376,6 +379,15 @@ impl Writer {
                 groups.len()
             )));
         }
+        if !self.section_page_numbering.is_empty()
+            && self.section_page_numbering.len() != groups.len()
+        {
+            return Err(Error::Reverse(format!(
+                "word/document.xml contains {} page-numbering entries for {} reconstructed sections; repair the section-break structure so each section has one `w:sectPr`",
+                self.section_page_numbering.len(),
+                groups.len()
+            )));
+        }
         for (index, (children, break_property)) in groups.into_iter().enumerate() {
             let property = break_property.unwrap_or(&docx.document.section_property);
             let columns = self.section_columns.get(index).cloned().unwrap_or_default();
@@ -384,11 +396,21 @@ impl Writer {
                 .section_line_numbering
                 .get(index)
                 .and_then(Option::as_ref);
+            let page_numbering = self
+                .section_page_numbering
+                .get(index)
+                .and_then(Option::as_ref);
             self.line(
                 1,
                 &format!(
                     "<Section{}>",
-                    section_jsx_attrs(property, &columns, section_type, line_numbering)?
+                    section_jsx_attrs(
+                        property,
+                        &columns,
+                        section_type,
+                        line_numbering,
+                        page_numbering,
+                    )?
                 ),
             );
             self.apply_sdt = false;
@@ -4367,6 +4389,110 @@ fn collect_section_line_numbering(bytes: &[u8]) -> Result<Vec<Option<Map<String,
     Ok(sections)
 }
 
+fn collect_section_page_numbering(bytes: &[u8]) -> Result<Vec<Option<Map<String, Value>>>> {
+    let xml = read_zip_text(bytes, "word/document.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut in_section = false;
+    let mut saw_page_numbering = false;
+    let mut current = None;
+    let mut sections = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"sectPr" => {
+                if in_section {
+                    return Err(Error::Reverse(
+                        "word/document.xml contains nested section properties; repair the malformed `w:sectPr` structure".to_owned(),
+                    ));
+                }
+                in_section = true;
+                saw_page_numbering = false;
+                current = None;
+            }
+            Ok(Event::Empty(element)) if element.local_name().as_ref() == b"sectPr" => {
+                sections.push(None);
+            }
+            Ok(Event::Start(element) | Event::Empty(element))
+                if in_section && element.local_name().as_ref() == b"pgNumType" =>
+            {
+                if saw_page_numbering {
+                    return Err(Error::Reverse(
+                        "section contains multiple `w:pgNumType` elements; keep one page-numbering definition".to_owned(),
+                    ));
+                }
+                saw_page_numbering = true;
+                current = parse_section_page_numbering(&reader, &element)?;
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"sectPr" => {
+                sections.push(current.take());
+                in_section = false;
+                saw_page_numbering = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/document.xml page numbering at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(sections)
+}
+
+fn parse_section_page_numbering(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+) -> Result<Option<Map<String, Value>>> {
+    let mut properties = Map::new();
+    for attribute in element.attributes() {
+        let attribute = attribute
+            .map_err(|error| Error::Reverse(format!("invalid `w:pgNumType` attribute: {error}")))?;
+        let name = attribute.key.local_name();
+        if ![b"start".as_slice(), b"chapStyle", b"fmt", b"chapSep"].contains(&name.as_ref()) {
+            return Err(Error::Reverse(format!(
+                "`w:pgNumType` has unsupported attribute `{}`; remove it or extend the `pageNumbering` spec",
+                String::from_utf8_lossy(name.as_ref())
+            )));
+        }
+    }
+    if let Some(value) = xml_attribute(reader, element, b"start")? {
+        let start = value.parse::<u32>().map_err(|_| {
+            Error::Reverse(
+                "section `w:pgNumType/@w:start` must be a non-negative 32-bit integer; correct the value or keep the original DOCX".to_owned(),
+            )
+        })?;
+        properties.insert("start".to_owned(), Value::from(start));
+    }
+    if let Some(value) = xml_attribute(reader, element, b"chapStyle")? {
+        if value.is_empty() {
+            return Err(Error::Reverse(
+                "section `w:pgNumType/@w:chapStyle` must not be empty; set a chapter style id or remove the attribute".to_owned(),
+            ));
+        }
+        properties.insert("chapterStyle".to_owned(), Value::String(value));
+    }
+    if let Some(value) = xml_attribute(reader, element, b"fmt")? {
+        if !PAGE_NUMBER_FORMATS.contains(&value.as_str()) {
+            return Err(Error::Reverse(format!(
+                "section page-number format `{value}` is not representable; use a supported ST_NumberFormat value or keep the original DOCX"
+            )));
+        }
+        properties.insert("format".to_owned(), Value::String(value));
+    }
+    if let Some(value) = xml_attribute(reader, element, b"chapSep")? {
+        if !PAGE_NUMBER_CHAPTER_SEPARATORS.contains(&value.as_str()) {
+            return Err(Error::Reverse(format!(
+                "section chapter separator `{value}` is not representable; use hyphen, period, colon, emDash, or enDash, or keep the original DOCX"
+            )));
+        }
+        properties.insert("chapterSeparator".to_owned(), Value::String(value));
+    }
+    Ok((!properties.is_empty()).then_some(properties))
+}
+
 fn parse_section_line_numbering(
     reader: &Reader<&[u8]>,
     element: &BytesStart<'_>,
@@ -4526,6 +4652,7 @@ fn section_jsx_attrs(
     columns: &SectionColumnsMetadata,
     section_type: Option<&str>,
     line_numbering: Option<&Map<String, Value>>,
+    page_numbering: Option<&Map<String, Value>>,
 ) -> Result<String> {
     let data = json(property)?;
     let mut attrs = String::new();
@@ -4549,6 +4676,22 @@ fn section_jsx_attrs(
             }
         }
         let _ = write!(attrs, " lineNumbering={{{{{}}}}}", fields.join(","));
+    }
+    if let Some(page_numbering) = page_numbering {
+        let fields = ["start", "chapterStyle", "format", "chapterSeparator"]
+            .into_iter()
+            .filter_map(|key| {
+                page_numbering.get(key).map(|value| {
+                    let encoded = match value {
+                        Value::String(value) => format!("{value:?}"),
+                        Value::Number(value) => value.to_string(),
+                        _ => String::new(),
+                    };
+                    format!("{key}:{encoded}")
+                })
+            })
+            .collect::<Vec<_>>();
+        let _ = write!(attrs, " pageNumbering={{{{{}}}}}", fields.join(","));
     }
     if let Some(columns) = section_columns_value(columns)? {
         let encoded = serde_json::to_string(&columns).map_err(|error| {
@@ -6820,13 +6963,13 @@ mod tests {
         AbstractNumbering, BorderType, CellMargins, CharacterSpacingValues, Comment, Delete,
         DocGrid, Docx, Footer, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
         Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing, LineSpacingType,
-        NumberFormat, Numbering, NumberingId, PageMargin, PageOrientationType, PageSize, Paragraph,
-        Pic, Run, RunFonts, Section, Settings, Shading, ShdType, SpecialIndentType, Start,
-        StructuredDataTag, Style, StyleType, Table, TableAlignmentType, TableBorder,
-        TableBorderPosition, TableBorders, TableCell, TableCellBorder, TableCellBorderPosition,
-        TableCellBorders, TableCellMargins, TableCellProperty, TableLayoutType, TableOfContents,
-        TablePositionProperty, TableRow, TextDirectionType, ThemeColor, VAlignType, VMergeType,
-        WidthType,
+        NumberFormat, Numbering, NumberingId, PageMargin, PageNumType, PageOrientationType,
+        PageSize, Paragraph, Pic, Run, RunFonts, Section, Settings, Shading, ShdType,
+        SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Table, TableAlignmentType,
+        TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
+        TableCellBorderPosition, TableCellBorders, TableCellMargins, TableCellProperty,
+        TableLayoutType, TableOfContents, TablePositionProperty, TableRow, TextDirectionType,
+        ThemeColor, VAlignType, VMergeType, WidthType,
     };
     use std::io::Write;
 
@@ -7962,6 +8105,82 @@ mod tests {
         assert!(
             jsx.contains("columns={2}") && jsx.contains("columns={3}"),
             "section column counts must survive structural reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_without_manifest_should_preserve_section_page_number_format() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"pageNumbering":{"start":4,"chapterStyle":"1","format":"upperRoman","chapterSeparator":"emDash"}},"children":[{"type":"Paragraph","props":{},"children":["chapter page numbers"]}]},{"type":"Section","props":{"pageNumbering":{"format":"lowerLetter"}},"children":[{"type":"Paragraph","props":{},"children":["letter page numbers"]}]}]}}"#,
+        )
+        .expect("fixture IR should parse");
+        let compiled =
+            crate::compiler::compile_document(&ir, Path::new(".")).expect("fixture compiles");
+        let external = strip_ir_manifest(&compiled);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(
+            jsx.contains(
+                r#"pageNumbering={{start:4,chapterStyle:"1",format:"upperRoman",chapterSeparator:"emDash"}}"#
+            ) && jsx.contains(r#"pageNumbering={{format:"lowerLetter"}}"#),
+            "section page-number format should survive manifest-free reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_read_page_number_format_from_package_xml() {
+        let packed = pack_docx(
+            Docx::new()
+                .page_num_type(PageNumType::new().start(4).chap_style("1"))
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("page numbers"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document.replace(
+            r#"<w:pgNumType w:start="4" w:chapStyle="1" />"#,
+            r#"<w:pgNumType w:start="4" w:chapStyle="1" w:fmt="upperRoman" w:chapSep="emDash" />"#,
+        );
+        assert!(document.contains(r#"w:fmt="upperRoman""#));
+        let external =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let jsx = reverse_document(&external).expect("external DOCX should reverse");
+        assert!(
+            jsx.contains(
+                r#"pageNumbering={{start:4,chapterStyle:"1",format:"upperRoman",chapterSeparator:"emDash"}}"#
+            ),
+            "all page-numbering attributes should reverse without an IR manifest: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_reject_unknown_page_number_format_with_repair() {
+        let packed = pack_docx(
+            Docx::new()
+                .page_num_type(PageNumType::new().start(1))
+                .add_paragraph(Paragraph::new().add_run(Run::new().add_text("page numbers"))),
+        );
+        let mut archive = zip::ZipArchive::new(Cursor::new(packed.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document.replace(
+            r#"<w:pgNumType w:start="1" />"#,
+            r#"<w:pgNumType w:start="1" w:fmt="romanX" />"#,
+        );
+        let external =
+            rewrite_package_parts(&packed, &[("word/document.xml", document.as_bytes())]);
+        let error = reverse_document(&external)
+            .expect_err("unsupported external page-number format must not be dropped");
+        assert!(
+            error.to_string().contains("romanX") && error.to_string().contains("supported"),
+            "error should identify unsupported format and repair: {error}"
         );
     }
 

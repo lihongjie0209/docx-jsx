@@ -77,7 +77,7 @@ export default (
       { id: "ValidationTable", name: "Validation Table", type: "table", table: { align: "center", indent: 6 }, cell: { verticalAlign: "center", shading: "EAF2F8", margins: { top: 1, right: 1, bottom: 1, left: 1 } } },
     ]}
   >
-    <Section type="continuous" lineNumbering={{ countBy: 5, restart: "newSection", distance: 18 }} pageSize={{ width: 595.3, height: 841.9 }} margins={{ top: 72, right: 72, bottom: 72, left: 72 }} columns={2}>
+    <Section type="continuous" lineNumbering={{ countBy: 5, restart: "newSection", distance: 18 }} pageNumbering={{ start: 1, chapterStyle: "1", format: "upperRoman", chapterSeparator: "emDash" }} pageSize={{ width: 595.3, height: 841.9 }} margins={{ top: 72, right: 72, bottom: 72, left: 72 }} columns={2}>
       <Header><ContentControl alias="HeaderCustomer" xpath="/root/customer" storeItemId="{06AC5857-5C65-A94A-BCEC-37356A209BC3}"><Paragraph>Header data</Paragraph></ContentControl></Header>
       <Footer><ContentControl alias="FooterCustomer" xpath="/root/customer" storeItemId="{06AC5857-5C65-A94A-BCEC-37356A209BC3}"><Paragraph>Footer data</Paragraph></ContentControl></Footer>
       <TableOfContents

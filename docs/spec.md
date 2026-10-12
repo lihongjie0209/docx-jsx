@@ -297,7 +297,7 @@ error instead of a silent drop.
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
   `documentGrid?: {type,linePitch?,charSpace?}`, and
-  `pageNumbering?: {start?,chapterStyle?}`, `lineNumbering?: {countBy?,start?,distance?,restart?}`,
+  `pageNumbering?: {start?,chapterStyle?,format?,chapterSeparator?}`, `lineNumbering?: {countBy?,start?,distance?,restart?}`,
   and `columns?: 1..45 | {count, spacing?, separator?} | {widths, separator?}`.
   The numeric shorthand retains equal-width columns with the backend's default
   425-twip spacing. In `{count, spacing?, separator?}`, `count` is 1..45,
@@ -309,8 +309,29 @@ error instead of a silent drop.
   Document-grid `type` is `default`,
   `lines`, `linesAndChars`, or `snapToChars`; `linePitch` is a positive point
   measurement, while `charSpace` is a signed integer in OOXML 1/4096-em units.
-  `pageNumbering.start` is a non-negative integer and `chapterStyle` is a
-  non-empty Word chapter-style value. `documentGrid` and `pageNumbering`
+  `pageNumbering.start` is a non-negative integer, `chapterStyle` is a
+  non-empty Word chapter-style value, `format` maps to `w:pgNumType/@w:fmt`, and
+  `chapterSeparator` maps to `w:pgNumType/@w:chapSep`. Supported formats are
+  `decimal`, `upperRoman`, `lowerRoman`, `upperLetter`,
+  `lowerLetter`, `ordinal`, `cardinalText`, `ordinalText`, `hex`, `chicago`,
+  `ideographDigital`, `japaneseCounting`, `aiueo`, `iroha`, `decimalFullWidth`,
+  `decimalHalfWidth`, `japaneseLegal`, `japaneseDigitalTenThousand`,
+  `decimalEnclosedCircle`, `decimalFullWidth2`, `aiueoFullWidth`,
+  `irohaFullWidth`, `decimalZero`, `bullet`, `ganada`, `chosung`,
+  `decimalEnclosedFullstop`, `decimalEnclosedParen`, `decimalEnclosedCircleChinese`,
+  `ideographEnclosedCircle`, `ideographTraditional`, `ideographZodiac`,
+  `ideographZodiacTraditional`, `taiwaneseCounting`, `ideographLegalTraditional`,
+  `taiwaneseCountingThousand`, `taiwaneseDigital`, `chineseCounting`,
+  `chineseLegalSimplified`, `chineseCountingThousand`, `koreanDigital`,
+  `koreanCounting`, `koreanLegal`, `koreanDigital2`, `vietnameseCounting`,
+  `russianLower`, `russianUpper`, `numberInDash`, `hebrew1`, `hebrew2`,
+  `arabicAlpha`, `arabicAbjad`, `hindiVowels`, `hindiConsonants`,
+  `hindiNumbers`, `hindiCounting`, `thaiLetters`, `thaiNumbers`, or
+  `thaiCounting`, `none`, `bahtText`, `dollarText`, and `custom`. Chapter
+  separators are `hyphen`, `period`, `colon`, `emDash`, or `enDash`. The pinned
+  `docx-rs` writer has no `fmt` or `chapSep` setter; the compiler emits these
+  schema-valid attributes directly in `w:pgNumType`, and external reverse reads
+  them from package XML. `documentGrid` and `pageNumbering`
   objects must be non-empty. `lineNumbering` enables section line numbering; its `countBy?`
   and `start?` are positive integers (defaults 1), `distance?` is a
   non-negative point measurement converted to OOXML twips (20 twips per point;

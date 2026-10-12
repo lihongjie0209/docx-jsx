@@ -38,6 +38,75 @@ const BORDER_STYLES: &[&str] = &[
     "babyRattle",
 ];
 
+pub(crate) const PAGE_NUMBER_FORMATS: &[&str] = &[
+    "decimal",
+    "upperRoman",
+    "lowerRoman",
+    "upperLetter",
+    "lowerLetter",
+    "ordinal",
+    "cardinalText",
+    "ordinalText",
+    "hex",
+    "chicago",
+    "ideographDigital",
+    "japaneseCounting",
+    "aiueo",
+    "iroha",
+    "decimalFullWidth",
+    "decimalHalfWidth",
+    "japaneseLegal",
+    "japaneseDigitalTenThousand",
+    "decimalEnclosedCircle",
+    "decimalFullWidth2",
+    "aiueoFullWidth",
+    "irohaFullWidth",
+    "decimalZero",
+    "bullet",
+    "ganada",
+    "chosung",
+    "decimalEnclosedFullstop",
+    "decimalEnclosedParen",
+    "decimalEnclosedCircleChinese",
+    "ideographEnclosedCircle",
+    "ideographTraditional",
+    "ideographZodiac",
+    "ideographZodiacTraditional",
+    "taiwaneseCounting",
+    "ideographLegalTraditional",
+    "taiwaneseCountingThousand",
+    "taiwaneseDigital",
+    "chineseCounting",
+    "chineseLegalSimplified",
+    "chineseCountingThousand",
+    "koreanDigital",
+    "koreanCounting",
+    "koreanLegal",
+    "koreanDigital2",
+    "vietnameseCounting",
+    "russianLower",
+    "russianUpper",
+    "none",
+    "numberInDash",
+    "hebrew1",
+    "hebrew2",
+    "arabicAlpha",
+    "arabicAbjad",
+    "hindiVowels",
+    "hindiConsonants",
+    "hindiNumbers",
+    "hindiCounting",
+    "thaiLetters",
+    "thaiNumbers",
+    "thaiCounting",
+    "bahtText",
+    "dollarText",
+    "custom",
+];
+
+pub(crate) const PAGE_NUMBER_CHAPTER_SEPARATORS: &[&str] =
+    &["hyphen", "period", "colon", "emDash", "enDash"];
+
 /// Versioned data exchanged between the JavaScript runtime and Rust compiler.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -3195,7 +3264,7 @@ fn validate_page_numbering(value: &Value, path: &str) -> Result<()> {
         return Err(validation(path, "`pageNumbering` must not be empty"));
     }
     for key in numbering.keys() {
-        if !["start", "chapterStyle"].contains(&key.as_str()) {
+        if !["start", "chapterStyle", "format", "chapterSeparator"].contains(&key.as_str()) {
             return Err(validation(
                 path,
                 format!("unknown pageNumbering property `{key}`"),
@@ -3218,6 +3287,29 @@ fn validate_page_numbering(value: &Value, path: &str) -> Result<()> {
         return Err(validation(
             path,
             "`pageNumbering.chapterStyle` must be a non-empty string",
+        ));
+    }
+    if numbering.get("format").is_some_and(|value| {
+        value
+            .as_str()
+            .is_none_or(|format| !PAGE_NUMBER_FORMATS.contains(&format))
+    }) {
+        return Err(validation(
+            path,
+            format!(
+                "`pageNumbering.format` must be one of: {}",
+                PAGE_NUMBER_FORMATS.join(", ")
+            ),
+        ));
+    }
+    if numbering.get("chapterSeparator").is_some_and(|value| {
+        value
+            .as_str()
+            .is_none_or(|separator| !PAGE_NUMBER_CHAPTER_SEPARATORS.contains(&separator))
+    }) {
+        return Err(validation(
+            path,
+            "`pageNumbering.chapterSeparator` must be hyphen, period, colon, emDash, or enDash",
         ));
     }
     Ok(())
@@ -6119,7 +6211,7 @@ mod tests {
     #[test]
     fn validate_should_accept_section_page_configuration() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1"},"columns":2},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1","format":"upperRoman","chapterSeparator":"emDash"},"columns":2},"children":[]}]}}"#,
         );
         ir.validate()
             .expect("section configuration should validate");
@@ -6419,6 +6511,14 @@ mod tests {
             ),
             (r#""pageNumbering":{}"#, "must not be empty"),
             (r#""pageNumbering":{"start":1.5}"#, "non-negative integer"),
+            (
+                r#""pageNumbering":{"format":"roman"}"#,
+                "pageNumbering.format",
+            ),
+            (
+                r#""pageNumbering":{"chapterSeparator":"slash"}"#,
+                "chapterSeparator",
+            ),
             (
                 r#""columns":0"#,
                 "`columns` must be an integer from 1 to 45",

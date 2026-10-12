@@ -311,6 +311,21 @@ fn package_document(
         })
         .collect::<Vec<_>>();
     let bytes = patch_section_line_numbering(bytes, &section_line_numbering)?;
+    let section_page_numbering = ir
+        .document
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            Child::Node(node) if node.kind == NodeKind::Section => Some(
+                node.props
+                    .get("pageNumbering")
+                    .and_then(Value::as_object)
+                    .cloned(),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let bytes = patch_section_page_numbering(bytes, &section_page_numbering)?;
     let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
     let bytes = patch_core_properties(bytes, &ir.document.props)?;
     let bytes = patch_document_protection(bytes, &ir.document.props)?;
@@ -1280,6 +1295,102 @@ fn patch_section_line_numbering(
         return Err(Error::Compile(format!(
             "docx-rs emitted {section_index} section properties for {} JSX Sections",
             line_numbering.len()
+        )));
+    }
+    replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
+}
+
+fn patch_section_page_numbering(
+    bytes: Vec<u8>,
+    page_numbering: &[Option<Map<String, Value>>],
+) -> Result<Vec<u8>> {
+    if page_numbering.iter().all(Option::is_none) {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .map_err(|_| Error::Compile("missing word/document.xml".to_owned()))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot read document XML: {error}")))?;
+
+    let mut search_from = 0;
+    let mut section_index = 0;
+    while let Some(relative_start) = xml[search_from..].find("<w:sectPr") {
+        let section_start = search_from + relative_start;
+        let after_name = section_start + "<w:sectPr".len();
+        if xml
+            .as_bytes()
+            .get(after_name)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'>')
+        {
+            search_from = after_name;
+            continue;
+        }
+        let section_end = xml[section_start..]
+            .find("</w:sectPr>")
+            .map(|offset| section_start + offset)
+            .ok_or_else(|| Error::Compile("invalid `w:sectPr` in word/document.xml".to_owned()))?;
+        let properties = page_numbering.get(section_index).and_then(Option::as_ref);
+        if let Some(properties) = properties {
+            let attributes = [("format", "fmt"), ("chapterSeparator", "chapSep")]
+                .into_iter()
+                .filter_map(|(property, attribute)| {
+                    properties
+                        .get(property)
+                        .and_then(Value::as_str)
+                        .map(|value| (attribute, value))
+                })
+                .collect::<Vec<_>>();
+            if attributes.is_empty() {
+                search_from = section_end + "</w:sectPr>".len();
+            } else {
+                let relative_element_start = xml[section_start..section_end]
+                    .find("<w:pgNumType")
+                    .ok_or_else(|| {
+                    Error::Compile(format!(
+                        "docx-rs emitted no `w:pgNumType` for Section[{section_index}]"
+                    ))
+                })?;
+                let element_start = section_start + relative_element_start;
+                let element_end = xml[element_start..]
+                    .find('>')
+                    .map(|offset| element_start + offset + 1)
+                    .ok_or_else(|| {
+                        Error::Compile(format!(
+                            "malformed `w:pgNumType` for Section[{section_index}]"
+                        ))
+                    })?;
+                let tag = &xml[element_start..element_end];
+                let mut additions = String::new();
+                for (attribute, value) in attributes {
+                    let name = format!("w:{attribute}=");
+                    if tag.contains(&name) {
+                        return Err(Error::Compile(format!(
+                            "docx-rs unexpectedly emitted `{name}` for Section[{section_index}]"
+                        )));
+                    }
+                    let _ = write!(additions, " w:{attribute}=\"{}\"", xml_escape(value));
+                }
+                let insert_at = if tag.ends_with(" />") {
+                    element_end - 3
+                } else {
+                    element_end - 1
+                };
+                xml.insert_str(insert_at, &additions);
+                search_from = element_end + additions.len();
+            }
+        } else {
+            search_from = section_end + "</w:sectPr>".len();
+        }
+        section_index += 1;
+    }
+    if section_index < page_numbering.len() {
+        return Err(Error::Compile(format!(
+            "docx-rs emitted {section_index} section properties for {} JSX Sections",
+            page_numbering.len()
         )));
     }
     replace_zip_text_entry(archive, "word/document.xml", xml.as_bytes())
@@ -6972,7 +7083,7 @@ mod tests {
     #[test]
     fn compile_should_render_section_page_configuration() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1"}},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"titlePage":true,"textDirection":"tbRl","documentGrid":{"type":"linesAndChars","linePitch":18,"charSpace":-10},"pageNumbering":{"start":3,"chapterStyle":"1","format":"upperRoman","chapterSeparator":"emDash"}},"children":[]}]}}"#,
         )
         .expect("fixture should parse");
         ir.validate().expect("fixture should validate");
@@ -6990,7 +7101,31 @@ mod tests {
         assert!(document.contains(
             r#"<w:docGrid w:type="linesAndChars" w:linePitch="360" w:charSpace="-10" />"#
         ));
-        assert!(document.contains(r#"<w:pgNumType w:start="3" w:chapStyle="1" />"#));
+        assert!(document.contains(
+            r#"<w:pgNumType w:start="3" w:chapStyle="1" w:fmt="upperRoman" w:chapSep="emDash" />"#
+        ));
+    }
+
+    #[test]
+    fn compile_should_support_page_number_format_without_start_or_chapter_style() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{"pageNumbering":{"format":"lowerLetter"}},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+
+        assert!(
+            document.contains(r#"<w:pgNumType w:fmt="lowerLetter" />"#),
+            "format-only page numbering must emit a valid page-numbering element: {document}"
+        );
     }
 
     #[test]
