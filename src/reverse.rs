@@ -69,6 +69,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let paragraph_indent_xml = collect_paragraph_indent_metadata(bytes)?;
     let style_character_indents = collect_style_character_indent_metadata(bytes)?;
     let style_suppress_line_numbers = collect_style_line_number_suppression_metadata(bytes)?;
+    let style_paragraph_properties = collect_style_paragraph_xml_metadata(bytes)?;
     let hyperlink_histories = collect_hyperlink_histories(bytes)?;
     let docx = docx_rs::read_docx(bytes).map_err(|error| Error::Reverse(error.to_string()))?;
     let mut images = collect_package_images(bytes)?;
@@ -93,6 +94,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         paragraph_indent_xml,
         style_character_indents,
         style_suppress_line_numbers,
+        style_paragraph_properties,
         hyperlink_histories,
         ..Writer::default()
     };
@@ -261,6 +263,7 @@ struct Writer {
     paragraph_indent_indices: HashMap<String, usize>,
     style_character_indents: HashMap<String, BTreeMap<String, i64>>,
     style_suppress_line_numbers: HashMap<String, bool>,
+    style_paragraph_properties: HashMap<String, Map<String, Value>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -4033,6 +4036,164 @@ fn collect_style_line_number_suppression_metadata(bytes: &[u8]) -> Result<HashMa
     Ok(result)
 }
 
+fn collect_style_paragraph_xml_metadata(
+    bytes: &[u8],
+) -> Result<HashMap<String, Map<String, Value>>> {
+    let xml = read_zip_text(bytes, "word/styles.xml")?;
+    let mut reader = Reader::from_str(&xml);
+    let mut buffer = Vec::new();
+    let mut current_style: Option<String> = None;
+    let mut in_paragraph_properties = false;
+    let mut result = HashMap::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"style" => {
+                current_style = xml_attribute(&reader, &element, b"styleId")?;
+            }
+            Ok(Event::Start(element)) if element.local_name().as_ref() == b"pPr" => {
+                in_paragraph_properties = current_style.is_some();
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"pPr" => {
+                in_paragraph_properties = false;
+            }
+            Ok(Event::Start(element) | Event::Empty(element))
+                if in_paragraph_properties && current_style.is_some() =>
+            {
+                let (name, value) = match element.local_name().as_ref() {
+                    b"pageBreakBefore" => (
+                        "pageBreakBefore",
+                        Some(style_xml_on_off(
+                            &reader,
+                            &element,
+                            current_style.as_deref().unwrap_or_default(),
+                        )?),
+                    ),
+                    b"widowControl" => (
+                        "widowControl",
+                        Some(style_xml_on_off(
+                            &reader,
+                            &element,
+                            current_style.as_deref().unwrap_or_default(),
+                        )?),
+                    ),
+                    b"bidi" => (
+                        "bidi",
+                        Some(style_xml_on_off(
+                            &reader,
+                            &element,
+                            current_style.as_deref().unwrap_or_default(),
+                        )?),
+                    ),
+                    b"adjustRightInd" => {
+                        let style_id = current_style.as_deref().unwrap_or_default();
+                        validate_style_xml_attributes(
+                            &element,
+                            &[b"val"],
+                            style_id,
+                            "adjustRightInd",
+                        )?;
+                        let raw = xml_attribute(&reader, &element, b"val")?
+                            .unwrap_or_else(|| "1".to_owned());
+                        let value = raw.parse::<i64>().ok().filter(|value| matches!(value, 0 | 1)).ok_or_else(|| Error::Reverse(format!("style `{style_id}` has unsupported w:adjustRightInd value `{raw}`; OOXML on/off values must be 0 or 1, so repair the property or keep the original DOCX")))?;
+                        ("adjustRightIndent", Some(Value::Number(value.into())))
+                    }
+                    b"shd" => (
+                        "shading",
+                        Some(parse_style_shading(
+                            &reader,
+                            &element,
+                            current_style.as_deref().unwrap_or_default(),
+                        )?),
+                    ),
+                    _ => ("", None),
+                };
+                if let Some(value) = value {
+                    let style_id = current_style.as_deref().unwrap_or_default();
+                    let properties = result.entry(style_id.to_owned()).or_insert_with(Map::new);
+                    if properties.insert(name.to_owned(), value).is_some() {
+                        return Err(Error::Reverse(format!(
+                            "style `{style_id}` contains duplicate w:{name} paragraph properties"
+                        )));
+                    }
+                }
+            }
+            Ok(Event::End(element)) if element.local_name().as_ref() == b"style" => {
+                current_style = None;
+                in_paragraph_properties = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(Error::Reverse(format!(
+                    "cannot parse word/styles.xml paragraph properties at byte {}: {error}",
+                    reader.error_position()
+                )));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(result)
+}
+
+fn style_xml_on_off(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+    style_id: &str,
+) -> Result<Value> {
+    validate_style_xml_attributes(element, &[b"val"], style_id, "on/off paragraph property")?;
+    let value = xml_attribute(reader, element, b"val")?.as_deref().map(|value| match value {
+        "1" | "true" | "on" => Ok(true),
+        "0" | "false" | "off" => Ok(false),
+        _ => Err(Error::Reverse(format!("style `{style_id}` has invalid on/off value `{value}`; use true, false, 1, 0, on, or off"))),
+    }).transpose()?.unwrap_or(true);
+    Ok(Value::Bool(value))
+}
+
+fn parse_style_shading(
+    reader: &Reader<&[u8]>,
+    element: &BytesStart<'_>,
+    style_id: &str,
+) -> Result<Value> {
+    validate_style_xml_attributes(element, &[b"val", b"color", b"fill"], style_id, "shading")?;
+    let pattern = xml_attribute(reader, element, b"val")?.unwrap_or_else(|| "clear".to_owned());
+    let color = xml_attribute(reader, element, b"color")?.unwrap_or_else(|| "auto".to_owned());
+    let fill = xml_attribute(reader, element, b"fill")?.unwrap_or_else(|| "auto".to_owned());
+    if pattern != "clear" || color != "auto" || fill == "auto" {
+        return Err(Error::Reverse(format!(
+            "style `{style_id}` uses non-solid w:shd (val={pattern}, color={color}, fill={fill}) that JSX cannot represent; use w:val=\"clear\", w:color=\"auto\", and a six-digit RGB w:fill"
+        )));
+    }
+    if fill.len() != 6 || !fill.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::Reverse(format!(
+            "style `{style_id}` has invalid w:shd fill `{fill}`; use six hexadecimal RGB digits"
+        )));
+    }
+    Ok(Value::String(fill.to_ascii_uppercase()))
+}
+
+fn validate_style_xml_attributes(
+    element: &BytesStart<'_>,
+    allowed: &[&[u8]],
+    style_id: &str,
+    property: &str,
+) -> Result<()> {
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|error| {
+            Error::Reverse(format!(
+                "style `{style_id}` has invalid w:{property} attribute: {error}"
+            ))
+        })?;
+        let name = attribute.key.local_name();
+        if !allowed.iter().any(|allowed| *allowed == name.as_ref()) {
+            return Err(Error::Reverse(format!(
+                "style `{style_id}` has unsupported attribute `{}` on w:{property}; remove it or extend the paragraph style spec",
+                String::from_utf8_lossy(name.as_ref())
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_raw_character_indent(values: &BTreeMap<String, i64>, owner: &str) -> Result<()> {
     for (left, right) in [
         ("indentLeftChars", "indentStartChars"),
@@ -5777,6 +5938,7 @@ fn reverse_styles_attribute(
                 writer.style_theme_colors.get(&style.style_id),
                 writer.style_character_indents.get(&style.style_id),
                 writer.style_suppress_line_numbers.get(&style.style_id),
+                writer.style_paragraph_properties.get(&style.style_id),
             )
         })
         .collect::<Result<Vec<_>>>()?
@@ -6395,6 +6557,7 @@ fn reverse_style_definition(
     theme: Option<&ThemeColorInfo>,
     raw_character_indentation: Option<&BTreeMap<String, i64>>,
     raw_suppress_line_numbers: Option<&bool>,
+    raw_paragraph_properties: Option<&Map<String, Value>>,
 ) -> Result<Option<Value>> {
     let source = json(style)?;
     let mut definition = Map::new();
@@ -6469,6 +6632,9 @@ fn reverse_style_definition(
     }
     if let Some(value) = raw_suppress_line_numbers {
         paragraph.insert("suppressLineNumbers".to_owned(), Value::Bool(*value));
+    }
+    if let Some(raw_properties) = raw_paragraph_properties {
+        paragraph.extend(raw_properties.clone());
     }
     if !paragraph.is_empty() {
         definition.insert("paragraph".to_owned(), Value::Object(paragraph));
@@ -6839,18 +7005,10 @@ fn reverse_paragraph_properties(source: &Value) -> Result<Option<Map<String, Val
             };
             output.insert(key.to_owned(), points_value(value)?);
         }
-        for key in ["hangingChars", "firstLineChars"] {
-            if let Some(value) = indent.get(key).and_then(Value::as_i64) {
-                output.insert(key.to_owned(), Value::Number(value.into()));
-            }
-        }
     }
-    if source.get("keepNext").and_then(Value::as_bool) == Some(true) {
-        output.insert("keepNext".to_owned(), Value::Bool(true));
-    }
-    if source.get("keepLines").and_then(Value::as_bool) == Some(true) {
-        output.insert("keepLines".to_owned(), Value::Bool(true));
-    }
+    reverse_paragraph_boolean_properties(source, &mut output);
+    reverse_paragraph_right_indent(source, &mut output)?;
+    reverse_paragraph_shading(source, &mut output)?;
     if let Some(value) = source
         .get("outlineLvl")
         .and_then(Value::as_u64)
@@ -6859,6 +7017,62 @@ fn reverse_paragraph_properties(source: &Value) -> Result<Option<Map<String, Val
         output.insert("outlineLevel".to_owned(), Value::Number(value.into()));
     }
     Ok((!output.is_empty()).then_some(output))
+}
+
+fn reverse_paragraph_boolean_properties(source: &Value, output: &mut Map<String, Value>) {
+    if source.get("keepNext").and_then(Value::as_bool) == Some(true) {
+        output.insert("keepNext".to_owned(), Value::Bool(true));
+    }
+    if source.get("keepLines").and_then(Value::as_bool) == Some(true) {
+        output.insert("keepLines".to_owned(), Value::Bool(true));
+    }
+    for key in ["pageBreakBefore", "widowControl", "bidi"] {
+        if let Some(value) = source.get(key).and_then(Value::as_bool) {
+            output.insert(key.to_owned(), Value::Bool(value));
+        }
+    }
+}
+
+fn reverse_paragraph_right_indent(source: &Value, output: &mut Map<String, Value>) -> Result<()> {
+    if let Some(value) = source.get("adjustRightInd") {
+        let adjustment = scalar_i64(value).ok_or_else(|| {
+            Error::Reverse(
+                "paragraph style `w:adjustRightInd` is malformed; repair its integer `w:val` or keep the original DOCX".to_owned(),
+            )
+        })?;
+        output.insert(
+            "adjustRightIndent".to_owned(),
+            Value::Number(adjustment.into()),
+        );
+    }
+    Ok(())
+}
+
+fn reverse_paragraph_shading(source: &Value, output: &mut Map<String, Value>) -> Result<()> {
+    if let Some(value) = source.get("shading").filter(|value| !value.is_null()) {
+        let fill = value.get("fill").and_then(Value::as_str).ok_or_else(|| {
+            Error::Reverse(
+                "paragraph style shading has no representable fill color; set a solid `w:shd/@w:fill` or keep the original DOCX".to_owned(),
+            )
+        })?;
+        if fill.len() != 6 || !fill.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::Reverse(
+                "paragraph style shading fill is not six-digit RGB; repair `w:shd/@w:fill` or keep the original DOCX".to_owned(),
+            ));
+        }
+        if value.get("shdType").and_then(Value::as_str) != Some("clear")
+            || value.get("color").and_then(Value::as_str) != Some("auto")
+        {
+            return Err(Error::Reverse(
+                "paragraph style uses patterned shading not represented by JSX; use a solid fill or keep the original DOCX".to_owned(),
+            ));
+        }
+        output.insert(
+            "shading".to_owned(),
+            Value::String(fill.to_ascii_uppercase()),
+        );
+    }
+    Ok(())
 }
 
 fn copy_string(source: &Value, target: &mut Map<String, Value>, from: &str, to: &str) {
@@ -6964,12 +7178,12 @@ mod tests {
         DocGrid, Docx, Footer, Header, HeightRule, Hyperlink, HyperlinkType, IndentLevel, Insert,
         Level, LevelJc, LevelOverride, LevelSuffixType, LevelText, LineSpacing, LineSpacingType,
         NumberFormat, Numbering, NumberingId, PageMargin, PageNumType, PageOrientationType,
-        PageSize, Paragraph, Pic, Run, RunFonts, Section, Settings, Shading, ShdType,
-        SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Table, TableAlignmentType,
-        TableBorder, TableBorderPosition, TableBorders, TableCell, TableCellBorder,
-        TableCellBorderPosition, TableCellBorders, TableCellMargins, TableCellProperty,
-        TableLayoutType, TableOfContents, TablePositionProperty, TableRow, TextDirectionType,
-        ThemeColor, VAlignType, VMergeType, WidthType,
+        PageSize, Paragraph, ParagraphProperty, Pic, Run, RunFonts, Section, Settings, Shading,
+        ShdType, SpecialIndentType, Start, StructuredDataTag, Style, StyleType, Table,
+        TableAlignmentType, TableBorder, TableBorderPosition, TableBorders, TableCell,
+        TableCellBorder, TableCellBorderPosition, TableCellBorders, TableCellMargins,
+        TableCellProperty, TableLayoutType, TableOfContents, TablePositionProperty, TableRow,
+        TextDirectionType, ThemeColor, VAlignType, VMergeType, WidthType,
     };
     use std::io::Write;
 
@@ -7546,6 +7760,32 @@ mod tests {
             jsx.contains(r#"{"id":"BodyBase","name":"Body Base","type":"paragraph","quickFormat":true,"run":{"size":12},"paragraph":{"lineSpacing":28,"lineRule":"exact"}}"#)
                 && jsx.contains(r#"{"id":"Body","name":"Body","type":"paragraph","basedOn":"BodyBase","next":"Body","quickFormat":true,"paragraph":{"align":"both"}}"#),
             "{jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_extended_paragraph_style_properties() {
+        let mut style = Style::new("Body", StyleType::Paragraph).name("Body");
+        style.paragraph_property = ParagraphProperty::new()
+            .page_break_before(true)
+            .widow_control(false)
+            .bidi(true)
+            .shading(Shading::new().fill("DDEEFF"))
+            .adjust_right_ind(1);
+        let bytes = pack_docx(
+            Docx::new()
+                .add_style(style)
+                .add_paragraph(Paragraph::new().style("Body")),
+        );
+
+        let jsx = reverse_document(&bytes).expect("external style should reverse");
+        assert!(
+            jsx.contains(r#""adjustRightIndent":1"#)
+                && jsx.contains(r#""bidi":true"#)
+                && jsx.contains(r#""pageBreakBefore":true"#)
+                && jsx.contains(r#""shading":"DDEEFF""#)
+                && jsx.contains(r#""widowControl":false"#),
+            "paragraph style properties must survive external DOCX reverse: {jsx}"
         );
     }
 

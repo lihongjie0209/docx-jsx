@@ -1765,6 +1765,29 @@ fn compile_style_paragraph(mut style: Style, value: &Value, path: &str) -> Resul
     if let Some(value) = bool_prop(paragraph, "snapToGrid", path)? {
         style = style.snap_to_grid(value);
     }
+    if let Some(value) = bool_prop(paragraph, "pageBreakBefore", path)? {
+        style.paragraph_property =
+            std::mem::take(&mut style.paragraph_property).page_break_before(value);
+    }
+    if let Some(value) = bool_prop(paragraph, "widowControl", path)? {
+        style.paragraph_property =
+            std::mem::take(&mut style.paragraph_property).widow_control(value);
+    }
+    if let Some(value) = bool_prop(paragraph, "bidi", path)? {
+        style.paragraph_property = std::mem::take(&mut style.paragraph_property).bidi(value);
+    }
+    if let Some(value) = string_prop(paragraph, "shading", path)? {
+        style.paragraph_property = std::mem::take(&mut style.paragraph_property)
+            .shading(Shading::new().fill(value.to_ascii_uppercase()));
+    }
+    if let Some(value) = paragraph.get("adjustRightIndent") {
+        let value = value
+            .as_i64()
+            .and_then(|value| isize::try_from(value).ok())
+            .ok_or_else(|| validation(path, "`adjustRightIndent` must be 0 or 1"))?;
+        style.paragraph_property =
+            std::mem::take(&mut style.paragraph_property).adjust_right_ind(value);
+    }
     style = compile_style_spacing(style, paragraph, path)?;
     style = compile_style_indent(style, paragraph, path)?;
     for (key, first_line) in [("hangingChars", false), ("firstLineChars", true)] {
@@ -7463,6 +7486,34 @@ mod tests {
     }
 
     #[test]
+    fn compile_should_render_extended_paragraph_style_properties() {
+        let ir: IrEnvelope = serde_json::from_str(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph","paragraph":{"pageBreakBefore":true,"widowControl":false,"bidi":true,"shading":"DDEEFF","adjustRightIndent":1}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+        )
+        .expect("fixture should parse");
+        ir.validate().expect("fixture should validate");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut styles = String::new();
+        archive
+            .by_name("word/styles.xml")
+            .expect("styles part should exist")
+            .read_to_string(&mut styles)
+            .expect("styles XML should be UTF-8");
+
+        let body = styles
+            .split(r#"w:styleId="Body""#)
+            .nth(1)
+            .and_then(|value| value.split("</w:style>").next())
+            .expect("Body style should exist");
+        assert!(body.contains("<w:pageBreakBefore />"), "{body}");
+        assert!(body.contains(r#"<w:widowControl w:val="0" />"#), "{body}");
+        assert!(body.contains("<w:bidi />"), "{body}");
+        assert!(body.contains(r#"<w:adjustRightInd w:val="1" />"#), "{body}");
+        assert!(body.contains(r#"w:fill="DDEEFF""#), "{body}");
+    }
+
+    #[test]
     fn compile_should_render_style_line_number_suppression() {
         let ir: IrEnvelope = serde_json::from_str(
             r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"NoLineNumbers","name":"No Line Numbers","type":"paragraph","paragraph":{"suppressLineNumbers":true}},{"id":"KeepLineNumbers","name":"Keep Line Numbers","type":"paragraph","paragraph":{"suppressLineNumbers":false}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
@@ -7985,7 +8036,7 @@ mod tests {
     #[test]
     fn compile_should_render_advanced_paragraph_properties_and_revisions() {
         let ir: IrEnvelope = serde_json::from_str(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"bidi":true,"textAlign":"baseline","adjustRightIndent":-2,"shading":"DDEEFF","outlineLevel":3,"frame":{"wrap":"around","horizontalAnchor":"page","x":12,"yAlign":"top","width":144,"height":72},"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"},"propertyChange":{"author":"Lin","date":"2026-08-13T00:00:00Z","previous":{"align":"right","spacingAfter":6,"bidi":false}}},"children":["body"]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"bidi":true,"textAlign":"baseline","adjustRightIndent":1,"shading":"DDEEFF","outlineLevel":3,"frame":{"wrap":"around","horizontalAnchor":"page","x":12,"yAlign":"top","width":144,"height":72},"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"},"propertyChange":{"author":"Lin","date":"2026-08-13T00:00:00Z","previous":{"align":"right","spacingAfter":6,"bidi":false}}},"children":["body"]}]}]}}"#,
         )
         .expect("fixture should parse");
         let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
@@ -7999,7 +8050,7 @@ mod tests {
         assert!(
             document.contains("<w:bidi />")
                 && document.contains("<w:textAlignment w:val=\"baseline\" />")
-                && document.contains("<w:adjustRightInd w:val=\"-2\" />")
+                && document.contains("<w:adjustRightInd w:val=\"1\" />")
                 && document
                     .contains("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"DDEEFF\" />")
                 && document.contains("<w:outlineLvl w:val=\"3\" />")

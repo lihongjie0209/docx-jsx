@@ -1725,10 +1725,16 @@ fn validate_paragraph_defaults(node: &Node, path: &str) -> Result<()> {
             &["auto", "baseline", "bottom", "center", "top"],
         )?;
         if let Some(value) = node.props.get("adjustRightIndent") {
-            value
+            let number = value
                 .as_i64()
                 .and_then(|number| isize::try_from(number).ok())
-                .ok_or_else(|| validation(path, "`adjustRightIndent` must be an integer"))?;
+                .ok_or_else(|| validation(path, "`adjustRightIndent` must be 0 or 1"))?;
+            if !matches!(number, 0 | 1) {
+                return Err(validation(
+                    path,
+                    "`adjustRightIndent` must be 0 or 1 because OOXML defines w:adjustRightInd as on/off",
+                ));
+            }
         }
         if let Some(value) = node.props.get("outlineLevel")
             && !matches!(value.as_u64(), Some(0..=9))
@@ -2739,6 +2745,11 @@ fn validate_style_paragraph(value: &Value, path: &str) -> Result<()> {
             "textAlign",
             "snapToGrid",
             "suppressLineNumbers",
+            "pageBreakBefore",
+            "widowControl",
+            "bidi",
+            "shading",
+            "adjustRightIndent",
             "keepNext",
             "keepLines",
             "spacingBefore",
@@ -2862,13 +2873,32 @@ fn validate_style_paragraph_layout(paragraph: &Map<String, Value>, path: &str) -
             "style paragraph `snapToGrid` must be a boolean",
         ));
     }
-    for key in ["keepNext", "keepLines", "suppressLineNumbers"] {
+    for key in [
+        "keepNext",
+        "keepLines",
+        "suppressLineNumbers",
+        "pageBreakBefore",
+        "widowControl",
+        "bidi",
+    ] {
         if paragraph.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(validation(
                 path,
                 format!("style paragraph `{key}` must be a boolean"),
             ));
         }
+    }
+    if paragraph
+        .get("adjustRightIndent")
+        .is_some_and(|value| !matches!(value.as_i64(), Some(0 | 1)))
+    {
+        return Err(validation(
+            path,
+            "style paragraph `adjustRightIndent` must be 0 or 1 because OOXML defines w:adjustRightInd as on/off",
+        ));
+    }
+    if let Some(value) = paragraph.get("shading") {
+        validate_rgb(value, path, "style paragraph `shading`")?;
     }
     for key in ["indentLeft", "indentRight"] {
         if let Some(value) = paragraph.get(key) {
@@ -5239,7 +5269,7 @@ mod tests {
     #[test]
     fn validate_should_accept_advanced_paragraph_properties_and_revisions() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"bidi":true,"textAlign":"baseline","adjustRightIndent":-2,"shading":"DDEEFF","outlineLevel":3,"frame":{"wrap":"around","horizontalAnchor":"page","x":12,"yAlign":"top","width":144,"height":72},"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"},"propertyChange":{"author":"Lin","date":"2026-08-13T00:00:00Z","previous":{"align":"right","spacingAfter":6,"bidi":false}}},"children":["body"]}]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"bidi":true,"textAlign":"baseline","adjustRightIndent":1,"shading":"DDEEFF","outlineLevel":3,"frame":{"wrap":"around","horizontalAnchor":"page","x":12,"yAlign":"top","width":144,"height":72},"inserted":{"author":"Ada","date":"2026-08-14T00:00:00Z"},"propertyChange":{"author":"Lin","date":"2026-08-13T00:00:00Z","previous":{"align":"right","spacingAfter":6,"bidi":false}}},"children":["body"]}]}]}}"#,
         );
         assert!(ir.validate().is_ok(), "{:?}", ir.validate());
     }
@@ -6370,7 +6400,7 @@ mod tests {
     #[test]
     fn validate_should_accept_custom_style_definitions() {
         let ir = parse(
-            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"keepNext":true,"keepLines":true,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"ReportTitle","name":"Report Title","type":"paragraph","basedOn":"Normal","next":"Normal","quickFormat":true,"uiPriority":5,"run":{"font":"Noto Sans CJK SC","size":18,"color":"336699","themeColor":"accent1","themeTint":"99","bold":true,"italic":false,"underline":"single","textBorder":{"style":"double","size":1,"color":"336699","space":2}},"paragraph":{"align":"center","textAlign":"baseline","snapToGrid":false,"keepNext":true,"keepLines":true,"pageBreakBefore":true,"widowControl":false,"bidi":true,"shading":"DDEEFF","adjustRightIndent":1,"spacingAfter":12,"indentLeft":6,"firstLine":2,"outlineLevel":1,"frame":{"wrap":"around","horizontalAnchor":"margin","verticalAnchor":"text","xAlign":"center","y":12,"horizontalSpace":3,"width":240,"height":48}}},{"id":"ReportTable","name":"Report Table","type":"table","table":{"indent":6,"align":"center","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"double","size":1,"color":"336699"}},"cell":{"width":72,"colSpan":2,"verticalAlign":"center","verticalMerge":"restart","textDirection":"tbRl","shading":"FFF2CC","margins":{"top":1,"right":2,"bottom":3,"left":4},"border":{"style":"dotted","size":0.5,"color":"993366"}}}]},"children":[{"type":"Section","props":{},"children":[]}]}}"#,
         );
         ir.validate().expect("custom style should validate");
     }
@@ -6407,6 +6437,18 @@ mod tests {
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"keepNext":"yes"}}]"#,
                 "keepNext",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"widowControl":"yes"}}]"#,
+                "widowControl",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"shading":"red"}}]"#,
+                "six-digit RGB",
+            ),
+            (
+                r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"adjustRightIndent":-2}}]"#,
+                "0 or 1",
             ),
             (
                 r#"[{"id":"A","name":"A","type":"paragraph","paragraph":{"frame":{"x":1,"xAlign":"left"}}}]"#,

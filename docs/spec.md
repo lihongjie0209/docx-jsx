@@ -261,10 +261,15 @@ error instead of a silent drop.
   `basedOn`, `next`, `link`, `quickFormat`, `uiPriority`, `semiHidden`, and
   `unhideWhenUsed`. `run?: {font,fonts,size,color,themeColor,themeShade,themeTint,highlight,bold,italic,underline,hidden,textBorder}`
   uses the same units and color rules as `Run`.
-  `paragraph?: {align,textAlign,snapToGrid,keepNext,keepLines,spacingBefore,spacingAfter,lineSpacing,spacingBeforeLines,spacingAfterLines,lineRule,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
+  `paragraph?: {align,textAlign,snapToGrid,keepNext,keepLines,pageBreakBefore,widowControl,bidi,shading,suppressLineNumbers,spacingBefore,spacingAfter,lineSpacing,spacingBeforeLines,spacingAfterLines,lineRule,indentLeft,indentRight,firstLine,hanging,hangingChars,firstLineChars,outlineLevel,frame}`
   uses point dimensions; `firstLine` and `hanging` are mutually exclusive.
-  `keepNext` and `keepLines` are booleans and map to the style's
-  `ParagraphProperty` keep flags.
+  `keepNext`, `keepLines`, `pageBreakBefore`, `widowControl`, `bidi`, and
+  `suppressLineNumbers` are booleans and map to the style's corresponding
+  paragraph properties. `shading` is a solid six-digit RGB fill. These values
+  are restored from external `styles.xml`; unsupported patterned
+  shading returns an error instead of being discarded. `adjustRightIndent`
+  accepts only `0` or `1`, the schema-valid on/off values emitted by the pinned
+  writer for `w:adjustRightInd`.
   `textAlign` is `auto`, `baseline`, `bottom`, `center`, or `top`; line-spacing
   fields use the same units and `lineRule` values as `Paragraph`.
   `frame` accepts `wrap`, `verticalAnchor`, `horizontalAnchor`, `heightRule`,
@@ -353,8 +358,8 @@ error instead of a silent drop.
   `false` when reversing external DOCX. It is supported on `Paragraph`, `Heading`,
   and `ListItem`. `Document.styles[].paragraph.suppressLineNumbers?: boolean`
   provides the inherited style form.
-  `textAlign?: "auto" | "baseline" | "bottom" | "center" | "top"`, signed
-  integer `adjustRightIndent?`, six-digit RGB `shading?`, and integer
+  `textAlign?: "auto" | "baseline" | "bottom" | "center" | "top"`,
+  `adjustRightIndent?: 0 | 1`, six-digit RGB `shading?`, and integer
   `outlineLevel?: 0..9`. `frame?` has the same shape, units, enumerations, and
   coordinate/alignment conflicts as `Document.styles[].paragraph.frame`.
   Optional `inserted?` and `deleted?` objects mark the paragraph's default run
