@@ -26,6 +26,14 @@
       },
       "allOf": [
         {
+          "if": { "properties": { "type": { "const": "Bookmark" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/bookmarkProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "InlineBookmark" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/bookmarkProps" } } }
+        },
+        {
           "if": { "properties": { "type": { "const": "Header" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/headerFooterProps" } } }
         },
@@ -86,6 +94,14 @@
           "then": { "properties": { "props": { "$ref": "#/$defs/listItemProps" } } }
         }
       ]
+    },
+    "bookmarkProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 }
+      }
     },
     "headerFooterProps": {
       "type": "object",

@@ -530,6 +530,32 @@ fn spec_json_schema_should_constrain_header_and_footer_story_types() {
 }
 
 #[test]
+fn spec_json_schema_should_require_bookmark_anchor_names() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas");
+    for kind in ["Bookmark", "InlineBookmark"] {
+        let branch = branches
+            .iter()
+            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(
+            branch["then"]["properties"]["props"]["$ref"],
+            "#/$defs/bookmarkProps"
+        );
+    }
+    assert_eq!(
+        schema["$defs"]["bookmarkProps"]["required"],
+        serde_json::json!(["name"])
+    );
+    assert_eq!(
+        schema["$defs"]["bookmarkProps"]["properties"]["name"]["minLength"],
+        1
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");

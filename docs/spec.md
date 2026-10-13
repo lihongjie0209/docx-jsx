@@ -17,8 +17,9 @@ docx-jsx spec [--format markdown|json-schema]
 `spec --format json-schema` describes the IR envelope and recursive tree. In
 this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, `Table`,
-`Caption`, `Header`, and `Footer` properties are additionally typed and constrained; other
-component `props` remain generic objects pending later coverage batches. The
+`Caption`, `Header`, `Footer`, `Bookmark`, and `InlineBookmark` properties are
+additionally typed and constrained; other component `props` remain generic
+objects pending later coverage batches. The
 schema constrains style definition metadata and all four nested style property
 groups; style identity uniqueness, reference resolution/type compatibility,
 and inheritance cycles remain the responsibility of `validate`. List override
@@ -35,6 +36,7 @@ for formatting, effects, layout, borders, and shading; cross-definition style
 identity/reference semantics remain authoritative in `validate`.
 Header and Footer schema properties constrain their optional story type to
 `default`, `first`, or `even`.
+Bookmark and InlineBookmark schema properties require non-empty anchor names.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`

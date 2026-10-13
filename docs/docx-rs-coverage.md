@@ -112,3 +112,7 @@ checked by `validate` because they depend on relationships between definitions.
 Header/footer schema coverage constrains the optional story variant to `default`,
 `first`, or `even`; matching header/footer references to sections remains a
 document relationship concern handled by the compiler and reverse converter.
+
+Bookmark and inline-bookmark schemas require non-empty names while leaving
+range structure and matching ID reconstruction to the existing semantic
+validator/reverse parser.

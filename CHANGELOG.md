@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.18 - 2026-10-13
+
+- Add Agent JSON Schema constraints requiring non-empty Bookmark and
+  InlineBookmark names.
+
 ## 0.8.17 - 2026-10-13
 
 - Add Agent JSON Schema constraints for Header and Footer story variants.
