@@ -77,6 +77,11 @@ leaf components.
 The Agent JSON Schema constrains `Text.value` to string/number and its children
 to primitive text values, preventing unsupported component nesting.
 
+The Agent JSON Schema constrains the semantic text wrappers' properties for
+underline, spacing, scaling, fit-to-width, borders, and shading, plus the
+no-property emphasis wrappers. Required content and XML-level semantics remain
+checked by `docx-jsx validate`.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

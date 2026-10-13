@@ -71,6 +71,13 @@
         { "if": { "properties": { "type": { "const": "Break" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/breakProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "enum": ["PageNumber", "TotalPages", "Tab", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen"] } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/emptyProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "const": "Text" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/textProps" }, "children": { "items": { "oneOf": [{ "type": "string" }, { "type": "number" }] } } } } },
+        { "if": { "properties": { "type": { "enum": ["Bold", "Italic", "StrikeThrough", "Superscript", "Subscript", "AllCaps", "HiddenText", "SpecialHiddenText", "DoubleStrike"] } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/semanticTextEmptyProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
+        { "if": { "properties": { "type": { "const": "Underline" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/underlineTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
+        { "if": { "properties": { "type": { "const": "SpacedText" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/spacedTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
+        { "if": { "properties": { "type": { "const": "ScaledText" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/scaledTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
+        { "if": { "properties": { "type": { "const": "FitText" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/fitTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
+        { "if": { "properties": { "type": { "const": "BorderedText" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/borderedTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
+        { "if": { "properties": { "type": { "const": "ShadedText" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/shadedTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
         { "if": { "properties": { "type": { "const": "MergeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/mergeFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "DocumentPropertyField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/documentPropertyFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "FormulaField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/formulaFieldProps" } } } },
@@ -288,6 +295,64 @@
       "properties": {
         "value": { "oneOf": [{ "type": "string" }, { "type": "number" }] }
       }
+    },
+    "semanticTextEmptyProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "underlineTextProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "type": { "$ref": "#/$defs/underlineStyle" } }
+    },
+    "spacedTextProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount"],
+      "properties": { "amount": { "type": "number" } }
+    },
+    "scaledTextProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["percent"],
+      "properties": { "percent": { "type": "integer", "minimum": 1, "maximum": 600 } }
+    },
+    "fitTextProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width"],
+      "properties": {
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "id": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      }
+    },
+    "borderedTextProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": { "enum": ["single", "double", "dotted", "dashed"] },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "space": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
+    "shadedTextProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fill"],
+      "properties": {
+        "fill": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "pattern": { "enum": ["nil", "clear", "solid", "horzStripe", "vertStripe", "reverseDiagStripe", "diagStripe", "horzCross", "diagCross", "thinHorzStripe", "thinVertStripe", "thinReverseDiagStripe", "thinDiagStripe", "thinHorzCross", "thinDiagCross", "pct5", "pct10", "pct12", "pct15", "pct20", "pct25", "pct30", "pct35", "pct37", "pct40", "pct45", "pct50", "pct55", "pct60", "pct62", "pct65", "pct70", "pct75", "pct80", "pct85", "pct87", "pct90", "pct95"] }
+      }
+    },
+    "semanticTextChild": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "number" },
+        { "allOf": [{ "$ref": "#/$defs/node" }, { "properties": { "type": { "const": "Text" } }, "required": ["type"] }] }
+      ]
     },
     "footnoteChild": {
       "oneOf": [

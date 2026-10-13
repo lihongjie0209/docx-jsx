@@ -20,8 +20,8 @@ this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Caption`, `Header`, `Footer`, `Bookmark`, `InlineBookmark`, and
 `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `ContentControl`, the
 native field components, `TocItem`, `PageReference`, `TabStop`, `PositionalTab`,
-`Text`, `Symbol`, tracked revision properties, `Footnote`, line breaks, and common
-inline control leaves are additionally typed and constrained;
+`Text`, semantic text effects, `Symbol`, tracked revision properties, `Footnote`,
+line breaks, and common inline control leaves are additionally typed and constrained;
 other component `props` remain generic
 objects pending later coverage batches. The
 schema constrains style definition metadata and all four nested style property
@@ -68,6 +68,9 @@ carriage-return, and nonbreaking-character leaves reject all properties and
 children.
 `Text.value` is a string or number, and its direct children are limited to
 strings and numbers; component nesting is rejected by the schema.
+Semantic text effects constrain their formatting properties and require text
+children; detailed content presence and effect-specific semantic validation
+remain enforced by `validate`.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`

@@ -469,6 +469,50 @@ fn spec_json_schema_should_constrain_text_values_and_children() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_semantic_text_effects() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    for (kind, definition) in [
+        ("Bold", "semanticTextEmptyProps"),
+        ("Italic", "semanticTextEmptyProps"),
+        ("Underline", "underlineTextProps"),
+        ("StrikeThrough", "semanticTextEmptyProps"),
+        ("Superscript", "semanticTextEmptyProps"),
+        ("Subscript", "semanticTextEmptyProps"),
+        ("AllCaps", "semanticTextEmptyProps"),
+        ("HiddenText", "semanticTextEmptyProps"),
+        ("SpecialHiddenText", "semanticTextEmptyProps"),
+        ("DoubleStrike", "semanticTextEmptyProps"),
+        ("SpacedText", "spacedTextProps"),
+        ("ScaledText", "scaledTextProps"),
+        ("FitText", "fitTextProps"),
+        ("BorderedText", "borderedTextProps"),
+        ("ShadedText", "shadedTextProps"),
+    ] {
+        let branch = branches
+            .iter()
+            .find(|branch| {
+                branch["if"]["properties"]["type"]["const"] == kind
+                    || branch["if"]["properties"]["type"]["enum"]
+                        .as_array()
+                        .is_some_and(|types| types.contains(&serde_json::json!(kind)))
+            })
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(
+            branch["then"]["properties"]["props"]["$ref"],
+            format!("#/$defs/{definition}")
+        );
+        assert_eq!(branch["then"]["properties"]["children"]["minItems"], 1);
+    }
+    assert_eq!(schema["$defs"]["spacedTextProps"]["required"][0], "amount");
+    assert_eq!(schema["$defs"]["scaledTextProps"]["required"][0], "percent");
+    assert_eq!(schema["$defs"]["fitTextProps"]["required"][0], "width");
+    assert_eq!(schema["$defs"]["shadedTextProps"]["required"][0], "fill");
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]
