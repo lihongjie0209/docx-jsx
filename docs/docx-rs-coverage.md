@@ -108,3 +108,7 @@ formatting objects are typed, including font slots, themes, indentation aliases,
 frames, borders, text effects, shading, and cell layout. Duplicate IDs,
 base/link/next resolution, type compatibility, and inheritance cycles remain
 checked by `validate` because they depend on relationships between definitions.
+
+Header/footer schema coverage constrains the optional story variant to `default`,
+`first`, or `even`; matching header/footer references to sections remains a
+document relationship concern handled by the compiler and reverse converter.

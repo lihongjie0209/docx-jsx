@@ -26,6 +26,14 @@
       },
       "allOf": [
         {
+          "if": { "properties": { "type": { "const": "Header" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/headerFooterProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Footer" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/headerFooterProps" } } }
+        },
+        {
           "if": { "properties": { "type": { "const": "Caption" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/captionProps" } } }
         },
@@ -78,6 +86,13 @@
           "then": { "properties": { "props": { "$ref": "#/$defs/listItemProps" } } }
         }
       ]
+    },
+    "headerFooterProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["default", "first", "even"] }
+      }
     },
     "tableRowProps": {
       "type": "object",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.17 - 2026-10-13
+
+- Add Agent JSON Schema constraints for Header and Footer story variants.
+
 ## 0.8.16 - 2026-10-13
 
 - Type all nested `StyleDefinition` run, paragraph, table, and cell properties

@@ -508,6 +508,28 @@ fn spec_json_schema_should_type_nested_style_table_and_cell_properties() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_header_and_footer_story_types() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas");
+    for kind in ["Header", "Footer"] {
+        let branch = branches
+            .iter()
+            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(
+            branch["then"]["properties"]["props"]["$ref"],
+            "#/$defs/headerFooterProps"
+        );
+    }
+    assert_eq!(
+        schema["$defs"]["headerFooterProps"]["properties"]["type"]["enum"],
+        serde_json::json!(["default", "first", "even"])
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");
