@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.4 - 2026-10-13
+
+- Make the Agent JSON Schema constrain `TableRow` and `TableCell` properties,
+  including types, bounds, required margins, enums, and mutually exclusive
+  values; document that other component properties are still covered by the
+  Markdown specification and semantic validator pending future batches.
+- Correct `TableCell.widthPercent` documentation to match validation: greater
+  than 0 and at most 100.
+
 ## 0.8.3 - 2026-10-13
 
 - Add `TableCell.noWrap` to control cell text wrapping and preserve explicit

@@ -23,7 +23,69 @@
           "type": "array",
           "items": { "oneOf": [{ "$ref": "#/$defs/node" }, { "type": "string" }, { "type": "number" }] }
         }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "TableRow" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/tableRowProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "TableCell" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/tableCellProps" } } }
+        }
+      ]
+    },
+    "tableRowProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "heightRule": { "enum": ["auto", "atLeast", "exact"] },
+        "cantSplit": { "type": "boolean" },
+        "header": { "type": "boolean" },
+        "gridBefore": { "type": "integer", "minimum": 0 },
+        "gridAfter": { "type": "integer", "minimum": 0 },
+        "widthBefore": { "type": "number", "minimum": 0 },
+        "widthAfter": { "type": "number", "minimum": 0 },
+        "inserted": { "$ref": "#/$defs/rowRevision" },
+        "deleted": { "$ref": "#/$defs/rowRevision" }
+      },
+      "not": { "required": ["inserted", "deleted"] }
+    },
+    "rowRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "author": { "type": "string" },
+        "date": { "type": "string" }
       }
+    },
+    "tableCellProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "widthPercent": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "colSpan": { "type": "integer", "minimum": 1 },
+        "verticalAlign": { "enum": ["top", "center", "bottom"] },
+        "verticalMerge": { "enum": ["restart", "continue"] },
+        "textDirection": { "enum": ["lr", "lrV", "rl", "rlV", "tb", "tbV", "tbRlV", "tbRl", "btLr", "lrTbV"] },
+        "noWrap": { "type": "boolean" },
+        "margins": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["top", "right", "bottom", "left"],
+          "properties": {
+            "top": { "type": "number", "minimum": 0 },
+            "right": { "type": "number", "minimum": 0 },
+            "bottom": { "type": "number", "minimum": 0 },
+            "left": { "type": "number", "minimum": 0 }
+          }
+        },
+        "shading": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "border": { "oneOf": [{ "type": "boolean" }, { "type": "object" }] }
+      },
+      "not": { "required": ["width", "widthPercent"] }
     }
   }
 }

@@ -14,6 +14,13 @@ docx-jsx pdf <INPUT.docx> [-o <OUTPUT.pdf>] [--engine auto|libreoffice|word|wps]
 docx-jsx spec [--format markdown|json-schema]
 ```
 
+`spec --format json-schema` describes the IR envelope and recursive tree. In
+this schema revision, `TableRow` and `TableCell` properties are additionally
+typed and constrained; other component `props` remain generic objects pending
+later coverage batches. The `validate` command remains authoritative for the
+complete DSL semantic contract. `TableCell.widthPercent` must be greater than
+0 and at most 100.
+
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`
 compiles the document in memory and converts that archive with the same local
@@ -541,8 +548,8 @@ error instead of a silent drop.
   Word when omitted. Height is converted to/from whole twips; an external row
   height that is not a whole twip cannot be represented and causes reverse to
   fail with a repair suggestion.
-- `TableCell`: mutually exclusive `width?` in points or `widthPercent?` from 0
-  through 100, `colSpan?`,
+- `TableCell`: mutually exclusive `width?` in points or `widthPercent?` greater
+  than 0 and at most 100, `colSpan?`,
   `verticalAlign?: "top" | "center" | "bottom"`, `verticalMerge?`,
   `textDirection?`, `noWrap?: boolean`, `margins?`, `shading?`, and `border?`.
   `noWrap={true}` prevents text wrapping in the cell; explicit false is retained

@@ -103,6 +103,31 @@ fn spec_should_output_machine_readable_json_schema() {
     let schema: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
     assert_eq!(schema["title"], "docx-jsx IR v1");
+    let node = &schema["$defs"]["node"];
+    assert_eq!(
+        node["allOf"][0]["if"]["properties"]["type"]["const"],
+        "TableRow"
+    );
+    assert_eq!(
+        node["allOf"][0]["then"]["properties"]["props"]["$ref"],
+        "#/$defs/tableRowProps"
+    );
+    assert_eq!(
+        schema["$defs"]["tableRowProps"]["properties"]["header"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        node["allOf"][1]["if"]["properties"]["type"]["const"],
+        "TableCell"
+    );
+    assert_eq!(
+        node["allOf"][1]["then"]["properties"]["props"]["$ref"],
+        "#/$defs/tableCellProps"
+    );
+    assert_eq!(
+        schema["$defs"]["tableCellProps"]["properties"]["noWrap"]["type"],
+        "boolean"
+    );
     assert!(
         schema["$defs"]["node"]["properties"]["type"]["enum"]
             .as_array()
