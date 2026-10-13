@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.9 - 2026-10-13
+
+- Extend the Agent JSON Schema to constrain raster `Image` source/dimensions,
+  accessibility metadata, decorative-image exclusivity, floating-anchor
+  properties, and signed DrawingML simple-position coordinates.
+
 ## 0.8.8 - 2026-10-13
 
 - Extend the Agent JSON Schema to constrain Document defaults, metadata,

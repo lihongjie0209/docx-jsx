@@ -52,6 +52,10 @@
         {
           "if": { "properties": { "type": { "const": "Document" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/documentProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Image" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/imageProps" } } }
         }
       ]
     },
@@ -516,6 +520,85 @@
         { "not": { "required": ["hashValue"], "not": { "required": ["saltValue"] } } },
         { "not": { "required": ["saltValue"], "not": { "required": ["hashValue"] } } }
       ]
+    },
+    "imageProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["src", "width", "height"],
+      "properties": {
+        "src": { "type": "string", "minLength": 1 },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "description": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "decorative": { "type": "boolean" },
+        "relationshipId": { "type": "string", "minLength": 1 },
+        "rotate": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "floating": { "type": "boolean" },
+        "allowOverlap": { "type": "boolean" },
+        "layoutInCell": { "type": "boolean" },
+        "simplePosition": { "$ref": "#/$defs/simplePosition" },
+        "positionH": {
+          "oneOf": [
+            { "type": "number" },
+            { "enum": ["left", "center", "right"] }
+          ]
+        },
+        "positionV": {
+          "oneOf": [
+            { "type": "number" },
+            { "enum": ["top", "center", "bottom"] }
+          ]
+        },
+        "relativeFromH": { "enum": ["character", "column", "insideMargin", "leftMargin", "margin", "outsideMargin", "page", "rightMargin"] },
+        "relativeFromV": { "enum": ["bottomMargin", "insideMargin", "line", "margin", "outsideMargin", "page", "paragraph", "topMargin"] },
+        "distanceTop": { "type": "number", "minimum": 0 },
+        "distanceBottom": { "type": "number", "minimum": 0 },
+        "distanceLeft": { "type": "number", "minimum": 0 },
+        "distanceRight": { "type": "number", "minimum": 0 },
+        "relativeHeight": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "decorative": { "const": true } },
+            "required": ["decorative"]
+          },
+          "then": {
+            "not": { "anyOf": [{ "required": ["description"] }, { "required": ["title"] }] }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              { "required": ["allowOverlap"] },
+              { "required": ["simplePosition"] },
+              { "required": ["positionH"] },
+              { "required": ["positionV"] },
+              { "required": ["relativeFromH"] },
+              { "required": ["relativeFromV"] },
+              { "required": ["distanceTop"] },
+              { "required": ["distanceBottom"] },
+              { "required": ["distanceLeft"] },
+              { "required": ["distanceRight"] },
+              { "required": ["relativeHeight"] }
+            ]
+          },
+          "then": {
+            "properties": { "floating": { "const": true } },
+            "required": ["floating"]
+          }
+        }
+      ]
+    },
+    "simplePosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "y": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 }
+      }
     }
   }
 }
