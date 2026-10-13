@@ -45,6 +45,10 @@ properties, including their required identifiers, shared field switches,
 deletion metadata, and field-paragraph formatting. Placement and child-dependent
 index rules remain enforced by `docx-jsx validate`.
 
+The Agent JSON Schema constrains `ContentControl` metadata and requires the
+`xpath` / `storeItemId` pair whenever data-binding fields are present. Child
+placement and block-versus-inline structure remain enforced by validation.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

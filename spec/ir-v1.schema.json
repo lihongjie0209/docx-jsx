@@ -46,6 +46,10 @@
           "then": { "properties": { "props": { "$ref": "#/$defs/tableOfEntriesProps" } } }
         },
         {
+          "if": { "properties": { "type": { "const": "ContentControl" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/contentControlProps" } } }
+        },
+        {
           "if": { "properties": { "type": { "const": "Header" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/headerFooterProps" } } }
         },
@@ -114,6 +118,28 @@
       "properties": {
         "name": { "type": "string", "minLength": 1 }
       }
+    },
+    "contentControlProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "alias": { "type": "string" },
+        "xpath": { "type": "string", "minLength": 1 },
+        "prefixMappings": { "type": "string" },
+        "storeItemId": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              { "required": ["xpath"] },
+              { "required": ["prefixMappings"] },
+              { "required": ["storeItemId"] }
+            ]
+          },
+          "then": { "required": ["xpath", "storeItemId"] }
+        }
+      ]
     },
     "tableOfContentsProps": {
       "type": "object",

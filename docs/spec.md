@@ -18,8 +18,8 @@ docx-jsx spec [--format markdown|json-schema]
 this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, `Table`,
 `Caption`, `Header`, `Footer`, `Bookmark`, `InlineBookmark`, and
-`TableOfContents`, `TableOfFigures`, and `TableOfEntries` properties are
-additionally typed and constrained; other component `props` remain generic
+`TableOfContents`, `TableOfFigures`, `TableOfEntries`, and `ContentControl`
+properties are additionally typed and constrained; other component `props` remain generic
 objects pending later coverage batches. The
 schema constrains style definition metadata and all four nested style property
 groups; style identity uniqueness, reference resolution/type compatibility,
@@ -45,6 +45,9 @@ TableOfFigures and TableOfEntries schemas require their respective non-empty
 `label` and `identifier`, constrain field switches and shared index formatting,
 and reject unknown properties; index placement and child-dependent rules
 remain checked by `validate`.
+ContentControl schema constrains its alias and data-binding strings, and requires
+both a non-empty `xpath` and `storeItemId` whenever any binding property is used.
+Child-kind and placement rules remain checked by `validate`.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`

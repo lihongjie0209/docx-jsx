@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.21 - 2026-10-13
+
+- Add Agent JSON Schema constraints for ContentControl metadata and data-binding
+  requirements.
+
 ## 0.8.20 - 2026-10-13
 
 - Add Agent JSON Schema coverage for TableOfFigures and TableOfEntries,
