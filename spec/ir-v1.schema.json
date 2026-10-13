@@ -56,6 +56,10 @@
         {
           "if": { "properties": { "type": { "const": "Image" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/imageProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Hyperlink" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/hyperlinkProps" } } }
         }
       ]
     },
@@ -599,6 +603,19 @@
         "x": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
         "y": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 }
       }
+    },
+    "hyperlinkProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "href": { "type": "string", "minLength": 1 },
+        "anchor": { "type": "string", "minLength": 1 },
+        "history": { "type": "boolean" }
+      },
+      "oneOf": [
+        { "required": ["href"], "not": { "required": ["anchor"] } },
+        { "required": ["anchor"], "not": { "required": ["href"] } }
+      ]
     }
   }
 }

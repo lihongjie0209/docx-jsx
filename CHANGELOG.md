@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.10 - 2026-10-13
+
+- Extend the Agent JSON Schema to require exactly one non-empty `Hyperlink`
+  target (`href` or `anchor`) and constrain the optional history flag.
+
 ## 0.8.9 - 2026-10-13
 
 - Extend the Agent JSON Schema to constrain raster `Image` source/dimensions,
