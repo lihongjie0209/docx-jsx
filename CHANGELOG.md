@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.13 - 2026-10-13
+
+- Extend the Agent JSON Schema to constrain Caption sequence labels, formats,
+  restart counters, style, placeholders, dirty state, and separators.
+
 ## 0.8.12 - 2026-10-13
 
 - Extend the Agent JSON Schema to constrain Table widths, grid columns,

@@ -413,6 +413,30 @@ fn spec_json_schema_should_constrain_table_properties() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_caption_sequence_properties() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas");
+    let branch = branches
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "Caption")
+        .expect("Caption schema branch should exist");
+    assert_eq!(
+        branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/captionProps"
+    );
+    assert_eq!(
+        schema["$defs"]["captionProps"]["required"],
+        serde_json::json!(["label"])
+    );
+    assert_eq!(
+        schema["$defs"]["captionProps"]["properties"]["restart"]["maximum"],
+        18_446_744_073_709_551_615_u64
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");

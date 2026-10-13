@@ -26,6 +26,10 @@
       },
       "allOf": [
         {
+          "if": { "properties": { "type": { "const": "Caption" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/captionProps" } } }
+        },
+        {
           "if": { "properties": { "type": { "const": "Table" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/tableProps" } } }
         },
@@ -628,6 +632,22 @@
         { "required": ["href"], "not": { "required": ["anchor"] } },
         { "required": ["anchor"], "not": { "required": ["href"] } }
       ]
+    },
+    "captionProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "identifier": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "format": { "enum": ["arabic", "roman", "Roman", "alphabetic", "Alphabetic"] },
+        "restart": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "placeholder": { "type": "string" },
+        "dirty": { "type": "boolean" },
+        "style": { "type": "string", "minLength": 1 },
+        "numberSeparator": { "type": "string" },
+        "textSeparator": { "type": "string" }
+      }
     },
     "tableProps": {
       "type": "object",

@@ -94,3 +94,9 @@ layout, positive grid-column widths, complete four-edge margins, uniform or
 positioned borders, and floating position anchors/coordinates. Grid width
 count matching the table's effective column count remains a semantic compiler
 check because it depends on the child rows and cell spans.
+
+`Caption` schema coverage requires a Word-compatible sequence label and types
+its optional identifier, number format, restart counter, placeholder, style,
+dirty flag, and separators. Whether referenced caption styles exist and whether
+identifier values conflict with other sequence fields remains a document-level
+semantic validation.

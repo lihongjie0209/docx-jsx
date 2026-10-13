@@ -17,7 +17,7 @@ docx-jsx spec [--format markdown|json-schema]
 `spec --format json-schema` describes the IR envelope and recursive tree. In
 this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, and
-`Table`
+`Table` and `Caption`
 properties are additionally typed and constrained; other component `props`
 remain generic objects pending later coverage batches. Nested style formatting
 and identity/uniqueness rules remain the responsibility of `validate`, which is
@@ -26,7 +26,9 @@ uniqueness and legal component placement are likewise checked by `validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment
-exclusivity.
+exclusivity. Caption schema validates the required Word label identifier,
+optional sequence identifier/format/restart/placeholder/dirty values, and style
+and separator strings.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`
