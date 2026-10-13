@@ -115,6 +115,10 @@ rules remain the responsibility of `docx-jsx validate`.
 The Agent JSON Schema constrains content controls to homogeneous inline or block
 children. Parent-specific placement remains checked by `docx-jsx validate`.
 
+The Agent JSON Schema constrains block bookmark children to headings,
+paragraphs, captions, tables, or lists. Anchor uniqueness, reference
+resolution, and range placement remain semantic validation rules.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

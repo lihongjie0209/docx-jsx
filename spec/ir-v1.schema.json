@@ -27,7 +27,7 @@
       "allOf": [
         {
           "if": { "properties": { "type": { "const": "Bookmark" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/bookmarkProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/bookmarkProps" }, "children": { "items": { "$ref": "#/$defs/bookmarkChild" } } } }
         },
         {
           "if": { "properties": { "type": { "const": "InlineBookmark" } }, "required": ["type"] },
@@ -193,6 +193,15 @@
         { "$ref": "#/$defs/tableNode" },
         { "$ref": "#/$defs/listNode" },
         { "$ref": "#/$defs/contentControlNode" }
+      ]
+    },
+    "bookmarkChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/headingNode" },
+        { "$ref": "#/$defs/paragraphNode" },
+        { "$ref": "#/$defs/captionNode" },
+        { "$ref": "#/$defs/tableNode" },
+        { "$ref": "#/$defs/listNode" }
       ]
     },
     "storyChild": {

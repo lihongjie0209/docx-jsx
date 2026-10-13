@@ -916,6 +916,36 @@ fn spec_json_schema_should_constrain_content_control_child_forms() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_bookmark_range_children() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    let branch = branches
+        .iter()
+        .find(|branch| {
+            branch["if"]["properties"]["type"]["const"] == "Bookmark"
+                && branch["then"]["properties"]["children"]["items"]["$ref"]
+                    == "#/$defs/bookmarkChild"
+        })
+        .expect("Bookmark should constrain its block children");
+    assert_eq!(
+        branch["then"]["properties"]["children"]["items"]["$ref"],
+        "#/$defs/bookmarkChild"
+    );
+    assert_eq!(
+        schema["$defs"]["bookmarkChild"]["oneOf"],
+        serde_json::json!([
+            { "$ref": "#/$defs/headingNode" },
+            { "$ref": "#/$defs/paragraphNode" },
+            { "$ref": "#/$defs/captionNode" },
+            { "$ref": "#/$defs/tableNode" },
+            { "$ref": "#/$defs/listNode" }
+        ])
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

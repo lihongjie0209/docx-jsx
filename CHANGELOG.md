@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.38 - 2026-10-13
+
+- Constrain block bookmark range children in the Agent JSON Schema.
+
 ## 0.8.37 - 2026-10-13
 
 - Constrain content controls to homogeneous inline or block children in the
