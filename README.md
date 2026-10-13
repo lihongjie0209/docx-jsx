@@ -1,11 +1,13 @@
-# docx-jsx
+# docx-jsx：用 JSX 编写 Word 文档
 
-Compile JSX/TSX documents to DOCX and reverse supported DOCX files back to
-recompilable JSX. The Rust CLI runs JSX in embedded V8, writes DOCX with
-[`docx-rs`](https://github.com/bokuweb/docx-rs), and does not require Node.js.
+使用 JSX/TSX 描述 Word 文档，编译为 DOCX；也可将支持的 DOCX 逆向为可重新编译的
+JSX。项目使用 Rust CLI 和内嵌 V8 运行前端，以 [`docx-rs`](https://github.com/bokuweb/docx-rs)
+生成 DOCX，无需安装 Node.js。
 
-[Latest release](https://github.com/lihongjie0209/docx-jsx/releases/latest) ·
-[DSL specification](docs/spec.md) · [docx-rs coverage audit](docs/docx-rs-coverage.md)
+[最新版本](https://github.com/lihongjie0209/docx-jsx/releases/latest) ·
+[DSL 规范](docs/spec.md) · [docx-rs 覆盖审计](docs/docx-rs-coverage.md)
+
+## 快速开始
 
 ```tsx
 import { Document, Section, Paragraph, Run } from "docx-jsx";
@@ -27,27 +29,25 @@ docx-jsx report.tsx --data data.json -o report.docx
 docx-jsx report.tsx -o report.pdf
 ```
 
-Validate the complete executable DSL without creating a DOCX file:
+校验完整 DSL，但不生成 DOCX 文件：
 
 ```sh
 docx-jsx validate report.tsx --data data.json
 ```
 
-Validation aggregates independently detectable semantic errors and warnings
-with JSX file, line, column, and component path (syntax, module-load, and runtime
-failures remain fail-fast). It catches case-only mismatches against locally
-declared style ids and warns when rendered JSX text contains literal `\uXXXX`
-sequences (JSX text does not interpret JavaScript escapes). Undeclared style
-references remain allowed for styles provided by an external Word template.
+校验会汇总能够独立检测到的语义错误和警告，并提供 JSX 文件、行列号及组件路径。
+语法、模块加载和运行时错误仍会提前终止。校验可以发现与本地样式定义仅大小写不同的引用，
+并提示 JSX 文本中的字面量 `\uXXXX`（JSX 文本不会解析 JavaScript 转义）。未在本地声明的
+样式引用仍被允许，因为它可能来自外部 Word 模板。
 
-Reverse a generated document back to deterministic JSX:
+将 DOCX 逆向为确定性 JSX：
 
 ```sh
 docx-jsx reverse report.docx -o report.jsx
 ```
 
-Compile can write PDF when `-o` ends with `.pdf`. `docx-jsx pdf` still converts
-an existing DOCX. Both use a local office app (not bundled):
+当 `-o` 以 `.pdf` 结尾时，编译命令可直接输出 PDF。`docx-jsx pdf` 则转换已有的 DOCX。
+两种方式都调用本机已安装的办公软件（不会随程序打包）：
 
 ```sh
 docx-jsx report.tsx -o report.pdf --engine word
@@ -55,12 +55,11 @@ docx-jsx pdf report.docx -o report.pdf
 docx-jsx pdf report.docx --engine wps --force
 ```
 
-`auto` uses Microsoft Word, then WPS, then LibreOffice when those are
-installed. If none is found, the command prints install steps and how to set
-`--engine`, `--soffice`, `DOCX_JSX_SOFFICE`, `DOCX_JSX_WORD`, or `DOCX_JSX_WPS`.
+`auto` 会依次尝试 Microsoft Word、WPS 和 LibreOffice。若均未安装，命令会说明安装方式，
+以及如何设置 `--engine`、`--soffice`、`DOCX_JSX_SOFFICE`、`DOCX_JSX_WORD` 或
+`DOCX_JSX_WPS`。
 
-Define inherited Word styles once and reference them to avoid repeating
-formatting on every component:
+通过 Word 样式继承集中定义格式，避免在每个组件中重复书写：
 
 ```tsx
 const styles = [
@@ -76,55 +75,49 @@ export default (
 );
 ```
 
-Print the complete Agent-readable contract or its machine-readable IR schema:
+输出 Agent 可读的完整规范，或机器可读的 IR Schema：
 
 ```sh
 docx-jsx spec
 docx-jsx spec --format json-schema
 ```
 
-Release archives and installers are published on GitHub for Linux, macOS, and
-Windows.
+GitHub Releases 提供 Linux、macOS 和 Windows 的压缩包及安装程序。
 
-## Feature matrix
+## 功能矩阵
 
-| Area | Status | Highlights |
+| 功能领域 | 状态 | 支持范围 |
 | --- | --- | --- |
-| Executable JSX/TSX | Supported | Embedded V8, local ESM imports, async components, JSON data injection |
-| Styles and inheritance | Supported | Paragraph/character/numbering/table styles, native `basedOn`, paragraph `next`, linked styles, typed references and cycle detection; paragraph styles preserve page-break-before, widow control, bidi, shading and all six character-unit indentation values; run styles preserve independent Latin/complex-script size, bold and italic, explicit on/off emphasis, caps, strike/double-strike, vertical alignment, character spacing, fit width, stretch, special hidden text and patterned shading in both directions |
-| Document defaults and metadata | Supported | Independent ASCII/High ANSI/East Asian/complex-script fonts, font themes/hint, spacing, view zoom, global revision tracking/move/formatting settings, full core properties, settings, document editing restrictions with legacy and Office 2010+ precomputed OOXML hash/salt, custom properties, variables, Web Extensions and Custom XML |
-| Sections | Supported | Page/column/continuous/even/odd section breaks, line numbering and restart/distance controls, page size/orientation/margins, equal-width and individually sized columns with per-column spacing/separators, headers/footers, title pages, text direction, document grid, page-number format and chapter separators |
-| Paragraphs, headings, and list items | Supported | Full line spacing, point and character-unit indentation (`indentLeftChars`, `indentStartChars`, `indentRightChars`, `indentEndChars`, `firstLineChars`, `hangingChars`), contextual spacing, mirrored inside/outside indents, frame-overlap suppression, nine-slot run-default fonts, frames, borders, IDs, tabs, bidi, outline, paragraph-mark insertion/deletion revisions, and tracked format changes |
-| Runs and semantic text | Supported | Independent physical/theme font slots and hint; independent Latin/complex-script size, bold and italic; caps on/off, all Word underline styles (boolean shorthand retained), hidden/special-hidden text, baseline/superscript/subscript alignment, effects, borders/shading, symbols, breaks, tracked text revisions, deleted field instructions (`w:delInstrText`), and semantic wrappers; schema-invalid run-property revision setters are intentionally not exposed |
-| Tables | Supported | Grid/width/layout, positioning, margins, point/percent cell widths, no-wrap cells, all border positions/styles, row height/rule, repeatable table header rows, cant-split, gridBefore/gridAfter and point-based widthBefore/widthAfter, row revisions and cell layout; external reverse preserves table, row, and cell properties and errors on unrepresentable values |
-| Fields and indexes | Supported | Generic and typed fields; TOC/figures/entries with level filters, page-number ranges, style mappings, separators, bookmark scoping, refresh flags, reversible tracked deletion and field-paragraph formatting (including line-number suppression, character-unit indentation, paragraph fonts, size, emphasis, color, and character spacing) for dynamic indexes, childless dynamic indexes without an outer SDT, before/after paragraphs and tables, static entries with PAGEREF targets/page placeholders, validated dotted-tab positions and OOXML field switches; captions, index fields and cross-references |
-| Lists and numbering | Supported | Bullet/ordered shorthand, `styleLink`/`numStyleLink`, OOXML multi-level type, per-level format/text/suffix/restart/legal/indent/run formatting, and per-instance start/full-level overrides; `ListItem` preserves character-unit indentation; external reverse rebuilds `w:numPr` runs as `List` |
-| Annotations and controls | Supported | Bookmarks, comments with stable IDs, threaded replies, and resolved state (including comment ranges over deleted text), footnotes, inline and document-level bound content controls (including block controls in headers/footers), and hyperlinks with explicit false/true history plus ContentControl/revision/bookmark/comment children |
-| Images | Supported | Raster embedding, dimensions, rotation, accessibility description/title and decorative-image semantics, floating anchors, alignment/offsets, relative origins, distances, overlap, in-cell layout, layer height and signed-EMU `simplePosition` anchors. External reverse extracts body, header, and footer media and preserves accessibility metadata and simple-position coordinates |
-| DOCX to JSX | Supported | Component-level 1:1 reversal for generated DOCX; external paragraph and table styles/inheritance including table/cell properties and paragraph contextual spacing, mirrored indents, frame-overlap suppression, page-break/widow/bidi/shading properties, run-style emphasis/caps/vertical alignment/character spacing, all paragraph/style character-unit indentation names, section margins/grids, point-based paragraph indentation and keep/outline, paragraph and inherited style line-number suppression, theme colors, row height/rule/cant-split and revisions including distinct deleted field instructions, body/header/footer raster images with accessible descriptions, titles, and decorative-image semantics, document settings/metadata, custom XML data-store items, task-pane web extensions, nested bookmark/comment ranges with stable threaded-comment IDs and resolved state, and hyperlink composite children. Text boxes are rejected with repair guidance because docx-rs 0.4.22 has no text-box writer and flattening them would lose geometry. Reverse→recompile omits empty comments/footnotes/numbering parts the backend would inject |
-| Validation and Agent spec | Supported | DSL validation with repair-oriented diagnostics, case-sensitive local style-reference checks, warnings for literal Unicode-escape-looking text, Agent contract, .NET Open XML conformance tests; JSON Schema provides typed `props` contracts and direct child-kind constraints for all 74 IR component kinds, including homogeneous inline/block ContentControl children; cross-property, ancestor-dependent and document-wide rules remain documented and semantically validated |
-| PDF export | Optional | Compile `-o file.pdf` or `docx-jsx pdf` auto-detects Microsoft Word, WPS, or LibreOffice; `--engine` pins one. Install/config diagnostics when none is present. Not shipped in the release binary |
-| Backend-limited APIs | Not emitted | Theme parts and embedded fonts are reader-only in docx-rs 0.4.22; see the coverage audit for missing setters and schema-invalid writer APIs |
+| JSX/TSX 执行 | 支持 | 内嵌 V8、本地 ESM 导入、异步组件和 JSON 数据注入 |
+| 样式与继承 | 支持 | 段落、字符、编号和表格样式；支持 `basedOn`、段落 `next`、关联样式、类型化引用和循环检测。双向保留分页、孤行控制、双向文本、底纹、字符单位缩进、字体槽位、字号、强调、隐藏文本等属性 |
+| 文档默认值与元数据 | 支持 | 多语言字体槽位、主题字体、间距、视图缩放、修订设置、核心属性、文档设置、编辑限制、自定义属性/变量、Web Extensions 和 Custom XML |
+| 节与页面 | 支持 | 多种分节符、行号及重启/间距、纸张/方向/页边距、等宽或独立栏宽及栏间距、页眉页脚、首页、文字方向、文档网格、页码格式和章节分隔符 |
+| 段落、标题与列表项 | 支持 | 完整行距、磅值及字符单位缩进（包括 `firstLineChars`、`hangingChars` 等）、段前后间距、镜像缩进、边框、制表位、双向文本、大纲级别及段落标记修订 |
+| 文字运行与语义文本 | 支持 | 字体和主题字体、拉丁文/复杂文字字号与粗斜体、大小写、Word 下划线、隐藏文字、上下标、效果、边框/底纹、符号、换行、文字修订及语义包装；不会暴露会生成非法 Schema 的修订 setter |
+| 表格 | 支持 | 网格、宽度、布局、定位、边距、单元格宽度与换行、边框、行高/规则、重复表头、禁止跨页拆行、网格前后留白、行修订和单元格布局。逆向保留可表示属性；遇到无法无损表示的值会报错 |
+| 域与索引 | 支持 | 通用/类型化域；目录、图表目录和自定义索引；支持级别/页码范围、样式映射、书签范围、刷新、可逆删除修订、域段落格式、静态条目、题注及交叉引用 |
+| 列表与编号 | 支持 | 项目符号/有序列表简写、`styleLink`、多级编号、各级格式/文本/缩进/运行格式、实例级起始值覆盖；逆向可将 `w:numPr` 还原为 `List` |
+| 批注与内容控件 | 支持 | 书签、稳定 ID 批注、线程回复和解决状态、批注范围、脚注、行内/文档级数据绑定内容控件及超链接；保留复合子节点关系 |
+| 图片 | 支持 | 光栅图嵌入、尺寸、旋转、辅助功能描述/标题、装饰图语义、浮动锚点、对齐/偏移、环绕距离、层级及 `simplePosition`。逆向可提取正文、页眉和页脚图片 |
+| DOCX → JSX | 支持 | 生成文档按组件 1:1 逆向；外部文档支持样式继承、段落/表格/节属性、缩进、行距、修订、图片、元数据、书签/批注范围和超链接等。文本框因上游 writer 不支持且扁平化会丢失几何信息而拒绝逆向，并提供修复建议 |
+| 校验与 Agent 规范 | 支持 | DSL 语义校验、带修复建议的诊断、样式大小写检查、可疑 Unicode 转义警告、Agent 规范及 .NET Open XML 校验；JSON Schema 覆盖全部 74 种 IR 组件的属性和子节点约束 |
+| PDF 导出 | 可选 | 编译到 `.pdf` 或使用 `docx-jsx pdf`，自动选择 Word、WPS 或 LibreOffice；可用 `--engine` 指定。不包含在发布二进制中 |
+| 后端受限 API | 不输出 | `docx-rs 0.4.22` 的主题部件和嵌入字体仅支持读取；缺失 setter 和会生成非法 OOXML 的 writer API 见覆盖审计 |
 
-The detailed writer-API audit is maintained in
-[docs/docx-rs-coverage.md](docs/docx-rs-coverage.md).
+详细的 writer API 覆盖审计见 [docs/docx-rs-coverage.md](docs/docx-rs-coverage.md)。
 
-See [the v1 specification](docs/spec.md) for the complete component contract.
+完整组件约定见 [v1 规范](docs/spec.md)。
 
-## Open XML conformance test
+## Open XML 一致性校验
 
-The integration gate compiles a representative JSX fixture and validates the
-resulting package with Microsoft `DocumentFormat.OpenXml` 3.5.1. Diagnostics
-are JSON Lines containing the package part, XPath, explanation, and a repair
-suggestion. It requires an installed .NET 8 SDK and restores packages through
-the configured Huawei Cloud NuGet mirror. The validator runs from a temporary
-directory so the repository's exact SDK pin does not prevent using another
-compatible .NET 8 SDK locally.
+集成测试会编译代表性 JSX 夹具，并使用 Microsoft `DocumentFormat.OpenXml` 3.5.1 校验生成的
+DOCX。诊断以 JSON Lines 输出，包含包部件、XPath、原因和修复建议。测试需要安装 .NET 8 SDK，
+并通过配置的华为云 NuGet 镜像还原依赖。校验器在临时目录运行，因此本机可使用其他兼容的
+.NET 8 SDK，不受仓库 SDK 锁定版本影响。
 
 ```sh
 ./scripts/openxml-test.sh
 ```
 
-This complements Rust DSL validation: it checks OPC/OOXML schema and semantic
-constraints in the generated DOCX, while the Rust tests continue to verify
-component mappings and DOCX-to-JSX round trips.
+这项测试补充 Rust DSL 校验：它检查生成 DOCX 的 OPC/OOXML Schema 和语义约束；Rust 测试则
+继续验证组件映射以及 DOCX 到 JSX 的往返转换。
