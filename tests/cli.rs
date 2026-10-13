@@ -946,6 +946,41 @@ fn spec_json_schema_should_constrain_bookmark_range_children() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_custom_index_properties() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    for (kind, definition) in [("Index", "indexProps"), ("IndexEntry", "indexEntryProps")] {
+        let branch = branches
+            .iter()
+            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(
+            branch["then"]["properties"]["props"]["$ref"],
+            format!("#/$defs/{definition}")
+        );
+        assert_eq!(branch["then"]["properties"]["children"]["maxItems"], 0);
+    }
+    assert_eq!(
+        schema["$defs"]["indexEntryProps"]["required"],
+        serde_json::json!(["text"])
+    );
+    assert_eq!(
+        schema["$defs"]["indexProps"]["properties"]["columns"]["minimum"],
+        1
+    );
+    assert_eq!(
+        schema["$defs"]["indexProps"]["properties"]["columns"]["maximum"],
+        4
+    );
+    assert_eq!(
+        schema["$defs"]["indexEntryProps"]["allOf"][0]["not"]["required"],
+        serde_json::json!(["pageRangeBookmark", "crossReference"])
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

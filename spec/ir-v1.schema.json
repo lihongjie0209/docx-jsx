@@ -60,6 +60,8 @@
         { "if": { "properties": { "type": { "const": "ReferenceField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/referenceFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "PageReference" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/referenceFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "TocItem" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocItemProps" } } } },
+        { "if": { "properties": { "type": { "const": "Index" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/indexProps" }, "children": { "maxItems": 0 } } } },
+        { "if": { "properties": { "type": { "const": "IndexEntry" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/indexEntryProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "const": "TabStop" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tabStopProps" } } } },
         { "if": { "properties": { "type": { "const": "PositionalTab" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/positionalTabProps" } } } },
         { "if": { "properties": { "type": { "const": "Symbol" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/symbolProps" } } } },
@@ -898,6 +900,35 @@
         "fieldParagraph": { "$ref": "#/$defs/tocFieldParagraphProps" }
       },
       "allOf": [ { "not": { "required": ["deletion", "withoutSdt"] } } ]
+    },
+    "indexProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identifier": { "type": "string", "minLength": 1, "pattern": "^[^\\\"\\\\\\u0000-\\u001F\\u007F]+$" },
+        "columns": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "runIn": { "type": "boolean" },
+        "placeholder": { "type": "string" },
+        "dirty": { "type": "boolean" },
+        "style": { "type": "string", "minLength": 1 }
+      }
+    },
+    "indexEntryProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "pattern": "^[^\\\"\\\\\\u0000-\\u001F\\u007F]+$" },
+        "subentry": { "type": "string", "minLength": 1, "pattern": "^[^\\\"\\\\\\u0000-\\u001F\\u007F]+$" },
+        "identifier": { "type": "string", "minLength": 1, "pattern": "^[^\\\"\\\\\\u0000-\\u001F\\u007F]+$" },
+        "boldPageNumber": { "type": "boolean" },
+        "italicPageNumber": { "type": "boolean" },
+        "pageRangeBookmark": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "crossReference": { "type": "string", "minLength": 1, "pattern": "^[^\\\"\\\\\\u0000-\\u001F\\u007F]+$" }
+      },
+      "allOf": [
+        { "not": { "required": ["pageRangeBookmark", "crossReference"] } }
+      ]
     },
     "indexLevelRange": {
       "type": "object",

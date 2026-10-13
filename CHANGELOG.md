@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.39 - 2026-10-13
+
+- Constrain custom `Index` and `IndexEntry` properties in the Agent JSON
+  Schema.
+
 ## 0.8.38 - 2026-10-13
 
 - Constrain block bookmark range children in the Agent JSON Schema.

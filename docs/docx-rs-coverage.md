@@ -119,6 +119,10 @@ The Agent JSON Schema constrains block bookmark children to headings,
 paragraphs, captions, tables, or lists. Anchor uniqueness, reference
 resolution, and range placement remain semantic validation rules.
 
+The Agent JSON Schema types `Index` and `IndexEntry` properties, including
+index column bounds, field-argument strings, page-number style flags, and the
+mutually exclusive page-range/cross-reference options.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

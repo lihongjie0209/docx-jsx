@@ -19,7 +19,7 @@ this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, `Table`,
 `Caption`, `Header`, `Footer`, `Bookmark`, `InlineBookmark`, and
 `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `ContentControl`, the
-native field components, `TocItem`, `PageReference`, `TabStop`, `PositionalTab`,
+native field components, `Index`, `IndexEntry`, `TocItem`, `PageReference`, `TabStop`, `PositionalTab`,
 `Text`, semantic text effects, `Symbol`, `Comment`, `TocEntry`/`TocBefore`/`TocAfter`, tracked revision properties, `Footnote`,
 line breaks, and common inline control leaves are additionally typed and constrained;
 other component `props` remain generic
@@ -55,6 +55,9 @@ context remains enforced by `validate`.
 Block `Bookmark` ranges constrain direct children to headings, paragraphs,
 captions, tables, or lists. Anchor uniqueness, reference resolution, and range
 placement remain enforced by `validate`.
+`Index` and `IndexEntry` properties are typed, including field-argument
+strings, index columns, page-number styling, and mutually exclusive page-range
+bookmark/cross-reference targets.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment
