@@ -55,3 +55,12 @@ without the IR manifest.
 serializes the field begin marker with `w:dirty="true"`; the compiler repairs
 this writer omission from the component order, and external reverse reads the
 begin marker so explicit false survives without the IR manifest.
+
+`TableRow.header` is supported by schema-valid OOXML normalization: the pinned
+docx-rs `TableRowProperty` has no repeat-header setter, so the compiler adds
+`w:tblHeader` and normalizes generated `w:trPr` children into schema order
+(`gridBefore`/`gridAfter`/widths, `cantSplit`, height, header, then revisions).
+This keeps combinations with row sizing, omitted cells, and revisions valid.
+External reverse reads the raw marker and preserves both on and explicit off
+states without the IR manifest. This is an intentional extension beyond the
+public writer surface for a common table-layout feature.

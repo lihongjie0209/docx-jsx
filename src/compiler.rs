@@ -1234,21 +1234,30 @@ fn patch_paragraph_indentation_xml(
     Ok(true)
 }
 
-fn collect_row_grid_properties(root: &Node) -> Vec<(String, Vec<[Option<u64>; 4]>)> {
-    fn visit(node: &Node, rows: &mut Vec<[Option<u64>; 4]>) {
+#[derive(Clone, Copy, Debug, Default)]
+struct TableRowXmlProperties {
+    grid: [Option<u64>; 4],
+    header: Option<bool>,
+}
+
+fn collect_row_grid_properties(root: &Node) -> Vec<(String, Vec<TableRowXmlProperties>)> {
+    fn visit(node: &Node, rows: &mut Vec<TableRowXmlProperties>) {
         if node.kind == NodeKind::TableRow {
-            rows.push([
-                node.props.get("gridBefore").and_then(Value::as_u64),
-                node.props.get("gridAfter").and_then(Value::as_u64),
-                node.props
-                    .get("widthBefore")
-                    .and_then(Value::as_f64)
-                    .and_then(|v| (v * 20.0).round().to_u64()),
-                node.props
-                    .get("widthAfter")
-                    .and_then(Value::as_f64)
-                    .and_then(|v| (v * 20.0).round().to_u64()),
-            ]);
+            rows.push(TableRowXmlProperties {
+                grid: [
+                    node.props.get("gridBefore").and_then(Value::as_u64),
+                    node.props.get("gridAfter").and_then(Value::as_u64),
+                    node.props
+                        .get("widthBefore")
+                        .and_then(Value::as_f64)
+                        .and_then(|v| (v * 20.0).round().to_u64()),
+                    node.props
+                        .get("widthAfter")
+                        .and_then(Value::as_f64)
+                        .and_then(|v| (v * 20.0).round().to_u64()),
+                ],
+                header: node.props.get("header").and_then(Value::as_bool),
+            });
         }
         for child in &node.children {
             if let Child::Node(child) = child {
@@ -1292,9 +1301,12 @@ fn collect_row_grid_properties(root: &Node) -> Vec<(String, Vec<[Option<u64>; 4]
 fn patch_table_row_grid_properties(
     bytes: Vec<u8>,
     part: &str,
-    rows: &[[Option<u64>; 4]],
+    rows: &[TableRowXmlProperties],
 ) -> Result<Vec<u8>> {
-    if !rows.iter().any(|row| row.iter().any(Option::is_some)) {
+    if !rows
+        .iter()
+        .any(|row| row.header.is_some() || row.grid.iter().any(Option::is_some))
+    {
         return Ok(bytes);
     }
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
@@ -1326,7 +1338,7 @@ fn patch_table_row_grid_properties(
         )));
     }
     for (index, properties) in rows.iter().enumerate().rev() {
-        if properties.iter().all(Option::is_none) {
+        if properties.header.is_none() && properties.grid.iter().all(Option::is_none) {
             continue;
         }
         let end = xml[starts[index]..]
@@ -1362,7 +1374,7 @@ fn patch_table_row_grid_properties(
             .iter()
             .enumerate()
         {
-            if let Some(value) = properties[slot] {
+            if let Some(value) = properties.grid[slot] {
                 if slot < 2 {
                     write!(fragment, "<w:{name} w:val=\"{value}\" />").expect("String write");
                 } else {
@@ -1372,8 +1384,82 @@ fn patch_table_row_grid_properties(
             }
         }
         xml.insert_str(insert_at, &fragment);
+        if let Some(header) = properties.header {
+            patch_table_row_header(&mut xml, starts[index], header)?;
+        }
+        normalize_table_row_property_order(&mut xml, starts[index])?;
     }
     replace_zip_text_entry(archive, part, xml.as_bytes())
+}
+
+fn patch_table_row_header(xml: &mut String, row_start: usize, header: bool) -> Result<()> {
+    let tr_properties_end = xml[row_start..]
+        .find("</w:trPr>")
+        .map(|at| row_start + at)
+        .ok_or_else(|| Error::Compile("invalid table row properties".to_owned()))?;
+    let header_xml = if header {
+        "<w:tblHeader />"
+    } else {
+        "<w:tblHeader w:val=\"0\" />"
+    };
+    let insert_at = ["<w:ins", "<w:del"]
+        .iter()
+        .filter_map(|marker| {
+            xml[row_start..tr_properties_end]
+                .find(marker)
+                .map(|at| row_start + at)
+        })
+        .min()
+        .unwrap_or(tr_properties_end);
+    xml.insert_str(insert_at, header_xml);
+    Ok(())
+}
+
+fn normalize_table_row_property_order(xml: &mut String, row_start: usize) -> Result<()> {
+    const ORDER: &[&str] = &[
+        "gridBefore",
+        "gridAfter",
+        "wBefore",
+        "wAfter",
+        "cantSplit",
+        "trHeight",
+        "tblHeader",
+        "ins",
+        "del",
+    ];
+    let start = xml[row_start..]
+        .find("<w:trPr")
+        .map(|at| row_start + at)
+        .ok_or_else(|| Error::Compile("missing table row properties".to_owned()))?;
+    let open_end = xml[start..]
+        .find('>')
+        .map(|at| start + at + 1)
+        .ok_or_else(|| Error::Compile("invalid table row properties".to_owned()))?;
+    let end = xml[open_end..]
+        .find("</w:trPr>")
+        .map(|at| open_end + at)
+        .ok_or_else(|| Error::Compile("invalid table row properties".to_owned()))?;
+    let mut remaining = xml[open_end..end].to_owned();
+    let mut ordered = String::new();
+    for name in ORDER {
+        if let Some(element) = take_empty_row_property(&mut remaining, name) {
+            ordered.push_str(&element);
+        }
+    }
+    ordered.push_str(&remaining);
+    xml.replace_range(open_end..end, &ordered);
+    Ok(())
+}
+
+fn take_empty_row_property(properties: &mut String, name: &str) -> Option<String> {
+    let marker = format!("<w:{name}");
+    let start = properties.find(&marker)?;
+    let next = properties.as_bytes().get(start + marker.len()).copied()?;
+    if !next.is_ascii_whitespace() && next != b'>' && next != b'/' {
+        return None;
+    }
+    let end = properties[start..].find("/>")? + start + 2;
+    Some(properties.drain(start..end).collect())
 }
 
 fn section_columns_config(node: &Node, path: &str) -> Result<SectionColumnsConfig> {
@@ -9720,6 +9806,43 @@ mod tests {
                 && document.contains(r#"w:author="Ada""#)
                 && document.contains(r"<w:del w:id=")
                 && document.contains(r#"w:author="Linus""#)
+        );
+    }
+
+    #[test]
+    fn compile_should_emit_enabled_and_disabled_repeating_table_headers() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [{
+                    "type": "Table", "props": {}, "children": [
+                        {"type": "TableRow", "props": {"header": true}, "children": [
+                            {"type": "TableCell", "props": {}, "children": [
+                                {"type": "Paragraph", "props": {}, "children": ["heading"]}
+                            ]}
+                        ]},
+                        {"type": "TableRow", "props": {"header": false}, "children": [
+                            {"type": "TableCell", "props": {}, "children": [
+                                {"type": "Paragraph", "props": {}, "children": ["body"]}
+                            ]}
+                        ]}
+                    ]
+                }]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        assert!(
+            document.contains("<w:tblHeader />")
+                && document.contains(r#"<w:tblHeader w:val="0" />"#),
+            "enabled and disabled repeating header states must serialize explicitly: {document}"
         );
     }
 

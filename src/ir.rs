@@ -1176,6 +1176,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "height",
             "heightRule",
             "cantSplit",
+            "header",
             "gridBefore",
             "gridAfter",
             "widthBefore",
@@ -3823,6 +3824,13 @@ fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
         }
     }
     if node.kind == NodeKind::TableRow {
+        if node
+            .props
+            .get("header")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(validation(path, "TableRow `header` must be a boolean"));
+        }
         for key in ["gridBefore", "gridAfter"] {
             if let Some(value) = node.props.get(key)
                 && value.as_u64().is_none()
@@ -6710,6 +6718,20 @@ mod tests {
                 .expect_err("ambiguous index entry must fail")
                 .to_string()
                 .contains("mutually exclusive")
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_non_boolean_table_row_header() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{},"children":[{"type":"TableRow","props":{"header":"yes"},"children":[{"type":"TableCell","props":{},"children":[{"type":"Paragraph","props":{},"children":["heading"]}]}]}]}]}]}}"#,
+        );
+
+        assert!(
+            ir.validate()
+                .expect_err("a string is not a valid header value")
+                .to_string()
+                .contains("TableRow `header` must be a boolean")
         );
     }
 

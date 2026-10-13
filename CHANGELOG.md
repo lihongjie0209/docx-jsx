@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.2 - 2026-10-13
+
+- Add `TableRow.header` to repeat table header rows across page breaks and
+  preserve enabled/disabled states in external DOCX reverse without the IR
+  manifest.
+- Normalize generated table-row property order to valid OOXML when row headers,
+  sizing, omitted grid cells, and revisions are combined.
+- Add CLI round-trip, invalid-property, compiler XML, and Microsoft Open XML SDK
+  coverage for repeating table headers.
+
 ## 0.8.1 - 2026-10-13
 
 - Fix Rust 1.99 Clippy's single-element-loop lint in image accessibility

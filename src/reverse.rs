@@ -915,6 +915,7 @@ type RawIndexFieldParagraph = (String, RawIndexParagraphProperties);
 #[derive(Clone, Debug, Default)]
 struct TableRowXmlMetadata {
     cant_split: Option<bool>,
+    header: Option<bool>,
     width_before_type: Option<String>,
     width_after_type: Option<String>,
 }
@@ -5245,6 +5246,9 @@ fn table_row_jsx_attrs(row: &docx_rs::TableRow, row_xml: &TableRowXmlMetadata) -
     }) {
         attributes.push_str(" cantSplit");
     }
+    if let Some(header) = row_xml.header {
+        write!(attributes, " header={{{header}}}").expect("String write");
+    }
     for (source_key, target_key) in [("ins", "inserted"), ("del", "deleted")] {
         let Some(value) = source.get(source_key).filter(|value| !value.is_null()) else {
             continue;
@@ -5305,6 +5309,13 @@ fn collect_table_row_xml_metadata(
                 {
                     if let Some(index) = active_rows.last().copied() {
                         rows[index].cant_split = Some(xml_on_off(&reader, &element)?);
+                    }
+                }
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"tblHeader" =>
+                {
+                    if let Some(index) = active_rows.last().copied() {
+                        rows[index].header = Some(xml_on_off(&reader, &element)?);
                     }
                 }
                 Ok(Event::Start(element) | Event::Empty(element))
@@ -11583,6 +11594,37 @@ mod tests {
         assert!(
             jsx.contains(r#"<TableRow height={28} heightRule="exact" cantSplit>"#),
             "row height, rule, and cantSplit must survive external reverse: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_repeating_table_header_states() {
+        let row = |text: &str| {
+            TableRow::new(vec![
+                TableCell::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text(text))),
+            ])
+        };
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![row("heading"), row("body")])));
+        let mut source = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        source
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document
+            .replacen("<w:trPr />", "<w:trPr><w:tblHeader /></w:trPr>", 1)
+            .replacen(
+                "<w:trPr />",
+                "<w:trPr><w:tblHeader w:val=\"0\" /></w:trPr>",
+                1,
+            );
+        drop(source);
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let jsx = reverse_document(&external).expect("external repeating header should reverse");
+        assert!(
+            jsx.contains(r"<TableRow header={true}>") && jsx.contains(r"<TableRow header={false}>"),
+            "both explicit external table header states should reverse without the IR manifest: {jsx}"
         );
     }
 

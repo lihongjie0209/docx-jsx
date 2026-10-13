@@ -532,10 +532,15 @@ error instead of a silent drop.
   unsupported width units, invalid grid values, and unrepresentable values fail
   with repair guidance.
 - `TableRow`: optional `height` in points (`1 pt = 20 twips`),
-  `heightRule?: "auto" | "atLeast" | "exact"`, and `cantSplit?: boolean`.
-  The default height rule is supplied by Word when omitted. Height is converted
-  to/from whole twips; an external row height that is not a whole twip cannot
-  be represented and causes reverse to fail with a repair suggestion.
+  `heightRule?: "auto" | "atLeast" | "exact"`, `cantSplit?: boolean`, and
+  `header?: boolean`. `header={true}` emits `w:tblHeader` so Word repeats that
+  row as a table header across page breaks; mark the leading contiguous header
+  rows for predictable Word behavior. `header={false}` is preserved as an
+  explicit disabled value in OOXML. External reverse restores this property
+  without relying on the IR manifest. The default height rule is supplied by
+  Word when omitted. Height is converted to/from whole twips; an external row
+  height that is not a whole twip cannot be represented and causes reverse to
+  fail with a repair suggestion.
 - `TableCell`: mutually exclusive `width?` in points or `widthPercent?` from 0
   through 100, `colSpan?`,
   `verticalAlign?: "top" | "center" | "bottom"`, `verticalMerge?`,

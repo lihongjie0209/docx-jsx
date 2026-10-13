@@ -85,6 +85,7 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("-o <OUTPUT.docx|pdf>"))
         .stdout(predicate::str::contains("wp:docPr/@descr"))
         .stdout(predicate::str::contains("decorative?: boolean"))
+        .stdout(predicate::str::contains("header?: boolean"))
         .stdout(predicate::str::contains("inferred from the `-o` suffix"))
         .stdout(predicate::str::contains("DOCX_JSX_SOFFICE"))
         .stdout(predicate::str::contains("--engine"));
@@ -340,6 +341,61 @@ export default <Document><Section type="continuous" lineNumbering={{countBy:5,re
         .assert()
         .success();
     assert_eq!(embedded_ir(&docx), embedded_ir(&roundtrip));
+}
+
+#[test]
+fn cli_should_roundtrip_repeating_table_header_without_manifest() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("table.tsx");
+    let docx = directory.path().join("table.docx");
+    let reversed = directory.path().join("reversed.jsx");
+    let rebuilt = directory.path().join("rebuilt.docx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Table, TableRow, TableCell, Paragraph } from "docx-jsx";
+export default <Document><Section><Table><TableRow header><TableCell><Paragraph>Heading</Paragraph></TableCell></TableRow><TableRow><TableCell><Paragraph>Body</Paragraph></TableCell></TableRow></Table></Section></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args([input.to_str().unwrap(), "-o", docx.to_str().unwrap()])
+        .assert()
+        .success();
+    fs::write(
+        &docx,
+        strip_ir_manifest(&fs::read(&docx).expect("compiled DOCX should exist")),
+    )
+    .expect("manifest-free DOCX should write");
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args([
+            "reverse",
+            docx.to_str().unwrap(),
+            "-o",
+            reversed.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let source = fs::read_to_string(&reversed).expect("reverse JSX should exist");
+    assert!(source.contains("<TableRow header={true}>"), "{source}");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args([reversed.to_str().unwrap(), "-o", rebuilt.to_str().unwrap()])
+        .assert()
+        .success();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(
+        fs::read(&rebuilt).expect("rebuilt DOCX should exist"),
+    ))
+    .expect("rebuilt DOCX should be a ZIP");
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .expect("document part should exist")
+        .read_to_string(&mut document_xml)
+        .expect("document XML should be readable");
+    assert!(document_xml.contains("<w:tblHeader />"), "{document_xml}");
 }
 
 #[test]
