@@ -17,6 +17,16 @@ fn embedded_ir(path: &std::path::Path) -> serde_json::Value {
     serde_json::from_str(&json).expect("IR should be JSON")
 }
 
+fn machine_readable_schema() -> serde_json::Value {
+    let output = Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["spec", "--format", "json-schema"])
+        .output()
+        .expect("spec command should run");
+    assert!(output.status.success());
+    serde_json::from_slice(&output.stdout).expect("stdout should be JSON")
+}
+
 fn strip_ir_manifest(bytes: &[u8]) -> Vec<u8> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid ZIP");
     let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -138,6 +148,48 @@ fn spec_should_output_machine_readable_json_schema() {
             && schema["$defs"]["node"]["properties"]["type"]["enum"]
                 .as_array()
                 .is_some_and(|components| components.contains(&serde_json::json!("TocAfter")))
+    );
+}
+
+#[test]
+fn spec_json_schema_should_type_paragraph_layout_properties() {
+    let schema = machine_readable_schema();
+    let branch = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas")
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "Paragraph")
+        .expect("Paragraph schema branch should exist");
+    assert_eq!(
+        branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/paragraphProps"
+    );
+    assert_eq!(
+        schema["$defs"]["paragraphCommonProps"]["properties"]["lineSpacing"]["type"],
+        "number"
+    );
+}
+
+#[test]
+fn spec_json_schema_should_require_heading_level() {
+    let schema = machine_readable_schema();
+    let branch = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas")
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "Heading")
+        .expect("Heading schema branch should exist");
+    assert_eq!(
+        branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/headingProps"
+    );
+    assert_eq!(
+        schema["$defs"]["headingProps"]["allOf"][1]["properties"]["level"]["minimum"],
+        1
+    );
+    assert_eq!(
+        schema["$defs"]["headingProps"]["allOf"][1]["properties"]["level"]["maximum"],
+        9
     );
 }
 

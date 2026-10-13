@@ -32,6 +32,14 @@
         {
           "if": { "properties": { "type": { "const": "TableCell" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/tableCellProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Paragraph" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/paragraphProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Heading" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/headingProps" } } }
         }
       ]
     },
@@ -86,6 +94,106 @@
         "border": { "oneOf": [{ "type": "boolean" }, { "type": "object" }] }
       },
       "not": { "required": ["width", "widthPercent"] }
+    },
+    "paragraphCommonProps": {
+      "type": "object",
+      "properties": {
+        "style": { "type": "string", "minLength": 1 },
+        "align": { "enum": ["left", "center", "right", "both", "distribute", "start", "end", "justified"] },
+        "spacingBefore": { "type": "number", "minimum": 0 },
+        "spacingAfter": { "type": "number", "minimum": 0 },
+        "lineSpacing": { "type": "number", "minimum": 0 },
+        "spacingBeforeLines": { "type": "integer", "minimum": 0 },
+        "spacingAfterLines": { "type": "integer", "minimum": 0 },
+        "lineRule": { "enum": ["auto", "atLeast", "exact"] },
+        "indentLeft": { "type": "number" },
+        "indentRight": { "type": "number" },
+        "indentLeftChars": { "type": "integer" },
+        "indentStartChars": { "type": "integer" },
+        "indentRightChars": { "type": "integer" },
+        "indentEndChars": { "type": "integer" },
+        "firstLine": { "type": "number", "minimum": 0 },
+        "hanging": { "type": "number", "minimum": 0 },
+        "firstLineChars": { "type": "integer" },
+        "hangingChars": { "type": "integer" },
+        "keepNext": { "type": "boolean" },
+        "keepLines": { "type": "boolean" },
+        "contextualSpacing": { "type": "boolean" },
+        "mirrorIndents": { "type": "boolean" },
+        "suppressOverlap": { "type": "boolean" },
+        "pageBreakBefore": { "type": "boolean" },
+        "snapToGrid": { "type": "boolean" },
+        "widowControl": { "type": "boolean" },
+        "suppressLineNumbers": { "type": "boolean" },
+        "font": { "type": "string", "minLength": 1 },
+        "fonts": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "ascii": { "type": "string", "minLength": 1 },
+            "hiAnsi": { "type": "string", "minLength": 1 },
+            "eastAsia": { "type": "string", "minLength": 1 },
+            "cs": { "type": "string", "minLength": 1 },
+            "asciiTheme": { "type": "string", "minLength": 1 },
+            "hiAnsiTheme": { "type": "string", "minLength": 1 },
+            "eastAsiaTheme": { "type": "string", "minLength": 1 },
+            "csTheme": { "type": "string", "minLength": 1 },
+            "hint": { "type": "string", "minLength": 1 }
+          }
+        },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "bold": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "characterSpacing": { "type": "number" },
+        "bidi": { "type": "boolean" },
+        "textAlign": { "enum": ["auto", "baseline", "bottom", "center", "top"] },
+        "adjustRightIndent": { "enum": [0, 1] },
+        "shading": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "frame": { "type": "object" },
+        "inserted": { "$ref": "#/$defs/paragraphRevision" },
+        "deleted": { "$ref": "#/$defs/paragraphRevision" },
+        "propertyChange": { "type": "object" },
+        "paragraphId": { "type": "string", "pattern": "^[0-9A-Fa-f]{8}$" },
+        "border": { "oneOf": [{ "type": "boolean" }, { "type": "object" }] }
+      },
+      "allOf": [
+        { "not": { "required": ["font", "fonts"] } },
+        { "not": { "required": ["inserted", "deleted"] } },
+        { "not": { "required": ["indentLeftChars", "indentStartChars"] } },
+        { "not": { "required": ["indentRightChars", "indentEndChars"] } },
+        { "not": { "required": ["firstLine", "hanging"] } },
+        { "not": { "required": ["firstLine", "hangingChars"] } },
+        { "not": { "required": ["firstLineChars", "hanging"] } },
+        { "not": { "required": ["firstLineChars", "hangingChars"] } }
+      ]
+    },
+    "paragraphRevision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "author": { "type": "string", "minLength": 1 },
+        "date": { "type": "string", "minLength": 1 }
+      }
+    },
+    "paragraphProps": {
+      "allOf": [
+        { "$ref": "#/$defs/paragraphCommonProps" },
+        { "type": "object", "properties": { "outlineLevel": { "type": "integer", "minimum": 0, "maximum": 9 } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "headingProps": {
+      "allOf": [
+        { "$ref": "#/$defs/paragraphCommonProps" },
+        {
+          "type": "object",
+          "required": ["level"],
+          "properties": { "level": { "type": "integer", "minimum": 1, "maximum": 9 } }
+        }
+      ],
+      "unevaluatedProperties": false
     }
   }
 }

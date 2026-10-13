@@ -15,11 +15,11 @@ docx-jsx spec [--format markdown|json-schema]
 ```
 
 `spec --format json-schema` describes the IR envelope and recursive tree. In
-this schema revision, `TableRow` and `TableCell` properties are additionally
-typed and constrained; other component `props` remain generic objects pending
-later coverage batches. The `validate` command remains authoritative for the
-complete DSL semantic contract. `TableCell.widthPercent` must be greater than
-0 and at most 100.
+this schema revision, `TableRow`, `TableCell`, `Paragraph`, and `Heading`
+properties are additionally typed and constrained; other component `props`
+remain generic objects pending later coverage batches. The `validate` command
+remains authoritative for the complete DSL semantic contract.
+`TableCell.widthPercent` must be greater than 0 and at most 100.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`

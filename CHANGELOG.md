@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.5 - 2026-10-13
+
+- Extend the Agent JSON Schema to constrain `Paragraph` and `Heading` layout,
+  paragraph-mark revision, font-default, and formatting properties, including
+  the required heading level and mutually exclusive indentation/revision forms.
+
 ## 0.8.4 - 2026-10-13
 
 - Make the Agent JSON Schema constrain `TableRow` and `TableCell` properties,
