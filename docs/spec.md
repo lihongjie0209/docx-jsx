@@ -20,7 +20,7 @@ this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Caption`, `Header`, `Footer`, `Bookmark`, `InlineBookmark`, and
 `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `ContentControl`, the
 native field components, `TocItem`, `PageReference`, `TabStop`, `PositionalTab`,
-`Symbol`, tracked revision properties, `Footnote`, line breaks, and common
+`Text`, `Symbol`, tracked revision properties, `Footnote`, line breaks, and common
 inline control leaves are additionally typed and constrained;
 other component `props` remain generic
 objects pending later coverage batches. The
@@ -66,6 +66,8 @@ text, numbers, `Run`, and the inline elements accepted by the IR validator.
 `Break` constrains its type to `line`, `page`, or `column`; page-number, tab,
 carriage-return, and nonbreaking-character leaves reject all properties and
 children.
+`Text.value` is a string or number, and its direct children are limited to
+strings and numbers; component nesting is rejected by the schema.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`

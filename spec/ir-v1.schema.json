@@ -70,6 +70,7 @@
         { "if": { "properties": { "type": { "const": "Footnote" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/footnoteProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/footnoteChild" } } } } },
         { "if": { "properties": { "type": { "const": "Break" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/breakProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "enum": ["PageNumber", "TotalPages", "Tab", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen"] } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/emptyProps" }, "children": { "maxItems": 0 } } } },
+        { "if": { "properties": { "type": { "const": "Text" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/textProps" }, "children": { "items": { "oneOf": [{ "type": "string" }, { "type": "number" }] } } } } },
         { "if": { "properties": { "type": { "const": "MergeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/mergeFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "DocumentPropertyField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/documentPropertyFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "FormulaField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/formulaFieldProps" } } } },
@@ -279,6 +280,13 @@
       "additionalProperties": false,
       "properties": {
         "type": { "enum": ["line", "page", "column"] }
+      }
+    },
+    "textProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "value": { "oneOf": [{ "type": "string" }, { "type": "number" }] }
       }
     },
     "footnoteChild": {
