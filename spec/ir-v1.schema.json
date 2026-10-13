@@ -63,6 +63,10 @@
         { "if": { "properties": { "type": { "const": "TabStop" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tabStopProps" } } } },
         { "if": { "properties": { "type": { "const": "PositionalTab" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/positionalTabProps" } } } },
         { "if": { "properties": { "type": { "const": "Symbol" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/symbolProps" } } } },
+        { "if": { "properties": { "type": { "const": "Inserted" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
+        { "if": { "properties": { "type": { "const": "Deleted" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
+        { "if": { "properties": { "type": { "const": "MovedFrom" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
+        { "if": { "properties": { "type": { "const": "MovedTo" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
         { "if": { "properties": { "type": { "const": "MergeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/mergeFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "DocumentPropertyField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/documentPropertyFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "FormulaField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/formulaFieldProps" } } } },
@@ -247,6 +251,14 @@
       "properties": {
         "font": { "type": "string", "minLength": 1 },
         "char": { "type": "string", "pattern": "^[0-9A-Fa-f]{4}$" }
+      }
+    },
+    "revisionProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "author": { "type": "string" },
+        "date": { "type": "string" }
       }
     },
     "mergeFieldProps": {

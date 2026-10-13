@@ -62,6 +62,10 @@ The Agent JSON Schema also types `TabStop`, `PositionalTab`, and `Symbol`
 properties, including legal leaders/alignment and the required four-digit
 hexadecimal symbol code.
 
+The Agent JSON Schema constrains tracked revision author/date properties and
+requires content for insertion, deletion, and move-range components. Revision
+range matching and nested-content validity remain checked by `validate`.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

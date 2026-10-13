@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.25 - 2026-10-13
+
+- Add Agent JSON Schema constraints for tracked revision metadata and content.
+
 ## 0.8.24 - 2026-10-13
 
 - Add Agent JSON Schema coverage for tab stops, positional tabs, and symbols.

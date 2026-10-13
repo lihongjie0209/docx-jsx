@@ -345,6 +345,33 @@ fn spec_json_schema_should_constrain_tab_stops_and_symbols() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_revision_metadata() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    for kind in ["Inserted", "Deleted", "MovedFrom", "MovedTo"] {
+        let branch = branches
+            .iter()
+            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(
+            branch["then"]["properties"]["props"]["$ref"],
+            "#/$defs/revisionProps"
+        );
+        assert_eq!(branch["then"]["properties"]["children"]["minItems"], 1);
+    }
+    assert_eq!(
+        schema["$defs"]["revisionProps"]["properties"]["author"]["type"],
+        "string"
+    );
+    assert_eq!(
+        schema["$defs"]["revisionProps"]["properties"]["date"]["type"],
+        "string"
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]
