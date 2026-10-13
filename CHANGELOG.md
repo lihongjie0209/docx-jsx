@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.8 - 2026-10-13
+
+- Extend the Agent JSON Schema to constrain Document defaults, metadata,
+  settings, styles, web extensions, custom XML items, and editing protection,
+  including font-slot and zoom/revision bounds.
+
 ## 0.8.7 - 2026-10-13
 
 - Extend the Agent JSON Schema to constrain Section page size, orientation,

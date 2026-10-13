@@ -255,6 +255,42 @@ fn spec_json_schema_should_constrain_section_column_layout_forms() {
 }
 
 #[test]
+fn spec_json_schema_should_type_document_defaults_and_metadata() {
+    let schema = machine_readable_schema();
+    let branch = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas")
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "Document")
+        .expect("Document schema branch should exist");
+    assert_eq!(
+        branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/documentProps"
+    );
+    assert_eq!(
+        schema["$defs"]["documentProps"]["properties"]["defaultFont"]["type"],
+        "string"
+    );
+}
+
+#[test]
+fn spec_json_schema_should_bound_document_zoom_and_revision() {
+    let schema = machine_readable_schema();
+    assert_eq!(
+        schema["$defs"]["documentProps"]["properties"]["zoom"]["minimum"],
+        10
+    );
+    assert_eq!(
+        schema["$defs"]["documentProps"]["properties"]["zoom"]["maximum"],
+        500
+    );
+    assert_eq!(
+        schema["$defs"]["documentProps"]["properties"]["revision"]["minimum"],
+        1
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");

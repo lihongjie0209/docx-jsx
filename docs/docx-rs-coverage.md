@@ -34,6 +34,12 @@ The `Section` JSX/IR contract now rejects custom page sizes with missing,
 unknown, non-numeric, or non-positive dimensions before compilation. This is
 DSL validation coverage; it does not add or change a docx-rs writer API.
 
+The Agent JSON Schema now applies component-specific property schemas to
+`Document` as well as `Section`, `Paragraph`, `Heading`, `Run`, `TableRow`, and
+`TableCell`. Complex nested styles, uniqueness checks, and XML well-formedness
+remain enforced by `docx-jsx validate`; this does not change backend API
+coverage.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

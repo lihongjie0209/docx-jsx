@@ -48,6 +48,10 @@
         {
           "if": { "properties": { "type": { "const": "Section" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/sectionProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Document" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/documentProps" } } }
         }
       ]
     },
@@ -360,6 +364,158 @@
         },
         "separator": { "type": "boolean" }
       }
+    },
+    "documentProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaultFont": { "type": "string", "minLength": 1 },
+        "defaultFonts": { "$ref": "#/$defs/fontSlots" },
+        "defaultSize": { "type": "number", "exclusiveMinimum": 0 },
+        "defaultCharacterSpacing": { "type": "number" },
+        "defaultLineSpacing": { "$ref": "#/$defs/defaultLineSpacing" },
+        "webExtensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/webExtension" }
+        },
+        "customXmlItems": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/customXmlItem" }
+        },
+        "createdAt": { "type": "string", "minLength": 1 },
+        "updatedAt": { "type": "string", "minLength": 1 },
+        "creator": { "type": "string", "minLength": 1 },
+        "lastModifiedBy": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "language": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+        "subject": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "documentProtection": { "$ref": "#/$defs/documentProtection" },
+        "customProperties": { "$ref": "#/$defs/stringMap" },
+        "documentId": { "type": "string", "minLength": 1 },
+        "defaultTabStop": { "type": "number", "exclusiveMinimum": 0 },
+        "zoom": { "type": "integer", "minimum": 10, "maximum": 500 },
+        "documentVariables": { "$ref": "#/$defs/stringMap" },
+        "evenAndOddHeaders": { "type": "boolean" },
+        "trackRevisions": { "type": "boolean" },
+        "doNotTrackMoves": { "type": "boolean" },
+        "doNotTrackFormatting": { "type": "boolean" },
+        "adjustLineHeightInTable": { "type": "boolean" },
+        "characterSpacingControl": { "enum": ["doNotCompress", "compressPunctuation", "compressPunctuationAndJapaneseKana"] },
+        "styles": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/styleDefinition" }
+        }
+      },
+      "allOf": [
+        { "not": { "required": ["defaultFont", "defaultFonts"] } }
+      ]
+    },
+    "defaultLineSpacing": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "before": { "type": "number", "minimum": 0 },
+        "after": { "type": "number", "minimum": 0 },
+        "line": { "type": "number", "minimum": 0 },
+        "beforeLines": { "type": "integer", "minimum": 0 },
+        "afterLines": { "type": "integer", "minimum": 0 },
+        "lineRule": { "enum": ["auto", "atLeast", "exact"] }
+      }
+    },
+    "stringMap": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": { "type": "string" }
+    },
+    "webExtension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "referenceId", "version", "store", "storeType"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "referenceId": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "store": { "type": "string", "minLength": 1 },
+        "storeType": { "type": "string", "minLength": 1 },
+        "properties": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "customXmlItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "xml"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "xml": { "type": "string", "minLength": 1 },
+        "schemaRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "styleDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["paragraph", "character", "numbering", "table"] },
+        "basedOn": { "type": "string", "minLength": 1 },
+        "next": { "type": "string", "minLength": 1 },
+        "link": { "type": "string", "minLength": 1 },
+        "quickFormat": { "type": "boolean" },
+        "uiPriority": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "semiHidden": { "type": "boolean" },
+        "unhideWhenUsed": { "type": "boolean" },
+        "run": { "type": "object" },
+        "paragraph": { "type": "object" },
+        "table": { "type": "object" },
+        "cell": { "type": "object" }
+      }
+    },
+    "documentProtection": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "edit": { "enum": ["none", "readOnly", "comments", "trackedChanges", "forms"] },
+        "formatting": { "type": "boolean" },
+        "enforcement": { "type": "boolean" },
+        "cryptProviderType": { "enum": ["rsaFull", "rsaAES"] },
+        "cryptAlgorithmClass": { "enum": ["hash", "encryption", "custom"] },
+        "cryptAlgorithmType": { "enum": ["typeAny", "custom"] },
+        "cryptAlgorithmSid": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "cryptSpinCount": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "cryptProvider": { "type": "string", "minLength": 1 },
+        "algIdExt": { "type": "string", "pattern": "^[0-9A-Fa-f]{8}$" },
+        "algIdExtSource": { "type": "string", "minLength": 1 },
+        "cryptProviderTypeExt": { "type": "string", "pattern": "^[0-9A-Fa-f]{8}$" },
+        "cryptProviderTypeExtSource": { "type": "string", "minLength": 1 },
+        "hash": { "type": "string", "minLength": 4, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" },
+        "salt": { "type": "string", "minLength": 4, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" },
+        "algorithmName": { "type": "string", "minLength": 1 },
+        "hashValue": { "type": "string", "minLength": 4, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" },
+        "saltValue": { "type": "string", "minLength": 4, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$" },
+        "spinCount": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      },
+      "allOf": [
+        { "not": { "required": ["hash"], "not": { "required": ["salt"] } } },
+        { "not": { "required": ["salt"], "not": { "required": ["hash"] } } },
+        { "not": { "required": ["hashValue"], "not": { "required": ["saltValue"] } } },
+        { "not": { "required": ["saltValue"], "not": { "required": ["hashValue"] } } }
+      ]
     }
   }
 }
