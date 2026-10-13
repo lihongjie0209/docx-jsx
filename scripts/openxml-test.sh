@@ -13,7 +13,7 @@ elif [[ -x /root/.dotnet/dotnet ]]; then
   readonly DOTNET="/root/.dotnet/dotnet"
 else
   printf '%s\n' 'Open XML integration tests require .NET SDK 8.' >&2
-  printf '%s\n' 'Fix: install SDK 8.0.127, or set DOTNET_BIN to the dotnet executable.' >&2
+  printf '%s\n' 'Fix: install a .NET 8 SDK, or set DOTNET_BIN to the dotnet executable.' >&2
   exit 2
 fi
 
@@ -22,6 +22,8 @@ trap 'rm -rf "${TEMP_DIR}"' EXIT
 
 cd "${PROJECT_ROOT}"
 cargo build --locked
+# Keep the validator's SDK selection independent of the repository's global.json pin.
+cd "${TEMP_DIR}"
 "${DOTNET}" restore "${VALIDATOR_PROJECT}" --configfile "${NUGET_CONFIG}" --locked-mode
 "${PROJECT_ROOT}/target/debug/docx-jsx" \
   "${PROJECT_ROOT}/tests/fixtures/openxml-valid.tsx" \

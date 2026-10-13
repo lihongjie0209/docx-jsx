@@ -104,8 +104,10 @@ See [the v1 specification](docs/spec.md) for the complete component contract.
 The integration gate compiles a representative JSX fixture and validates the
 resulting package with Microsoft `DocumentFormat.OpenXml` 3.5.1. Diagnostics
 are JSON Lines containing the package part, XPath, explanation, and a repair
-suggestion. It requires .NET SDK 8 and restores packages through the configured
-Huawei Cloud NuGet mirror.
+suggestion. It requires an installed .NET 8 SDK and restores packages through
+the configured Huawei Cloud NuGet mirror. The validator runs from a temporary
+directory so the repository's exact SDK pin does not prevent using another
+compatible .NET 8 SDK locally.
 
 ```sh
 ./scripts/openxml-test.sh
