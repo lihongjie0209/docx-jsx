@@ -67,6 +67,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
     let section_page_numbering = collect_section_page_numbering(bytes)?;
     let numbering_multi_level_types = collect_numbering_multi_level_types(bytes)?;
     let table_row_xml = collect_table_row_xml_metadata(bytes)?;
+    let table_cell_xml = collect_table_cell_xml_metadata(bytes)?;
     let table_xml = collect_table_xml_metadata(bytes)?;
     let paragraph_indent_xml = collect_paragraph_indent_metadata(bytes)?;
     let style_character_indents = collect_style_character_indent_metadata(bytes)?;
@@ -100,6 +101,7 @@ pub fn reverse_package(bytes: &[u8]) -> Result<ReversedDocument> {
         section_line_numbering,
         section_page_numbering,
         table_row_xml,
+        table_cell_xml,
         table_xml,
         paragraph_indent_xml,
         style_character_indents,
@@ -886,6 +888,8 @@ struct Writer {
     section_page_numbering: Vec<Option<Map<String, Value>>>,
     table_row_xml: HashMap<String, Vec<TableRowXmlMetadata>>,
     table_row_indices: HashMap<String, usize>,
+    table_cell_xml: HashMap<String, Vec<TableCellXmlMetadata>>,
+    table_cell_indices: HashMap<String, usize>,
     table_xml: HashMap<String, Vec<TableXmlMetadata>>,
     table_indices: HashMap<String, usize>,
     paragraph_indent_xml: HashMap<String, Vec<ParagraphIndentMetadata>>,
@@ -918,6 +922,11 @@ struct TableRowXmlMetadata {
     header: Option<bool>,
     width_before_type: Option<String>,
     width_after_type: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TableCellXmlMetadata {
+    no_wrap: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2245,9 +2254,10 @@ impl Writer {
             for cell in &row.cells {
                 let TableRowChild::TableCell(cell) = cell;
                 self.components.insert("TableCell");
+                let cell_xml = self.next_table_cell_xml_metadata()?;
                 self.line(
                     depth + 2,
-                    &format!("<TableCell{}>", table_cell_jsx_attrs(cell)?),
+                    &format!("<TableCell{}>", table_cell_jsx_attrs(cell, &cell_xml)?),
                 );
                 self.emit_cell_children(&cell.children, depth + 3)?;
                 self.line(depth + 2, "</TableCell>");
@@ -2273,6 +2283,27 @@ impl Writer {
         else {
             return Err(Error::Reverse(format!(
                 "docx-rs exposed a table row that is missing from `{part}`; repair the table structure or retain the original DOCX"
+            )));
+        };
+        *index += 1;
+        Ok(metadata)
+    }
+
+    fn next_table_cell_xml_metadata(&mut self) -> Result<TableCellXmlMetadata> {
+        let part = self
+            .image_scope
+            .as_deref()
+            .unwrap_or("word/document.xml")
+            .to_owned();
+        let index = self.table_cell_indices.entry(part.clone()).or_default();
+        let Some(metadata) = self
+            .table_cell_xml
+            .get(&part)
+            .and_then(|cells| cells.get(*index))
+            .cloned()
+        else {
+            return Err(Error::Reverse(format!(
+                "docx-rs exposed a table cell that is missing from `{part}`; repair the table structure or retain the original DOCX"
             )));
         };
         *index += 1;
@@ -4938,9 +4969,15 @@ fn table_position_jsx(source: &Value) -> Result<Value> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn table_cell_jsx_attrs(cell: &docx_rs::TableCell) -> Result<String> {
+fn table_cell_jsx_attrs(
+    cell: &docx_rs::TableCell,
+    cell_xml: &TableCellXmlMetadata,
+) -> Result<String> {
     let source = json(&cell.property)?;
-    let properties = table_cell_jsx_props(&source)?;
+    let mut properties = table_cell_jsx_props(&source)?;
+    if let Some(no_wrap) = cell_xml.no_wrap {
+        properties.insert("noWrap".to_owned(), Value::Bool(no_wrap));
+    }
     let mut attributes = String::new();
     for (name, value) in properties {
         attributes.push_str(&jsx_prop(&name, &value)?);
@@ -5346,6 +5383,67 @@ fn collect_table_row_xml_metadata(
             buffer.clear();
         }
         result.insert(part, rows);
+    }
+    Ok(result)
+}
+
+fn collect_table_cell_xml_metadata(
+    bytes: &[u8],
+) -> Result<HashMap<String, Vec<TableCellXmlMetadata>>> {
+    let mut result = HashMap::new();
+    for part in zip_entry_names(bytes)?.into_iter().filter(|name| {
+        name == "word/document.xml"
+            || (name.starts_with("word/header") || name.starts_with("word/footer"))
+                && Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                && !name.contains("/_rels/")
+    }) {
+        let xml = read_zip_text(bytes, &part)?;
+        let mut reader = Reader::from_str(&xml);
+        let mut buffer = Vec::new();
+        let mut cells = Vec::<TableCellXmlMetadata>::new();
+        let mut active_cells = Vec::<usize>::new();
+        let mut table_cell_property_depth = 0usize;
+        loop {
+            match reader.read_event_into(&mut buffer) {
+                Ok(Event::Start(element)) if element.local_name().as_ref() == b"tc" => {
+                    cells.push(TableCellXmlMetadata::default());
+                    active_cells.push(cells.len() - 1);
+                }
+                Ok(Event::Empty(element)) if element.local_name().as_ref() == b"tc" => {
+                    cells.push(TableCellXmlMetadata::default());
+                }
+                Ok(Event::Start(element)) if element.local_name().as_ref() == b"tcPr" => {
+                    table_cell_property_depth += 1;
+                }
+                Ok(Event::Empty(element)) if element.local_name().as_ref() == b"tcPr" => {}
+                Ok(Event::Start(element) | Event::Empty(element))
+                    if element.local_name().as_ref() == b"noWrap"
+                        && table_cell_property_depth > 0 =>
+                {
+                    if let Some(index) = active_cells.last().copied() {
+                        cells[index].no_wrap = Some(xml_on_off(&reader, &element)?);
+                    }
+                }
+                Ok(Event::End(element)) if element.local_name().as_ref() == b"tcPr" => {
+                    table_cell_property_depth = table_cell_property_depth.saturating_sub(1);
+                }
+                Ok(Event::End(element)) if element.local_name().as_ref() == b"tc" => {
+                    active_cells.pop();
+                }
+                Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::Reverse(format!(
+                        "cannot parse {part} table cell properties at byte {}: {error}",
+                        reader.error_position()
+                    )));
+                }
+                _ => {}
+            }
+            buffer.clear();
+        }
+        result.insert(part, cells);
     }
     Ok(result)
 }
@@ -11625,6 +11723,39 @@ mod tests {
         assert!(
             jsx.contains(r"<TableRow header={true}>") && jsx.contains(r"<TableRow header={false}>"),
             "both explicit external table header states should reverse without the IR manifest: {jsx}"
+        );
+    }
+
+    #[test]
+    fn reverse_external_docx_should_preserve_table_cell_no_wrap_states() {
+        let cell = |text: &str| {
+            TableCell::new().add_paragraph(Paragraph::new().add_run(Run::new().add_text(text)))
+        };
+        let bytes = pack_docx(Docx::new().add_table(Table::new(vec![TableRow::new(vec![
+            cell("fixed"),
+            cell("normal"),
+        ])])));
+        let mut source = zip::ZipArchive::new(Cursor::new(bytes.clone())).expect("DOCX ZIP");
+        let mut document = String::new();
+        source
+            .by_name("word/document.xml")
+            .expect("document part")
+            .read_to_string(&mut document)
+            .expect("document XML");
+        let document = document
+            .replacen("<w:tcPr />", "<w:tcPr><w:noWrap /></w:tcPr>", 1)
+            .replacen(
+                "<w:tcPr />",
+                "<w:tcPr><w:noWrap w:val=\"off\" /></w:tcPr>",
+                1,
+            );
+        drop(source);
+        let external = rewrite_package_parts(&bytes, &[("word/document.xml", document.as_bytes())]);
+        let jsx = reverse_document(&external).expect("external no-wrap state should reverse");
+        assert!(
+            jsx.contains(r"<TableCell noWrap={true}>")
+                && jsx.contains(r"<TableCell noWrap={false}>"),
+            "both explicit external no-wrap values should reverse without the IR manifest: {jsx}"
         );
     }
 

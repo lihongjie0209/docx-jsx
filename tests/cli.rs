@@ -86,6 +86,7 @@ fn spec_should_output_agent_readable_markdown() {
         .stdout(predicate::str::contains("wp:docPr/@descr"))
         .stdout(predicate::str::contains("decorative?: boolean"))
         .stdout(predicate::str::contains("header?: boolean"))
+        .stdout(predicate::str::contains("noWrap?: boolean"))
         .stdout(predicate::str::contains("inferred from the `-o` suffix"))
         .stdout(predicate::str::contains("DOCX_JSX_SOFFICE"))
         .stdout(predicate::str::contains("--engine"));
@@ -344,7 +345,7 @@ export default <Document><Section type="continuous" lineNumbering={{countBy:5,re
 }
 
 #[test]
-fn cli_should_roundtrip_repeating_table_header_without_manifest() {
+fn cli_should_roundtrip_table_row_and_cell_layout_without_manifest() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("table.tsx");
     let docx = directory.path().join("table.docx");
@@ -353,7 +354,7 @@ fn cli_should_roundtrip_repeating_table_header_without_manifest() {
     fs::write(
         &input,
         r#"import { Document, Section, Table, TableRow, TableCell, Paragraph } from "docx-jsx";
-export default <Document><Section><Table><TableRow header><TableCell><Paragraph>Heading</Paragraph></TableCell></TableRow><TableRow><TableCell><Paragraph>Body</Paragraph></TableCell></TableRow></Table></Section></Document>;"#,
+export default <Document><Section><Table><TableRow header><TableCell noWrap><Paragraph>Heading</Paragraph></TableCell></TableRow><TableRow><TableCell noWrap={false}><Paragraph>Body</Paragraph></TableCell></TableRow></Table></Section></Document>;"#,
     )
     .expect("input should write");
 
@@ -378,7 +379,12 @@ export default <Document><Section><Table><TableRow header><TableCell><Paragraph>
         .assert()
         .success();
     let source = fs::read_to_string(&reversed).expect("reverse JSX should exist");
-    assert!(source.contains("<TableRow header={true}>"), "{source}");
+    assert!(
+        source.contains("<TableRow header={true}>")
+            && source.contains("<TableCell noWrap={true}>")
+            && source.contains("<TableCell noWrap={false}>"),
+        "{source}"
+    );
 
     Command::cargo_bin("docx-jsx")
         .expect("binary should build")
@@ -395,7 +401,12 @@ export default <Document><Section><Table><TableRow header><TableCell><Paragraph>
         .expect("document part should exist")
         .read_to_string(&mut document_xml)
         .expect("document XML should be readable");
-    assert!(document_xml.contains("<w:tblHeader />"), "{document_xml}");
+    assert!(
+        document_xml.contains("<w:tblHeader />")
+            && document_xml.contains("<w:noWrap />")
+            && document_xml.contains(r#"<w:noWrap w:val="off" />"#),
+        "{document_xml}"
+    );
 }
 
 #[test]

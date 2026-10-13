@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.3 - 2026-10-13
+
+- Add `TableCell.noWrap` to control cell text wrapping and preserve explicit
+  enabled/disabled values on external DOCX reverse without the IR manifest.
+- Add schema-valid OOXML, invalid-value, CLI round-trip, and Microsoft Open XML
+  SDK coverage, including no-wrap values on cells with other table properties.
+
 ## 0.8.2 - 2026-10-13
 
 - Add `TableRow.header` to repeat table header rows across page breaks and

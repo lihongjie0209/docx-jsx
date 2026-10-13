@@ -1191,6 +1191,7 @@ fn allowed_props(kind: NodeKind) -> &'static [&'static str] {
             "verticalAlign",
             "verticalMerge",
             "textDirection",
+            "noWrap",
             "margins",
             "shading",
             "border",
@@ -3806,6 +3807,13 @@ fn validate_table_semantics(node: &Node, path: &str) -> Result<()> {
         validate_box_margins(value, path)?;
     }
     if node.kind == NodeKind::TableCell {
+        if node
+            .props
+            .get("noWrap")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(validation(path, "TableCell `noWrap` must be a boolean"));
+        }
         for (key, allowed) in [
             ("verticalMerge", &["restart", "continue"][..]),
             (
@@ -6732,6 +6740,20 @@ mod tests {
                 .expect_err("a string is not a valid header value")
                 .to_string()
                 .contains("TableRow `header` must be a boolean")
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_non_boolean_table_cell_no_wrap() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Table","props":{},"children":[{"type":"TableRow","props":{},"children":[{"type":"TableCell","props":{"noWrap":"yes"},"children":[{"type":"Paragraph","props":{},"children":["value"]}]}]}]}]}]}}"#,
+        );
+
+        assert!(
+            ir.validate()
+                .expect_err("a string is not a valid no-wrap value")
+                .to_string()
+                .contains("TableCell `noWrap` must be a boolean")
         );
     }
 

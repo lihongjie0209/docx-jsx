@@ -64,3 +64,9 @@ This keeps combinations with row sizing, omitted cells, and revisions valid.
 External reverse reads the raw marker and preserves both on and explicit off
 states without the IR manifest. This is an intentional extension beyond the
 public writer surface for a common table-layout feature.
+
+`TableCell.noWrap` is similarly normalized because docx-rs 0.4.22 exposes no
+`w:noWrap` setter or reader field. The compiler inserts the schema-valid cell
+property and the external reverse path reads the raw `w:tcPr` marker, including
+explicit false, without the manifest. Final `w:tcPr` child ordering is
+normalized by the existing table-cell property ranker.

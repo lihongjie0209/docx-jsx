@@ -544,7 +544,10 @@ error instead of a silent drop.
 - `TableCell`: mutually exclusive `width?` in points or `widthPercent?` from 0
   through 100, `colSpan?`,
   `verticalAlign?: "top" | "center" | "bottom"`, `verticalMerge?`,
-  `textDirection?`, `margins?`, `shading?`, and `border?`. External reverse
+  `textDirection?`, `noWrap?: boolean`, `margins?`, `shading?`, and `border?`.
+  `noWrap={true}` prevents text wrapping in the cell; explicit false is retained
+  as an off value. This controls cell text wrapping only and is distinct from
+  paragraph `fitText`. External reverse
   restores these properties from DOCX cells without the IR manifest. A cell
   width that uses an unsupported unit, margins with missing edges or non-`dxa`
   units, nonzero border spacing, and patterned shading are reported instead of

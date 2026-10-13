@@ -358,11 +358,9 @@ fn package_document(
     let bytes = patch_paragraph_character_indentation(bytes, paragraph_character_indents)?;
     let bytes = patch_core_properties(bytes, &ir.document.props)?;
     let bytes = patch_document_settings(bytes, &ir.document.props)?;
-    let row_grid = collect_row_grid_properties(&ir.document);
     let mut bytes = bytes;
-    for (part, rows) in row_grid {
-        bytes = patch_table_row_grid_properties(bytes, &part, &rows)?;
-    }
+    bytes = patch_document_table_row_properties(bytes, &ir.document)?;
+    bytes = patch_document_table_cell_no_wrap(bytes, &ir.document)?;
     let extension_count = ir
         .document
         .props
@@ -1298,6 +1296,132 @@ fn collect_row_grid_properties(root: &Node) -> Vec<(String, Vec<TableRowXmlPrope
     output
 }
 
+fn collect_table_cell_no_wrap_properties(root: &Node) -> Vec<(String, Vec<Option<bool>>)> {
+    fn visit(node: &Node, cells: &mut Vec<Option<bool>>) {
+        if node.kind == NodeKind::TableCell {
+            cells.push(node.props.get("noWrap").and_then(Value::as_bool));
+        }
+        for child in &node.children {
+            if let Child::Node(child) = child {
+                visit(child, cells);
+            }
+        }
+    }
+    let mut output = Vec::new();
+    let mut document_cells = Vec::new();
+    let (mut header_count, mut footer_count) = (0, 0);
+    for child in &root.children {
+        let Child::Node(section) = child else {
+            continue;
+        };
+        if section.kind != NodeKind::Section {
+            continue;
+        }
+        for child in &section.children {
+            let Child::Node(node) = child else { continue };
+            match node.kind {
+                NodeKind::Header => {
+                    header_count += 1;
+                    let mut cells = Vec::new();
+                    visit(node, &mut cells);
+                    output.push((format!("word/header{header_count}.xml"), cells));
+                }
+                NodeKind::Footer => {
+                    footer_count += 1;
+                    let mut cells = Vec::new();
+                    visit(node, &mut cells);
+                    output.push((format!("word/footer{footer_count}.xml"), cells));
+                }
+                _ => visit(node, &mut document_cells),
+            }
+        }
+    }
+    output.insert(0, ("word/document.xml".to_owned(), document_cells));
+    output
+}
+
+fn patch_table_cell_no_wrap_properties(
+    bytes: Vec<u8>,
+    part: &str,
+    cells: &[Option<bool>],
+) -> Result<Vec<u8>> {
+    if !cells.iter().any(Option::is_some) {
+        return Ok(bytes);
+    }
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| Error::Compile(format!("cannot reopen DOCX archive: {error}")))?;
+    let mut xml = String::new();
+    archive
+        .by_name(part)
+        .map_err(|error| Error::Compile(format!("missing {part}: {error}")))?
+        .read_to_string(&mut xml)
+        .map_err(|error| Error::Compile(format!("cannot read {part}: {error}")))?;
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    while let Some(relative) = xml[offset..].find("<w:tc") {
+        let start = offset + relative;
+        if xml
+            .as_bytes()
+            .get(start + 5)
+            .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'>')
+        {
+            starts.push(start);
+        }
+        offset = start + 5;
+    }
+    if starts.len() != cells.len() {
+        return Err(Error::Compile(format!(
+            "table cell count mismatch while applying no-wrap properties: JSX has {}, DOCX has {}",
+            cells.len(),
+            starts.len()
+        )));
+    }
+    for (index, no_wrap) in cells.iter().enumerate().rev() {
+        let Some(no_wrap) = no_wrap else { continue };
+        let cell_end = xml[starts[index]..]
+            .find("</w:tc>")
+            .map(|at| starts[index] + at)
+            .ok_or_else(|| Error::Compile("invalid table cell XML".to_owned()))?;
+        let properties_start = xml[starts[index]..cell_end]
+            .find("<w:tcPr")
+            .map(|at| starts[index] + at)
+            .ok_or_else(|| Error::Compile("docx-rs omitted expected w:tcPr".to_owned()))?;
+        let properties_open_end = xml[properties_start..cell_end]
+            .find('>')
+            .map(|at| properties_start + at + 1)
+            .ok_or_else(|| Error::Compile("invalid table cell properties".to_owned()))?;
+        let value = if *no_wrap {
+            "<w:noWrap />"
+        } else {
+            "<w:noWrap w:val=\"off\" />"
+        };
+        if xml
+            .as_bytes()
+            .get(properties_open_end - 2..properties_open_end)
+            == Some(b"/>")
+        {
+            xml.replace_range(
+                properties_start..properties_open_end,
+                &format!("<w:tcPr>{value}</w:tcPr>"),
+            );
+            continue;
+        }
+        let properties_end = xml[properties_open_end..cell_end]
+            .find("</w:tcPr>")
+            .map(|at| properties_open_end + at)
+            .ok_or_else(|| Error::Compile("invalid table cell properties".to_owned()))?;
+        xml.insert_str(properties_end, value);
+    }
+    replace_zip_text_entry(archive, part, xml.as_bytes())
+}
+
+fn patch_document_table_cell_no_wrap(mut bytes: Vec<u8>, root: &Node) -> Result<Vec<u8>> {
+    for (part, cells) in collect_table_cell_no_wrap_properties(root) {
+        bytes = patch_table_cell_no_wrap_properties(bytes, &part, &cells)?;
+    }
+    Ok(bytes)
+}
+
 fn patch_table_row_grid_properties(
     bytes: Vec<u8>,
     part: &str,
@@ -1390,6 +1514,13 @@ fn patch_table_row_grid_properties(
         normalize_table_row_property_order(&mut xml, starts[index])?;
     }
     replace_zip_text_entry(archive, part, xml.as_bytes())
+}
+
+fn patch_document_table_row_properties(mut bytes: Vec<u8>, root: &Node) -> Result<Vec<u8>> {
+    for (part, rows) in collect_row_grid_properties(root) {
+        bytes = patch_table_row_grid_properties(bytes, &part, &rows)?;
+    }
+    Ok(bytes)
 }
 
 fn patch_table_row_header(xml: &mut String, row_start: usize, header: bool) -> Result<()> {
@@ -9843,6 +9974,40 @@ mod tests {
             document.contains("<w:tblHeader />")
                 && document.contains(r#"<w:tblHeader w:val="0" />"#),
             "enabled and disabled repeating header states must serialize explicitly: {document}"
+        );
+    }
+
+    #[test]
+    fn compile_should_emit_enabled_and_disabled_table_cell_no_wrap() {
+        let ir: IrEnvelope = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "document": {"type": "Document", "props": {}, "children": [{
+                "type": "Section", "props": {}, "children": [{
+                    "type": "Table", "props": {}, "children": [{
+                        "type": "TableRow", "props": {}, "children": [
+                            {"type": "TableCell", "props": {"noWrap": true}, "children": [
+                                {"type": "Paragraph", "props": {}, "children": ["fixed"]}
+                            ]},
+                            {"type": "TableCell", "props": {"noWrap": false}, "children": [
+                                {"type": "Paragraph", "props": {}, "children": ["normal"]}
+                            ]}
+                        ]
+                    }]
+                }]
+            }]}
+        }))
+        .expect("fixture should parse");
+        let bytes = compile_document(&ir, Path::new(".")).expect("compile should work");
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).expect("DOCX should be ZIP");
+        let mut document = String::new();
+        archive
+            .by_name("word/document.xml")
+            .expect("document part should exist")
+            .read_to_string(&mut document)
+            .expect("document XML should be UTF-8");
+        assert!(
+            document.contains("<w:noWrap />") && document.contains(r#"<w:noWrap w:val="off" />"#),
+            "enabled and disabled no-wrap states must serialize explicitly: {document}"
         );
     }
 
