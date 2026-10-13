@@ -49,6 +49,9 @@ placement, and document-level index ordering remain validated by `validate`.
 Native field components constrain result children to run-level content and
 primitive text. Field instruction syntax, field-specific result semantics,
 and ancestor-dependent deleted instructions remain checked by `validate`.
+Content controls constrain children to either inline content or block content,
+never a mixture; whether the selected form is legal in the control's parent
+context remains enforced by `validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment

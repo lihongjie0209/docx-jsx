@@ -897,6 +897,25 @@ fn spec_json_schema_should_constrain_field_result_children() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_content_control_child_forms() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    assert!(branches.iter().any(|branch| {
+        branch["if"]["properties"]["type"]["const"] == "ContentControl"
+            && branch["then"]["properties"]["children"]["$ref"] == "#/$defs/contentControlChildren"
+    }));
+    assert_eq!(
+        schema["$defs"]["contentControlChildren"]["anyOf"],
+        serde_json::json!([
+            { "items": { "$ref": "#/$defs/contentControlInlineChild" } },
+            { "items": { "$ref": "#/$defs/contentControlBlockChild" } }
+        ])
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

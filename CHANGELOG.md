@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.37 - 2026-10-13
+
+- Constrain content controls to homogeneous inline or block children in the
+  Agent JSON Schema.
+
 ## 0.8.36 - 2026-10-13
 
 - Constrain native field result child kinds in the Agent JSON Schema.

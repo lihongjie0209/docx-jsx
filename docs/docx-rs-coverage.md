@@ -112,6 +112,9 @@ The Agent JSON Schema constrains native field result children to run-level
 content and primitive text. Instruction syntax and field-specific semantic
 rules remain the responsibility of `docx-jsx validate`.
 
+The Agent JSON Schema constrains content controls to homogeneous inline or block
+children. Parent-specific placement remains checked by `docx-jsx validate`.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

@@ -47,7 +47,7 @@
         },
         {
           "if": { "properties": { "type": { "const": "ContentControl" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/contentControlProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/contentControlProps" }, "children": { "$ref": "#/$defs/contentControlChildren" } } }
         },
         { "if": { "properties": { "type": { "const": "Field" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/fieldProps" } } } },
         { "if": { "properties": { "type": { "const": "DateField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/dateTimeFieldProps" } } } },
@@ -608,6 +608,29 @@
         { "$ref": "#/$defs/revisionRunNode" },
         { "type": "string" },
         { "type": "number" }
+      ]
+    },
+    "contentControlChildren": {
+      "anyOf": [
+        { "items": { "$ref": "#/$defs/contentControlInlineChild" } },
+        { "items": { "$ref": "#/$defs/contentControlBlockChild" } }
+      ]
+    },
+    "contentControlInlineChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/revisionInlineNode" },
+        { "$ref": "#/$defs/revisionRunNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "contentControlBlockChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/paragraphNode" },
+        { "$ref": "#/$defs/headingNode" },
+        { "$ref": "#/$defs/captionNode" },
+        { "$ref": "#/$defs/tableNode" },
+        { "$ref": "#/$defs/listNode" }
       ]
     },
     "revisionInlineNode": {
