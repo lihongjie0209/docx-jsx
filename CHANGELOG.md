@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.20 - 2026-10-13
+
+- Add Agent JSON Schema coverage for TableOfFigures and TableOfEntries,
+  including required identifiers, field switches, and field-paragraph formatting.
+
 ## 0.8.19 - 2026-10-13
 
 - Add Agent JSON Schema coverage for TableOfContents options, level ranges,

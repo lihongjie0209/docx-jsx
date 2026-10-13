@@ -197,6 +197,36 @@ fn spec_json_schema_should_require_heading_level() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_table_of_figures_and_entries() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    for (kind, props_ref) in [
+        ("TableOfFigures", "#/$defs/tableOfFiguresProps"),
+        ("TableOfEntries", "#/$defs/tableOfEntriesProps"),
+    ] {
+        let branch = branches
+            .iter()
+            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(branch["then"]["properties"]["props"]["$ref"], props_ref);
+    }
+    assert_eq!(
+        schema["$defs"]["tableOfFiguresProps"]["required"][0],
+        "label"
+    );
+    assert_eq!(
+        schema["$defs"]["tableOfEntriesProps"]["required"][0],
+        "identifier"
+    );
+    assert_eq!(
+        schema["$defs"]["tableOfFiguresProps"]["properties"]["fieldParagraph"]["$ref"],
+        "#/$defs/tocFieldParagraphProps"
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

@@ -40,6 +40,11 @@ The Agent JSON Schema now applies component-specific property schemas to
 uniqueness checks, and XML well-formedness remain enforced by
 `docx-jsx validate`; this does not change backend API coverage.
 
+The Agent JSON Schema also constrains `TableOfFigures` and `TableOfEntries`
+properties, including their required identifiers, shared field switches,
+deletion metadata, and field-paragraph formatting. Placement and child-dependent
+index rules remain enforced by `docx-jsx validate`.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

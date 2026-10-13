@@ -38,6 +38,14 @@
           "then": { "properties": { "props": { "$ref": "#/$defs/tableOfContentsProps" } } }
         },
         {
+          "if": { "properties": { "type": { "const": "TableOfFigures" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/tableOfFiguresProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "TableOfEntries" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/tableOfEntriesProps" } } }
+        },
+        {
           "if": { "properties": { "type": { "const": "Header" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/headerFooterProps" } } }
         },
@@ -134,6 +142,58 @@
       "allOf": [
         { "not": { "required": ["deletion", "withoutSdt"] } }
       ]
+    },
+    "tableOfFiguresProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1, "pattern": "^[^\"]+$" },
+        "includeLabelAndNumber": { "type": "boolean" },
+        "separator": { "type": "string", "pattern": "^[^\"]*$" },
+        "entryBookmarkName": { "type": "string", "minLength": 1, "pattern": "^[^\"]+$" },
+        "entryAndPageNumberSeparator": { "type": "string", "pattern": "^[^\"]*$" },
+        "sequenceAndPageNumbersSeparator": { "type": "string", "pattern": "^[^\"]*$" },
+        "seqFieldIdentifierForPrefix": { "type": "string", "minLength": 1, "pattern": "^[^\"]+$" },
+        "stylesWithLevels": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/indexStyleLevel" } },
+        "preserveTab": { "type": "boolean" },
+        "preserveNewLine": { "type": "boolean" },
+        "useAppliedParagraphLineLevel": { "type": "boolean" },
+        "hideTabAndPageNumbersInWebview": { "type": "boolean" },
+        "hyperlinks": { "type": "boolean" },
+        "dirty": { "type": "boolean" },
+        "alias": { "type": "string", "minLength": 1 },
+        "withoutSdt": { "type": "boolean" },
+        "deletion": { "$ref": "#/$defs/indexDeletion" },
+        "fieldParagraph": { "$ref": "#/$defs/tocFieldParagraphProps" }
+      },
+      "allOf": [ { "not": { "required": ["deletion", "withoutSdt"] } } ]
+    },
+    "tableOfEntriesProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identifier"],
+      "properties": {
+        "identifier": { "type": "string", "minLength": 1, "pattern": "^[^\"]+$" },
+        "tcFieldLevelRange": { "$ref": "#/$defs/indexLevelRange" },
+        "omitPageNumbersLevelRange": { "$ref": "#/$defs/indexLevelRange" },
+        "entryBookmarkName": { "type": "string", "minLength": 1, "pattern": "^[^\"]+$" },
+        "entryAndPageNumberSeparator": { "type": "string", "pattern": "^[^\"]*$" },
+        "sequenceAndPageNumbersSeparator": { "type": "string", "pattern": "^[^\"]*$" },
+        "seqFieldIdentifierForPrefix": { "type": "string", "minLength": 1, "pattern": "^[^\"]+$" },
+        "stylesWithLevels": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/indexStyleLevel" } },
+        "preserveTab": { "type": "boolean" },
+        "preserveNewLine": { "type": "boolean" },
+        "useAppliedParagraphLineLevel": { "type": "boolean" },
+        "hideTabAndPageNumbersInWebview": { "type": "boolean" },
+        "hyperlinks": { "type": "boolean" },
+        "dirty": { "type": "boolean" },
+        "alias": { "type": "string", "minLength": 1 },
+        "withoutSdt": { "type": "boolean" },
+        "deletion": { "$ref": "#/$defs/indexDeletion" },
+        "fieldParagraph": { "$ref": "#/$defs/tocFieldParagraphProps" }
+      },
+      "allOf": [ { "not": { "required": ["deletion", "withoutSdt"] } } ]
     },
     "indexLevelRange": {
       "type": "object",
