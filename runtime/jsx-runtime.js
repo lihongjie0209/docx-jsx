@@ -97,7 +97,17 @@ export function jsx(type, props) {
 }
 
 export const jsxs = jsx;
-export const jsxDEV = jsx;
+export function jsxDEV(type, props, _key, _isStaticChildren, source) {
+  const value = jsx(type, props);
+  if (value && !Array.isArray(value) && source) {
+    value.sourceLocation = {
+      file: source.fileName,
+      line: source.lineNumber,
+      column: source.columnNumber,
+    };
+  }
+  return value;
+}
 
 async function normalize(value, parentType) {
   value = await value;
@@ -119,7 +129,9 @@ async function normalize(value, parentType) {
     throw new TypeError("A component returned a value that is not a docx-jsx node");
   }
   const children = await normalize(value.children, value.type);
-  return [{ type: value.type, props: value.props ?? {}, children }];
+  const normalized = { type: value.type, props: value.props ?? {}, children };
+  if (value.sourceLocation) normalized.sourceLocation = value.sourceLocation;
+  return [normalized];
 }
 
 export async function finalize(value, data) {

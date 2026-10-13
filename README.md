@@ -1,6 +1,11 @@
 # docx-jsx
 
-Compile executable JSX/TSX to DOCX with an embedded V8 runtime and `docx-rs`.
+Compile JSX/TSX documents to DOCX and reverse supported DOCX files back to
+recompilable JSX. The Rust CLI runs JSX in embedded V8, writes DOCX with
+[`docx-rs`](https://github.com/bokuweb/docx-rs), and does not require Node.js.
+
+[Latest release](https://github.com/lihongjie0209/docx-jsx/releases/latest) ·
+[DSL specification](docs/spec.md) · [docx-rs coverage audit](docs/docx-rs-coverage.md)
 
 ```tsx
 import { Document, Section, Paragraph, Run } from "docx-jsx";
@@ -27,6 +32,13 @@ Validate the complete executable DSL without creating a DOCX file:
 ```sh
 docx-jsx validate report.tsx --data data.json
 ```
+
+Validation aggregates independently detectable semantic errors and warnings
+with JSX file, line, column, and component path (syntax, module-load, and runtime
+failures remain fail-fast). It catches case-only mismatches against locally
+declared style ids and warns when rendered JSX text contains literal `\uXXXX`
+sequences (JSX text does not interpret JavaScript escapes). Undeclared style
+references remain allowed for styles provided by an external Word template.
 
 Reverse a generated document back to deterministic JSX:
 
@@ -90,7 +102,7 @@ Windows.
 | Annotations and controls | Supported | Bookmarks, comments with stable IDs, threaded replies, and resolved state (including comment ranges over deleted text), footnotes, inline and document-level bound content controls (including block controls in headers/footers), and hyperlinks with explicit false/true history plus ContentControl/revision/bookmark/comment children |
 | Images | Supported | Raster embedding, dimensions, rotation, accessibility description/title and decorative-image semantics, floating anchors, alignment/offsets, relative origins, distances, overlap, in-cell layout, layer height and signed-EMU `simplePosition` anchors. External reverse extracts body, header, and footer media and preserves accessibility metadata and simple-position coordinates |
 | DOCX to JSX | Supported | Component-level 1:1 reversal for generated DOCX; external paragraph and table styles/inheritance including table/cell properties and paragraph contextual spacing, mirrored indents, frame-overlap suppression, page-break/widow/bidi/shading properties, run-style emphasis/caps/vertical alignment/character spacing, all paragraph/style character-unit indentation names, section margins/grids, point-based paragraph indentation and keep/outline, paragraph and inherited style line-number suppression, theme colors, row height/rule/cant-split and revisions including distinct deleted field instructions, body/header/footer raster images with accessible descriptions, titles, and decorative-image semantics, document settings/metadata, custom XML data-store items, task-pane web extensions, nested bookmark/comment ranges with stable threaded-comment IDs and resolved state, and hyperlink composite children. Text boxes are rejected with repair guidance because docx-rs 0.4.22 has no text-box writer and flattening them would lose geometry. Reverse→recompile omits empty comments/footnotes/numbering parts the backend would inject |
-| Validation and Agent spec | Supported | DSL validation with repair-oriented diagnostics, Agent contract, .NET Open XML conformance tests; JSON Schema provides typed `props` contracts and direct child-kind constraints for all 74 IR component kinds, including homogeneous inline/block ContentControl children; cross-property, ancestor-dependent and document-wide rules remain documented and semantically validated |
+| Validation and Agent spec | Supported | DSL validation with repair-oriented diagnostics, case-sensitive local style-reference checks, warnings for literal Unicode-escape-looking text, Agent contract, .NET Open XML conformance tests; JSON Schema provides typed `props` contracts and direct child-kind constraints for all 74 IR component kinds, including homogeneous inline/block ContentControl children; cross-property, ancestor-dependent and document-wide rules remain documented and semantically validated |
 | PDF export | Optional | Compile `-o file.pdf` or `docx-jsx pdf` auto-detects Microsoft Word, WPS, or LibreOffice; `--engine` pins one. Install/config diagnostics when none is present. Not shipped in the release binary |
 | Backend-limited APIs | Not emitted | Theme parts and embedded fonts are reader-only in docx-rs 0.4.22; see the coverage audit for missing setters and schema-invalid writer APIs |
 

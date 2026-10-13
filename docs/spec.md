@@ -122,8 +122,27 @@ corresponding components are present.
 `validate` runs module resolution, JSX/TSX transpilation, optional JSON data
 injection, module evaluation, IR decoding, and the complete component semantic
 validation pass without invoking the DOCX backend or writing an output file.
-It prints `valid: INPUT` and exits with status 0 on success. Invalid DSL uses
-the standard detailed diagnostic and exits with status 1.
+It reports all independently detectable semantic errors and warnings from the
+evaluated component tree, with the source file, 1-based line/column, component
+path, explanation, and repair suggestion where available. Warnings are also
+reported when errors exist. It prints `valid: INPUT` and exits with status 0
+when there are no errors; otherwise it exits with status 1. Syntax, module-load,
+and JavaScript evaluation failures remain fail-fast because a component tree
+cannot reliably be built after those failures.
+
+The aggregate contains one diagnostic for each failing component-level semantic
+check and each failing document-wide check. A single check may report its first
+invalid property; validation does not currently enumerate multiple bad values
+inside the same component property schema.
+
+Local style references are case-sensitive. If a component references a style
+whose id differs only by letter case from a style declared on `Document`,
+validation fails and suggests the declared id. Other undeclared style ids are
+allowed because they may be supplied by an external Word template. Literal
+Unicode escape-looking sequences such as `\u201C` in rendered text produce a
+non-fatal warning: JSX text is not a JavaScript string literal and does not
+interpret backslash-u escapes. Use the actual Unicode character when that is
+intended; the warning may be ignored when the literal notation is intentional.
 
 `pdf` converts an existing `.docx` file to PDF by calling a local office
 application. The compiler does not bundle a layout engine. `--engine` is

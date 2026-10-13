@@ -1,4 +1,7 @@
+use std::fmt::Write as _;
 use std::path::PathBuf;
+
+use crate::ir::{Diagnostic, DiagnosticSeverity};
 
 /// Error type for all compiler phases.
 #[derive(Debug, thiserror::Error)]
@@ -13,6 +16,8 @@ pub enum Error {
     Runtime(String),
     #[error("validation at {path}: {message}")]
     Validation { path: String, message: String },
+    #[error("validation diagnostics: {0:?}")]
+    ValidationDiagnostics(Vec<Diagnostic>),
     #[error("resource {path}: {source}")]
     Resource {
         path: PathBuf,
@@ -37,6 +42,46 @@ impl Error {
     /// Formats a diagnostic with a cause explanation and an actionable fix.
     #[must_use]
     pub fn render_diagnostic(&self) -> String {
+        if let Self::ValidationDiagnostics(items) = self {
+            let errors = items
+                .iter()
+                .filter(|item| item.severity == DiagnosticSeverity::Error)
+                .count();
+            let warnings = items
+                .iter()
+                .filter(|item| item.severity == DiagnosticSeverity::Warning)
+                .count();
+            let mut output = format!(
+                "error: DSL validation found {errors} errors and {warnings} warnings\nexplanation: The produced component tree violates the docx-jsx v1 contract."
+            );
+            for item in items {
+                let level = match item.severity {
+                    DiagnosticSeverity::Error => "error",
+                    DiagnosticSeverity::Warning => "warning",
+                };
+                let location = item.source.as_ref().map_or_else(
+                    || item.path.clone(),
+                    |span| {
+                        format!(
+                            "{}:{}:{}",
+                            span.file.strip_prefix("file://").unwrap_or(&span.file),
+                            span.line,
+                            span.column
+                        )
+                    },
+                );
+                let _ = write!(
+                    output,
+                    "\n{level} at {location} [{}]: {}",
+                    item.path, item.message
+                );
+                if let Some(suggestion) = &item.suggestion {
+                    let _ = write!(output, "\nsuggestion: {suggestion}");
+                }
+            }
+            output.push_str("\nspec: run `docx-jsx spec` for the complete component contract");
+            return output;
+        }
         format!(
             "error: {self}\nexplanation: {}\nsuggestion: {}\nspec: run `docx-jsx spec` for the complete component contract",
             self.explanation(),
@@ -54,7 +99,7 @@ impl Error {
             Self::Runtime(_) => {
                 "The JSX module failed while producing the document component tree."
             }
-            Self::Validation { .. } => {
+            Self::Validation { .. } | Self::ValidationDiagnostics(_) => {
                 "The produced component tree violates the docx-jsx v1 contract."
             }
             Self::Resource { .. } => "A referenced local file could not be read.",
@@ -93,11 +138,17 @@ impl Error {
             Self::Validation { message, .. } if message.contains("unknown property") => {
                 "Remove or rename the property using the component property list from `docx-jsx spec`."
             }
+            Self::ValidationDiagnostics(_) => "Correct each reported issue using `docx-jsx spec`.",
             Self::Validation { message, .. } if message.contains("cannot contain") => {
                 "Move the child into one of the parent component's allowed containers shown by `docx-jsx spec`."
             }
             Self::Validation { message, .. } if message.contains("style inheritance cycle") => {
                 "Remove or redirect one `basedOn` reference so the inheritance chain terminates."
+            }
+            Self::Validation { message, .. }
+                if message.contains("differs only by letter case from declared style id") =>
+            {
+                "Change the component reference to the exact locally declared style id shown in the error."
             }
             Self::Validation { message, .. } if message.contains("`style` requires a") => {
                 "Reference a declared id with the matching style type, or change the style definition's `type`."

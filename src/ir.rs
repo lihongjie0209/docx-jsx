@@ -125,6 +125,37 @@ pub struct Node {
     pub props: Map<String, Value>,
     #[serde(default)]
     pub children: Vec<Child>,
+    #[serde(default, rename = "sourceLocation", skip_serializing)]
+    pub source_location: Option<SourceLocation>,
+}
+
+/// Source span for a JSX component, retained for diagnostics but omitted from
+/// the normalized IR manifest.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// Severity for a user-facing DSL diagnostic.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+}
+
+/// A source-anchored validation result.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Diagnostic {
+    pub severity: DiagnosticSeverity,
+    pub path: String,
+    pub message: String,
+    pub suggestion: Option<String>,
+    pub source: Option<SourceLocation>,
 }
 
 /// Built-in component kinds supported by IR v1.
@@ -358,11 +389,44 @@ impl IrEnvelope {
         if self.document.kind != NodeKind::Document {
             return Err(validation("Document", "root must be Document"));
         }
-        validate_node(&self.document, "Document")?;
-        validate_deleted_instruction_context(&self.document, false, "Document")?;
-        validate_bookmark_references(&self.document)?;
-        validate_comment_relationships(&self.document)?;
-        validate_style_relationships(&self.document)
+        let diagnostics = self.diagnostics();
+        let errors = diagnostics
+            .iter()
+            .filter(|item| item.severity == DiagnosticSeverity::Error)
+            .count();
+        if errors > 0 {
+            return Err(Error::ValidationDiagnostics(diagnostics));
+        }
+        Ok(())
+    }
+
+    /// Collects all independently detectable semantic errors and warnings.
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        collect_node_diagnostics(&self.document, "Document", &mut diagnostics);
+        collect_literal_unicode_escape_diagnostics(&self.document, "Document", &mut diagnostics);
+        for check in [
+            validate_deleted_instruction_context(&self.document, false, "Document"),
+            validate_bookmark_references(&self.document),
+            validate_comment_relationships(&self.document),
+            validate_style_relationships(&self.document),
+        ] {
+            if let Err(error) = check {
+                diagnostics.push(diagnostic_from_error(error, &self.document));
+            }
+        }
+        diagnostics
+    }
+
+    /// Returns non-fatal diagnostics for text that is likely to be unintended.
+    #[must_use]
+    pub fn validation_warnings(&self) -> Vec<String> {
+        self.diagnostics()
+            .into_iter()
+            .filter(|item| item.severity == DiagnosticSeverity::Warning)
+            .map(format_diagnostic)
+            .collect()
     }
 }
 
@@ -495,9 +559,24 @@ fn validate_linked_style_relationships(
 }
 
 fn validate_style_references(node: &Node, path: &str, types: &HashMap<&str, &str>) -> Result<()> {
-    if let Some(style) = node.props.get("style").and_then(Value::as_str)
-        && let Some(actual) = types.get(style).copied()
-    {
+    if let Some(style) = node.props.get("style").and_then(Value::as_str) {
+        if !types.contains_key(style)
+            && let Some(matching_id) = types
+                .keys()
+                .filter(|candidate| candidate.eq_ignore_ascii_case(style))
+                .min()
+        {
+            return Err(validation(
+                path,
+                format!(
+                    "style reference `{style}` differs only by letter case from declared style id `{matching_id}`; style ids are case-sensitive, use `{matching_id}`"
+                ),
+            ));
+        }
+        let Some(actual) = types.get(style).copied() else {
+            // Undeclared styles may be supplied by an external Word template.
+            return validate_style_reference_children(node, path, types);
+        };
         let expected = match node.kind {
             NodeKind::Run => Some("character"),
             NodeKind::Table => Some("table"),
@@ -518,6 +597,14 @@ fn validate_style_references(node: &Node, path: &str, types: &HashMap<&str, &str
             ));
         }
     }
+    validate_style_reference_children(node, path, types)
+}
+
+fn validate_style_reference_children(
+    node: &Node,
+    path: &str,
+    types: &HashMap<&str, &str>,
+) -> Result<()> {
     if matches!(
         node.kind,
         NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
@@ -527,6 +614,7 @@ fn validate_style_references(node: &Node, path: &str, types: &HashMap<&str, &str
             kind: NodeKind::Paragraph,
             props: properties.clone(),
             children: Vec::new(),
+            source_location: node.source_location.clone(),
         };
         validate_style_references(&field_paragraph, &format!("{path}.fieldParagraph"), types)?;
     }
@@ -540,6 +628,13 @@ fn validate_style_references(node: &Node, path: &str, types: &HashMap<&str, &str
         }
     }
     Ok(())
+}
+
+fn find_literal_unicode_escape(value: &str) -> Option<String> {
+    value.as_bytes().windows(6).find_map(|window| {
+        (window[0] == b'\\' && window[1] == b'u' && window[2..].iter().all(u8::is_ascii_hexdigit))
+            .then(|| String::from_utf8_lossy(window).into_owned())
+    })
 }
 
 fn ensure_matching_style_types(
@@ -601,7 +696,7 @@ fn validate_bookmark_references(root: &Node) -> Result<()> {
     Ok(())
 }
 
-fn validate_node(node: &Node, path: &str) -> Result<()> {
+fn validate_node_local(node: &Node, path: &str) -> Result<()> {
     validate_props(node, path)?;
     if node.kind == NodeKind::Document && node.children.is_empty() {
         return Err(validation(path, "Document requires at least one Section"));
@@ -656,11 +751,9 @@ fn validate_node(node: &Node, path: &str) -> Result<()> {
     }
     validate_toc_item(node, path)?;
 
-    for (index, child) in node.children.iter().enumerate() {
+    for child in &node.children {
         match child {
-            Child::Node(child_node) => {
-                validate_child_node(node.kind, child_node, path, index)?;
-            }
+            Child::Node(_) => {}
             Child::String(_) | Child::Number(_) => {
                 if !matches!(
                     node.kind,
@@ -844,29 +937,138 @@ fn validate_toc_item(node: &Node, path: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_child_node(parent: NodeKind, child: &Node, path: &str, index: usize) -> Result<()> {
-    if !allows(parent, child.kind) {
-        return Err(validation(
-            path,
-            format!("{} cannot contain {}", parent.name(), child.kind.name()),
-        ));
+fn collect_node_diagnostics(node: &Node, path: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if let Err(error) = validate_node_local(node, path) {
+        diagnostics.push(diagnostic_from_error(error, node));
     }
-    let child_path = format!("{path}/{}[{index}]", child.kind.name());
-    if matches!(
-        child.kind,
-        NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
-    ) && child.props.get("withoutSdt") == Some(&Value::Bool(true))
-        && parent != NodeKind::Section
-    {
-        return Err(validation(
-            &child_path,
-            "`withoutSdt` is currently supported only for an index directly inside `Section`; move the index out of the table cell or omit `withoutSdt`",
-        ));
+    for (index, child) in node.children.iter().enumerate() {
+        if let Child::Node(child_node) = child {
+            let child_path = format!("{path}/{}[{index}]", child_node.kind.name());
+            if !allows(node.kind, child_node.kind) {
+                diagnostics.push(make_diagnostic(
+                    DiagnosticSeverity::Error,
+                    &child_path,
+                    format!("{} cannot contain {}", node.kind.name(), child_node.kind.name()),
+                    node.source_location.clone(),
+                    Some("Move the component into one of the parent component's allowed containers shown by `docx-jsx spec`.".to_owned()),
+                ));
+            }
+            if matches!(
+                child_node.kind,
+                NodeKind::TableOfContents | NodeKind::TableOfFigures | NodeKind::TableOfEntries
+            ) && child_node.props.get("withoutSdt") == Some(&Value::Bool(true))
+                && node.kind != NodeKind::Section
+            {
+                diagnostics.push(make_diagnostic(DiagnosticSeverity::Error, &child_path,
+                    "`withoutSdt` is currently supported only for an index directly inside `Section`".to_owned(),
+                    child_node.source_location.clone(), Some("Move the index directly under `Section` or omit `withoutSdt`.".to_owned())));
+            }
+            if child_node.kind == NodeKind::ContentControl
+                && let Err(error) =
+                    validate_content_control_placement(node.kind, child_node, &child_path)
+            {
+                diagnostics.push(diagnostic_from_error(error, child_node));
+            }
+            collect_node_diagnostics(child_node, &child_path, diagnostics);
+        }
     }
-    if child.kind == NodeKind::ContentControl {
-        validate_content_control_placement(parent, child, &child_path)?;
+}
+
+fn collect_literal_unicode_escape_diagnostics(
+    node: &Node,
+    path: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for (index, child) in node.children.iter().enumerate() {
+        match child {
+            Child::String(value) => {
+                if let Some(escape) = find_literal_unicode_escape(value) {
+                    diagnostics.push(make_diagnostic(DiagnosticSeverity::Warning, path,
+                    format!("text contains literal Unicode escape `{escape}`; JSX text does not interpret backslash-u escapes"),
+                    node.source_location.clone(), Some("Use the actual Unicode character if intended; keep the escape only if literal notation is intentional.".to_owned())));
+                }
+            }
+            Child::Node(child_node) => collect_literal_unicode_escape_diagnostics(
+                child_node,
+                &format!("{path}/{}[{index}]", child_node.kind.name()),
+                diagnostics,
+            ),
+            Child::Number(_) => {}
+        }
     }
-    validate_node(child, &child_path)
+}
+
+fn make_diagnostic(
+    severity: DiagnosticSeverity,
+    path: &str,
+    message: String,
+    source: Option<SourceLocation>,
+    suggestion: Option<String>,
+) -> Diagnostic {
+    Diagnostic {
+        severity,
+        path: path.to_owned(),
+        message,
+        suggestion,
+        source,
+    }
+}
+
+fn diagnostic_from_error(error: Error, node: &Node) -> Diagnostic {
+    match error {
+        Error::Validation { path, message } => {
+            let suggestion = if message.contains("style inheritance cycle") {
+                "Remove or redirect one `basedOn` reference so the inheritance chain terminates."
+            } else if message.contains("unknown property") {
+                "Remove or rename the property using the component property list from `docx-jsx spec`."
+            } else if message.contains("differs only by letter case from declared style id") {
+                "Change the reference to the exact locally declared style id shown in the error."
+            } else {
+                "Correct this value or structure using `docx-jsx spec`."
+            };
+            make_diagnostic(
+                DiagnosticSeverity::Error,
+                &path,
+                message,
+                node.source_location.clone(),
+                Some(suggestion.to_owned()),
+            )
+        }
+        other => make_diagnostic(
+            DiagnosticSeverity::Error,
+            "Document",
+            other.to_string(),
+            node.source_location.clone(),
+            Some("Review the document structure and `docx-jsx spec`.".to_owned()),
+        ),
+    }
+}
+
+#[must_use]
+pub fn format_diagnostic(item: Diagnostic) -> String {
+    let location = item.source.map_or_else(
+        || item.path.clone(),
+        |source| {
+            format!(
+                "{}:{}:{}",
+                source.file.strip_prefix("file://").unwrap_or(&source.file),
+                source.line,
+                source.column
+            )
+        },
+    );
+    format!(
+        "{} at {location} [{}]: {}{}",
+        match item.severity {
+            DiagnosticSeverity::Error => "error",
+            DiagnosticSeverity::Warning => "warning",
+        },
+        item.path,
+        item.message,
+        item.suggestion
+            .map(|value| format!("; suggestion: {value}"))
+            .unwrap_or_default()
+    )
 }
 
 #[allow(clippy::too_many_lines)]
@@ -2080,6 +2282,7 @@ fn validate_paragraph_revisions(node: &Node, path: &str) -> Result<()> {
             kind: NodeKind::Paragraph,
             props: previous.clone(),
             children: Vec::new(),
+            source_location: None,
         },
         &format!("{path}/propertyChange/previous"),
     )
@@ -4841,6 +5044,7 @@ fn validate_index_field_paragraph(node: &Node, path: &str) -> Result<()> {
         kind: NodeKind::Paragraph,
         props: properties.clone(),
         children: Vec::new(),
+        source_location: node.source_location.clone(),
     };
     validate_props(&paragraph, &format!("{path}.fieldParagraph"))
 }
@@ -7983,6 +8187,33 @@ mod tests {
         assert!(
             error.to_string().contains("requires a paragraph style"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_should_reject_case_mismatched_local_style_reference() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{"styles":[{"id":"Body","name":"Body","type":"paragraph"}]},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{"style":"body"},"children":[]}]}]}}"#,
+        );
+        let error = ir.validate().expect_err("local style id casing must match");
+        assert!(
+            error.to_string().contains("style ids are case-sensitive"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("use `Body`"), "{error}");
+    }
+
+    #[test]
+    fn validation_warnings_should_report_literal_unicode_escapes_in_text() {
+        let ir = parse(
+            r#"{"version":1,"document":{"type":"Document","props":{},"children":[{"type":"Section","props":{},"children":[{"type":"Paragraph","props":{},"children":["quote \\u201Ctext\\u201D"]}]}]}}"#,
+        );
+        let warnings = ir.validation_warnings();
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("literal Unicode escape `\\u201C`")),
+            "{warnings:?}"
         );
     }
 

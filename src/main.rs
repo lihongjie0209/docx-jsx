@@ -196,6 +196,13 @@ async fn run(cli: Cli) -> docx_jsx::Result<RunOutput> {
     }
     let data = cli.data.as_deref().map(read_data).transpose()?;
     let ir = evaluate_entry(&input, data.as_ref()).await?;
+    for diagnostic in ir
+        .diagnostics()
+        .into_iter()
+        .filter(|item| item.severity == docx_jsx::ir::DiagnosticSeverity::Warning)
+    {
+        eprintln!("{}", docx_jsx::ir::format_diagnostic(diagnostic));
+    }
     let entry_dir = input
         .canonicalize()
         .map_err(|error| Error::Input(format!("cannot open {}: {error}", input.display())))?
@@ -221,8 +228,17 @@ async fn run(cli: Cli) -> docx_jsx::Result<RunOutput> {
 async fn run_validate(args: ValidateArgs) -> docx_jsx::Result<String> {
     validate_input_extension(&args.input)?;
     let data = args.data.as_deref().map(read_data).transpose()?;
-    evaluate_entry(&args.input, data.as_ref()).await?;
-    Ok(format!("valid: {}\n", args.input.display()))
+    let ir = evaluate_entry(&args.input, data.as_ref()).await?;
+    let mut output = format!("valid: {}\n", args.input.display());
+    for diagnostic in ir
+        .diagnostics()
+        .into_iter()
+        .filter(|item| item.severity == docx_jsx::ir::DiagnosticSeverity::Warning)
+    {
+        output.push_str(&docx_jsx::ir::format_diagnostic(diagnostic));
+        output.push('\n');
+    }
+    Ok(output)
 }
 
 fn run_reverse(args: ReverseArgs) -> docx_jsx::Result<PathBuf> {

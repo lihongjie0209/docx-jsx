@@ -1536,6 +1536,78 @@ export default <Document styles={[{id:"A",name:"A",type:"paragraph",basedOn:"B"}
 }
 
 #[test]
+fn validate_should_reject_case_mismatched_reference_to_declared_style() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("style-case.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document styles={[{id:"Body",name:"Body",type:"paragraph"}]}><Section><Paragraph style="body">text</Paragraph></Section></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["validate", input.to_str().expect("UTF-8 path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("style ids are case-sensitive"))
+        .stderr(predicate::str::contains("use `Body`"))
+        .stderr(predicate::str::contains("suggestion:"));
+}
+
+#[test]
+fn validate_should_warn_when_jsx_text_contains_literal_unicode_escape() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("unicode-escape.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document><Section><Paragraph>literal \u201C quote</Paragraph></Section></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["validate", input.to_str().expect("UTF-8 path")])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid:"))
+        .stdout(predicate::str::contains("literal Unicode escape `\\u201C`"))
+        .stdout(predicate::str::contains(
+            "JSX text does not interpret backslash-u escapes",
+        ));
+}
+
+#[test]
+fn validate_should_report_all_semantic_issues_with_source_positions() {
+    let directory = tempdir().expect("tempdir should work");
+    let input = directory.path().join("multiple-errors.jsx");
+    fs::write(
+        &input,
+        r#"import { Document, Section, Paragraph } from "docx-jsx";
+export default <Document><Section>
+  <Paragraph align="diagonal">literal \u201C quote</Paragraph>
+  <Paragraph unknownProp>bad</Paragraph>
+</Section></Document>;"#,
+    )
+    .expect("input should write");
+
+    Command::cargo_bin("docx-jsx")
+        .expect("binary should build")
+        .args(["validate", input.to_str().expect("UTF-8 path")])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("2 errors"))
+        .stderr(predicate::str::contains("1 warning"))
+        .stderr(predicate::str::contains("multiple-errors.jsx:3:"))
+        .stderr(predicate::str::contains("multiple-errors.jsx:4:"))
+        .stderr(predicate::str::contains("align"))
+        .stderr(predicate::str::contains("unknown property `unknownProp`"))
+        .stderr(predicate::str::contains("literal Unicode escape"));
+}
+
+#[test]
 fn cli_should_compile_tsx_with_json_data() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("report.tsx");

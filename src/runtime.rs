@@ -163,7 +163,7 @@ fn transpile(specifier: &ModuleSpecifier, source: String, media_type: MediaType)
                 imports_not_used_as_values: ImportsNotUsedAsValues::Remove,
                 decorators: DecoratorsTranspileOption::Ecma,
                 jsx: Some(JsxRuntime::Automatic(JsxAutomaticOptions {
-                    development: false,
+                    development: true,
                     import_source: Some("docx-jsx".to_owned()),
                 })),
                 ..Default::default()

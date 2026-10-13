@@ -5104,6 +5104,7 @@ fn compile_paragraph_property_change(
         kind: NodeKind::Paragraph,
         props: previous.clone(),
         children: Vec::new(),
+        source_location: None,
     };
     let previous = compile_paragraph(
         &previous_node,
@@ -7576,6 +7577,7 @@ fn configure_index_field_paragraph(
         kind: NodeKind::Paragraph,
         props: properties,
         children: Vec::new(),
+        source_location: None,
     };
     let paragraph_path = format!("{path}.fieldParagraph");
     let compiled = compile_paragraph(&paragraph, entry_dir, &paragraph_path, context)?;
