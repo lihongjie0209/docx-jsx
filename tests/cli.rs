@@ -861,6 +861,42 @@ fn spec_json_schema_should_constrain_generated_index_children() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_field_result_children() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    let field_types = [
+        "Field",
+        "DateField",
+        "TimeField",
+        "FileNameField",
+        "AuthorField",
+        "TitleField",
+        "SubjectField",
+        "SequenceField",
+        "ReferenceField",
+        "MergeField",
+        "DocumentPropertyField",
+        "FormulaField",
+    ];
+    assert!(branches.iter().any(|branch| {
+        branch["if"]["properties"]["type"]["enum"] == serde_json::json!(field_types)
+            && branch["then"]["properties"]["children"]["items"]["$ref"]
+                == "#/$defs/fieldResultChild"
+    }));
+    assert_eq!(
+        schema["$defs"]["fieldResultChild"]["oneOf"],
+        serde_json::json!([
+            { "$ref": "#/$defs/revisionInlineNode" },
+            { "$ref": "#/$defs/revisionRunNode" },
+            { "type": "string" },
+            { "type": "number" }
+        ])
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

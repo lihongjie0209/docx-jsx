@@ -86,6 +86,7 @@
         { "if": { "properties": { "type": { "const": "MergeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/mergeFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "DocumentPropertyField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/documentPropertyFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "FormulaField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/formulaFieldProps" } } } },
+        { "if": { "properties": { "type": { "enum": ["Field", "DateField", "TimeField", "FileNameField", "AuthorField", "TitleField", "SubjectField", "SequenceField", "ReferenceField", "MergeField", "DocumentPropertyField", "FormulaField"] } }, "required": ["type"] }, "then": { "properties": { "children": { "items": { "$ref": "#/$defs/fieldResultChild" } } } } },
         {
           "if": { "properties": { "type": { "const": "Header" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/headerFooterProps" } } }
@@ -594,6 +595,14 @@
       ]
     },
     "revisionChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/revisionInlineNode" },
+        { "$ref": "#/$defs/revisionRunNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "fieldResultChild": {
       "oneOf": [
         { "$ref": "#/$defs/revisionInlineNode" },
         { "$ref": "#/$defs/revisionRunNode" },

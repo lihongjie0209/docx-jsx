@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.36 - 2026-10-13
+
+- Constrain native field result child kinds in the Agent JSON Schema.
+
 ## 0.8.35 - 2026-10-13
 
 - Constrain direct children of generated index components in the Agent JSON

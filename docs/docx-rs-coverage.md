@@ -108,6 +108,10 @@ The Agent JSON Schema constrains Table-of-Contents, Table-of-Figures, and
 Table-of-Entries children to `TocItem`, `TocBefore`, or `TocAfter`; wrapper
 multiplicity, placement, and section ordering remain semantic validation rules.
 
+The Agent JSON Schema constrains native field result children to run-level
+content and primitive text. Instruction syntax and field-specific semantic
+rules remain the responsibility of `docx-jsx validate`.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external
