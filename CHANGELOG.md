@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.32 - 2026-10-13
+
+- Constrain direct child kinds for core structural containers in the Agent JSON
+  Schema, including document/section, table/row/cell, and list/item structure.
+
 ## 0.8.31 - 2026-10-13
 
 - Add Agent JSON Schema constraints for Comment metadata, reply linkage, and

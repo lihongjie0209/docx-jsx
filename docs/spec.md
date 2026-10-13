@@ -29,6 +29,11 @@ groups; style identity uniqueness, reference resolution/type compatibility,
 and inheritance cycles remain the responsibility of `validate`. List override
 level uniqueness and legal component placement are likewise checked by
 `validate`.
+The JSON Schema also constrains direct child kinds for the core structural
+containers `Document`, `Section`, `Header`, `Footer`, `Table`, `TableRow`,
+`TableCell`, `List`, and `ListItem`. Context-sensitive rules—especially the
+inline-versus-block `ContentControl` form and section/index relationships—remain
+enforced by `validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment
@@ -164,7 +169,7 @@ children are text. Pure whitespace between structural elements is ignored.
 | `TableRow` | `TableCell` |
 | `TableCell` | `Paragraph`, `Caption`, `Table`, `List`, `TableOfContents`, `ContentControl` |
 | `List` | one or more `ListItem` |
-| `ListItem` | `Run`, `Text`, `Break`, `Image`, string, number |
+| `ListItem` | `Run`, `Text`, `Break`, `CarriageReturn`, `NonBreakingSpace`, `SoftHyphen`, `NonBreakingHyphen`, `Image`, `Footnote`, `Tab`, `Symbol`, `PageReference`, `PositionalTab`, `TocEntry`, `DeletedInstruction`, string, number |
 | `Bookmark` | `Heading`, `Paragraph`, `Caption`, `Table`, `List` |
 | `TableOfContents`, `TableOfFigures`, `TableOfEntries` | `TocItem`, `TocBefore`, `TocAfter` |
 | `TocItem` | none |

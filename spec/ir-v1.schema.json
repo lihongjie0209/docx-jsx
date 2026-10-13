@@ -143,10 +143,115 @@
         },
         {
           "if": { "properties": { "type": { "const": "ListItem" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/listItemProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/listItemProps" }, "children": { "items": { "$ref": "#/$defs/listItemChild" } } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Document" } }, "required": ["type"] },
+          "then": { "properties": { "children": { "minItems": 1, "items": { "$ref": "#/$defs/documentChild" } } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Section" } }, "required": ["type"] },
+          "then": { "properties": { "children": { "items": { "$ref": "#/$defs/sectionChild" } } } }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["Header", "Footer"] } }, "required": ["type"] },
+          "then": { "properties": { "children": { "items": { "$ref": "#/$defs/storyChild" } } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Table" } }, "required": ["type"] },
+          "then": { "properties": { "children": { "items": { "$ref": "#/$defs/tableChild" } } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "TableRow" } }, "required": ["type"] },
+          "then": { "properties": { "children": { "items": { "$ref": "#/$defs/tableRowChild" } } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "TableCell" } }, "required": ["type"] },
+          "then": { "properties": { "children": { "items": { "$ref": "#/$defs/tableCellChild" } } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "List" } }, "required": ["type"] },
+          "then": { "properties": { "children": { "minItems": 1, "items": { "$ref": "#/$defs/listChild" } } } }
         }
       ]
     },
+    "documentChild": { "$ref": "#/$defs/sectionNode" },
+    "sectionChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/headerNode" },
+        { "$ref": "#/$defs/footerNode" },
+        { "$ref": "#/$defs/headingNode" },
+        { "$ref": "#/$defs/paragraphNode" },
+        { "$ref": "#/$defs/captionNode" },
+        { "$ref": "#/$defs/indexNode" },
+        { "$ref": "#/$defs/tocNode" },
+        { "$ref": "#/$defs/figuresNode" },
+        { "$ref": "#/$defs/entriesNode" },
+        { "$ref": "#/$defs/bookmarkNode" },
+        { "$ref": "#/$defs/tableNode" },
+        { "$ref": "#/$defs/listNode" },
+        { "$ref": "#/$defs/contentControlNode" }
+      ]
+    },
+    "storyChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/paragraphNode" },
+        { "$ref": "#/$defs/captionNode" },
+        { "$ref": "#/$defs/tableNode" },
+        { "$ref": "#/$defs/listNode" },
+        { "$ref": "#/$defs/contentControlNode" }
+      ]
+    },
+    "tableChild": { "$ref": "#/$defs/tableRowNode" },
+    "tableRowChild": { "$ref": "#/$defs/tableCellNode" },
+    "tableCellChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/paragraphNode" },
+        { "$ref": "#/$defs/captionNode" },
+        { "$ref": "#/$defs/tableNode" },
+        { "$ref": "#/$defs/listNode" },
+        { "$ref": "#/$defs/tocNode" },
+        { "$ref": "#/$defs/contentControlNode" }
+      ]
+    },
+    "listChild": { "$ref": "#/$defs/listItemNode" },
+    "listItemChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/listItemInlineNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "listItemInlineNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": {
+              "enum": ["Run", "Text", "Break", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen", "Image", "Footnote", "Tab", "Symbol", "PageReference", "PositionalTab", "TocEntry", "DeletedInstruction"]
+            }
+          }
+        }
+      ]
+    },
+    "sectionNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Section" } } },
+    "headerNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Header" } } },
+    "footerNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Footer" } } },
+    "headingNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Heading" } } },
+    "paragraphNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Paragraph" } } },
+    "captionNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Caption" } } },
+    "indexNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Index" } } },
+    "tocNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TableOfContents" } } },
+    "figuresNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TableOfFigures" } } },
+    "entriesNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TableOfEntries" } } },
+    "bookmarkNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Bookmark" } } },
+    "tableNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Table" } } },
+    "tableRowNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TableRow" } } },
+    "tableCellNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TableCell" } } },
+    "listNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "List" } } },
+    "listItemNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "ListItem" } } },
+    "contentControlNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "ContentControl" } } },
+    "typedNode": { "$ref": "#/$defs/node" },
     "bookmarkProps": {
       "type": "object",
       "additionalProperties": false,

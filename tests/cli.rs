@@ -570,6 +570,94 @@ fn spec_json_schema_should_constrain_comment_metadata_and_selection() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_core_container_children() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+
+    for (kind, child_ref, minimum) in [
+        ("Document", "#/$defs/documentChild", Some(1)),
+        ("Section", "#/$defs/sectionChild", None),
+        ("Header", "#/$defs/storyChild", None),
+        ("Footer", "#/$defs/storyChild", None),
+        ("Table", "#/$defs/tableChild", None),
+        ("TableRow", "#/$defs/tableRowChild", None),
+        ("TableCell", "#/$defs/tableCellChild", None),
+        ("List", "#/$defs/listChild", Some(1)),
+        ("ListItem", "#/$defs/listItemChild", None),
+    ] {
+        let branch = branches
+            .iter()
+            .find(|branch| {
+                let type_matches = branch["if"]["properties"]["type"]["const"] == kind
+                    || branch["if"]["properties"]["type"]["enum"]
+                        .as_array()
+                        .is_some_and(|types| types.iter().any(|value| value == kind));
+                type_matches
+                    && branch["then"]["properties"]["children"]["items"]["$ref"] == child_ref
+            })
+            .unwrap_or_else(|| panic!("{kind} child schema branch should exist"));
+        let children = &branch["then"]["properties"]["children"];
+        assert_eq!(children["items"]["$ref"], child_ref, "{kind} child ref");
+        if let Some(minimum) = minimum {
+            assert_eq!(children["minItems"], minimum, "{kind} minimum children");
+        }
+    }
+
+    assert_eq!(
+        schema["$defs"]["documentChild"]["$ref"],
+        "#/$defs/sectionNode"
+    );
+    assert_eq!(
+        schema["$defs"]["tableChild"]["$ref"],
+        "#/$defs/tableRowNode"
+    );
+    assert_eq!(
+        schema["$defs"]["tableRowChild"]["$ref"],
+        "#/$defs/tableCellNode"
+    );
+    assert_eq!(schema["$defs"]["listChild"]["$ref"], "#/$defs/listItemNode");
+
+    for (node_name, kind) in [
+        ("sectionNode", "Section"),
+        ("tableRowNode", "TableRow"),
+        ("tableCellNode", "TableCell"),
+        ("listItemNode", "ListItem"),
+    ] {
+        assert_eq!(
+            schema["$defs"][node_name]["properties"]["type"]["const"],
+            kind
+        );
+    }
+    let section_children = schema["$defs"]["sectionChild"]["oneOf"]
+        .as_array()
+        .expect("section child oneOf");
+    let section_types = section_children
+        .iter()
+        .map(|child| child["$ref"].as_str().expect("section child ref"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        section_types,
+        [
+            "#/$defs/headerNode",
+            "#/$defs/footerNode",
+            "#/$defs/headingNode",
+            "#/$defs/paragraphNode",
+            "#/$defs/captionNode",
+            "#/$defs/indexNode",
+            "#/$defs/tocNode",
+            "#/$defs/figuresNode",
+            "#/$defs/entriesNode",
+            "#/$defs/bookmarkNode",
+            "#/$defs/tableNode",
+            "#/$defs/listNode",
+            "#/$defs/contentControlNode",
+        ]
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]
