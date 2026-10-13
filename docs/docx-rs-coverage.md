@@ -86,6 +86,10 @@ The Agent JSON Schema constrains custom `TocEntry` fields and the `TocBefore` /
 `TocAfter` block wrappers, including their required child kinds and non-empty
 content rules.
 
+The Agent JSON Schema constrains comment text/metadata and the allowed selected
+inline children. Reply-ID pairing is checked in schema; ID uniqueness, parent
+resolution, and cycle detection remain enforced by the IR validator.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

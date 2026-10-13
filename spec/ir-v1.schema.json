@@ -74,6 +74,7 @@
         { "if": { "properties": { "type": { "const": "TocEntry" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocEntryProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "const": "TocBefore" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocWrapperProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/tocBlockChild" } } } } },
         { "if": { "properties": { "type": { "const": "TocAfter" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocWrapperProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/tocBlockChild" } } } } },
+        { "if": { "properties": { "type": { "const": "Comment" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/commentProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/commentChild" } } } } },
         { "if": { "properties": { "type": { "enum": ["Bold", "Italic", "StrikeThrough", "Superscript", "Subscript", "AllCaps", "HiddenText", "SpecialHiddenText", "DoubleStrike"] } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/semanticTextEmptyProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
         { "if": { "properties": { "type": { "const": "Underline" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/underlineTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
         { "if": { "properties": { "type": { "const": "SpacedText" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/spacedTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
@@ -379,6 +380,43 @@
         {
           "properties": { "type": { "enum": ["Paragraph", "Table"] } },
           "required": ["type"]
+        }
+      ]
+    },
+    "commentProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "author": { "type": "string" },
+        "date": { "type": "string" },
+        "id": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "parentCommentId": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "done": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["parentCommentId"] },
+          "then": { "required": ["id"] }
+        }
+      ]
+    },
+    "commentChild": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "number" },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/node" },
+            {
+              "properties": {
+                "type": {
+                  "enum": ["Run", "Hyperlink", "Text", "Break", "CarriageReturn", "Image", "Footnote", "Tab", "Symbol", "PageReference", "PositionalTab", "TocEntry", "DeletedInstruction", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen"]
+                }
+              }
+            }
+          ]
         }
       ]
     },

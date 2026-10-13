@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.31 - 2026-10-13
+
+- Add Agent JSON Schema constraints for Comment metadata, reply linkage, and
+  allowed inline content.
+
 ## 0.8.30 - 2026-10-13
 
 - Add Agent JSON Schema coverage for custom TOC entries and before/after blocks.
