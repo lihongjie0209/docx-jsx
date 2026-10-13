@@ -74,6 +74,7 @@
         { "if": { "properties": { "type": { "const": "TocEntry" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocEntryProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "const": "TocBefore" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocWrapperProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/tocBlockChild" } } } } },
         { "if": { "properties": { "type": { "const": "TocAfter" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocWrapperProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/tocBlockChild" } } } } },
+        { "if": { "properties": { "type": { "enum": ["TableOfContents", "TableOfFigures", "TableOfEntries"] } }, "required": ["type"] }, "then": { "properties": { "children": { "items": { "$ref": "#/$defs/indexChild" } } } } },
         { "if": { "properties": { "type": { "const": "Comment" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/commentProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/commentChild" } } } } },
         { "if": { "properties": { "type": { "enum": ["Bold", "Italic", "StrikeThrough", "Superscript", "Subscript", "AllCaps", "HiddenText", "SpecialHiddenText", "DoubleStrike"] } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/semanticTextEmptyProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
         { "if": { "properties": { "type": { "const": "Underline" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/underlineTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
@@ -204,6 +205,13 @@
     },
     "tableChild": { "$ref": "#/$defs/tableRowNode" },
     "tableRowChild": { "$ref": "#/$defs/tableCellNode" },
+    "indexChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/tocItemNode" },
+        { "$ref": "#/$defs/tocBeforeNode" },
+        { "$ref": "#/$defs/tocAfterNode" }
+      ]
+    },
     "tableCellChild": {
       "oneOf": [
         { "$ref": "#/$defs/paragraphNode" },
@@ -242,6 +250,9 @@
     "captionNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Caption" } } },
     "indexNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Index" } } },
     "tocNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TableOfContents" } } },
+    "tocItemNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TocItem" } } },
+    "tocBeforeNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TocBefore" } } },
+    "tocAfterNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TocAfter" } } },
     "figuresNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TableOfFigures" } } },
     "entriesNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "TableOfEntries" } } },
     "bookmarkNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "Bookmark" } } },

@@ -43,6 +43,9 @@ Tracked-revision wrappers also constrain their direct child kinds: insertion
 and move ranges accept run-level content, while deletion ranges accept runs,
 text, comments, and primitive text. Text-only deletion semantics and revision
 range matching remain enforced by `validate`.
+Table-of-Contents, Table-of-Figures, and Table-of-Entries nodes constrain their
+direct children to `TocItem`, `TocBefore`, or `TocAfter`. Wrapper multiplicity,
+placement, and document-level index ordering remain validated by `validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment

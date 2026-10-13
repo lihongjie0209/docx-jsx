@@ -833,6 +833,34 @@ fn spec_json_schema_should_constrain_revision_range_children() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_generated_index_children() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    let branch = branches
+        .iter()
+        .find(|branch| {
+            branch["if"]["properties"]["type"]["enum"]
+                == serde_json::json!(["TableOfContents", "TableOfFigures", "TableOfEntries"])
+                && branch["then"]["properties"]["children"]["items"]["$ref"] == "#/$defs/indexChild"
+        })
+        .expect("generated index components should constrain their children");
+    assert_eq!(
+        branch["then"]["properties"]["children"]["items"]["$ref"],
+        "#/$defs/indexChild"
+    );
+    assert_eq!(
+        schema["$defs"]["indexChild"]["oneOf"],
+        serde_json::json!([
+            { "$ref": "#/$defs/tocItemNode" },
+            { "$ref": "#/$defs/tocBeforeNode" },
+            { "$ref": "#/$defs/tocAfterNode" }
+        ])
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

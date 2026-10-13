@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.35 - 2026-10-13
+
+- Constrain direct children of generated index components in the Agent JSON
+  Schema.
+
 ## 0.8.34 - 2026-10-13
 
 - Constrain direct child kinds and deleted-range content in the Agent JSON
