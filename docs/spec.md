@@ -39,6 +39,10 @@ For inline content, it also constrains direct child kinds for `Paragraph`,
 numeric text remains supported where the DSL permits it. The requirement that
 `DeletedInstruction` occur inside a `Run` nested within `Deleted` is
 ancestor-dependent and remains enforced by `validate`.
+Tracked-revision wrappers also constrain their direct child kinds: insertion
+and move ranges accept run-level content, while deletion ranges accept runs,
+text, comments, and primitive text. Text-only deletion semantics and revision
+range matching remain enforced by `validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment

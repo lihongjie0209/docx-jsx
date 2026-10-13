@@ -63,10 +63,10 @@
         { "if": { "properties": { "type": { "const": "TabStop" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tabStopProps" } } } },
         { "if": { "properties": { "type": { "const": "PositionalTab" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/positionalTabProps" } } } },
         { "if": { "properties": { "type": { "const": "Symbol" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/symbolProps" } } } },
-        { "if": { "properties": { "type": { "const": "Inserted" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
-        { "if": { "properties": { "type": { "const": "Deleted" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
-        { "if": { "properties": { "type": { "const": "MovedFrom" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
-        { "if": { "properties": { "type": { "const": "MovedTo" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
+        { "if": { "properties": { "type": { "const": "Inserted" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/revisionChild" } } } } },
+        { "if": { "properties": { "type": { "const": "Deleted" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/deletedChild" } } } } },
+        { "if": { "properties": { "type": { "const": "MovedFrom" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/revisionChild" } } } } },
+        { "if": { "properties": { "type": { "const": "MovedTo" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/revisionChild" } } } } },
         { "if": { "properties": { "type": { "const": "Footnote" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/footnoteProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/footnoteChild" } } } } },
         { "if": { "properties": { "type": { "const": "Break" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/breakProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "enum": ["PageNumber", "TotalPages", "Tab", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen"] } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/emptyProps" }, "children": { "maxItems": 0 } } } },
@@ -580,6 +580,141 @@
             }
           ]
         }
+      ]
+    },
+    "revisionChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/revisionInlineNode" },
+        { "$ref": "#/$defs/revisionRunNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "revisionInlineNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": {
+              "enum": ["Text", "Break", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen", "Image", "Footnote", "Tab", "Symbol", "PageReference", "PositionalTab", "TocEntry"]
+            }
+          }
+        }
+      ]
+    },
+    "revisionRunNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": { "const": "Run" },
+            "children": { "items": { "$ref": "#/$defs/revisionRunChild" } }
+          }
+        }
+      ]
+    },
+    "revisionRunChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/revisionRunInlineNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "revisionRunInlineNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": {
+              "enum": ["Text", "Break", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen", "Image", "Footnote", "Tab", "Symbol", "PageReference", "PositionalTab", "TocEntry"]
+            }
+          }
+        }
+      ]
+    },
+    "deletedChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/deletedRangeNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "deletedRangeNode": {
+      "oneOf": [
+        { "$ref": "#/$defs/deletedRunNode" },
+        { "$ref": "#/$defs/deletedTextNode" },
+        { "$ref": "#/$defs/deletedCommentNode" }
+      ]
+    },
+    "deletedRunNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": { "const": "Run" },
+            "children": { "items": { "$ref": "#/$defs/deletedRunChild" } }
+          }
+        }
+      ]
+    },
+    "deletedRunChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/deletedRunInlineNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "deletedRunInlineNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": { "enum": ["Text", "DeletedInstruction"] }
+          }
+        }
+      ]
+    },
+    "deletedTextNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        { "properties": { "type": { "const": "Text" } } }
+      ]
+    },
+    "deletedCommentNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": { "const": "Comment" },
+            "children": { "items": { "$ref": "#/$defs/deletedCommentChild" } }
+          }
+        }
+      ]
+    },
+    "deletedCommentChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/deletedTextNode" },
+        { "$ref": "#/$defs/deletedCommentRunNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "deletedCommentRunNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": { "const": "Run" },
+            "children": { "items": { "$ref": "#/$defs/deletedTextChild" } }
+          }
+        }
+      ]
+    },
+    "deletedTextChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/deletedTextNode" },
+        { "type": "string" },
+        { "type": "number" }
       ]
     },
     "footnoteChild": {

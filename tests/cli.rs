@@ -775,6 +775,64 @@ fn spec_json_schema_should_list_allowed_inline_node_types() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_revision_range_children() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    for (kind, child_ref) in [
+        ("Inserted", "#/$defs/revisionChild"),
+        ("MovedFrom", "#/$defs/revisionChild"),
+        ("MovedTo", "#/$defs/revisionChild"),
+        ("Deleted", "#/$defs/deletedChild"),
+    ] {
+        let branch = branches
+            .iter()
+            .find(|branch| {
+                branch["if"]["properties"]["type"]["const"] == kind
+                    && branch["then"]["properties"]["children"]["items"]["$ref"] == child_ref
+            })
+            .unwrap_or_else(|| panic!("{kind} should constrain direct child kinds"));
+        assert_eq!(branch["then"]["properties"]["children"]["minItems"], 1);
+    }
+
+    assert_eq!(
+        schema["$defs"]["revisionChild"]["oneOf"][0]["$ref"],
+        "#/$defs/revisionInlineNode"
+    );
+    assert_eq!(
+        schema["$defs"]["deletedChild"]["oneOf"][0]["$ref"],
+        "#/$defs/deletedRangeNode"
+    );
+    assert_eq!(
+        schema["$defs"]["revisionInlineNode"]["allOf"][1]["properties"]["type"]["enum"],
+        serde_json::json!([
+            "Text",
+            "Break",
+            "CarriageReturn",
+            "NonBreakingSpace",
+            "SoftHyphen",
+            "NonBreakingHyphen",
+            "Image",
+            "Footnote",
+            "Tab",
+            "Symbol",
+            "PageReference",
+            "PositionalTab",
+            "TocEntry"
+        ])
+    );
+    assert_eq!(
+        schema["$defs"]["deletedRangeNode"]["oneOf"],
+        serde_json::json!([
+            { "$ref": "#/$defs/deletedRunNode" },
+            { "$ref": "#/$defs/deletedTextNode" },
+            { "$ref": "#/$defs/deletedCommentNode" }
+        ])
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

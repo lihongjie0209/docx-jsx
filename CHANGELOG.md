@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.34 - 2026-10-13
+
+- Constrain direct child kinds and deleted-range content in the Agent JSON
+  Schema for tracked revisions.
+
 ## 0.8.33 - 2026-10-13
 
 - Constrain direct child kinds for paragraph-like and inline components in the
