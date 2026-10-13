@@ -14,17 +14,10 @@ docx-jsx pdf <INPUT.docx> [-o <OUTPUT.pdf>] [--engine auto|libreoffice|word|wps]
 docx-jsx spec [--format markdown|json-schema]
 ```
 
-`spec --format json-schema` describes the IR envelope and recursive tree. In
-this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
-`Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, `Table`,
-`Caption`, `Header`, `Footer`, `Bookmark`, `InlineBookmark`, and
-`TableOfContents`, `TableOfFigures`, `TableOfEntries`, `ContentControl`, the
-native field components, `Index`, `IndexEntry`, `TocItem`, `PageReference`, `TabStop`, `PositionalTab`,
-`Text`, semantic text effects, `Symbol`, `Comment`, `TocEntry`/`TocBefore`/`TocAfter`, tracked revision properties, `Footnote`,
-line breaks, and common inline control leaves are additionally typed and constrained;
-other component `props` remain generic
-objects pending later coverage batches. The
-schema constrains style definition metadata and all four nested style property
+`spec --format json-schema` describes the IR envelope and recursive tree. The
+JSON Schema provides a typed `props` contract for every component kind and
+constrains direct child kinds for every node. It also constrains style
+definition metadata and all four nested style property
 groups; style identity uniqueness, reference resolution/type compatibility,
 and inheritance cycles remain the responsibility of `validate`. List override
 level uniqueness and legal component placement are likewise checked by

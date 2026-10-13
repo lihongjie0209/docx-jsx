@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.41 - 2026-10-13
+
+- Correct the Agent spec to reflect typed props and child constraints for every
+  IR component kind.
+
 ## 0.8.40 - 2026-10-13
 
 - Constrain leaf component children and `DeletedInstruction` properties in the

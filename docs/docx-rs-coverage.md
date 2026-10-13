@@ -4,6 +4,11 @@ This inventory tracks public document-building APIs that have a stable JSX
 representation. Every covered feature must have IR validation, DOCX output
 tests, CLI round-trip coverage, and specification text.
 
+The Agent JSON Schema currently provides typed properties and direct-child
+constraints for all 74 IR component kinds. Cross-property, ancestor-dependent,
+and document-wide validation remains in the semantic validator where those
+rules cannot be expressed by the recursive schema alone.
+
 Classification used in **Next gaps**:
 
 - **implementable-next** — public writer API, schema-valid output, not yet

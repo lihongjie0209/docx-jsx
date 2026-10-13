@@ -72,6 +72,9 @@ fn spec_should_output_agent_readable_markdown() {
         .success()
         .stdout(predicate::str::contains("# docx-jsx v1 specification"))
         .stdout(predicate::str::contains("## Component tree"))
+        .stdout(predicate::str::contains(
+            "JSON Schema provides a typed `props` contract for every component kind",
+        ))
         .stdout(predicate::str::contains("`IndexEntry`"))
         .stdout(predicate::str::contains("`TocItem`"))
         .stdout(predicate::str::contains("`TocBefore`"))
@@ -1011,6 +1014,33 @@ fn spec_json_schema_should_constrain_leaf_children() {
         schema["$defs"]["deletedInstructionProps"]["required"],
         serde_json::json!(["instruction"])
     );
+}
+
+#[test]
+fn spec_json_schema_should_type_props_for_every_component_kind() {
+    let schema = machine_readable_schema();
+    let node_schema = &schema["$defs"]["node"];
+    let kinds = node_schema["properties"]["type"]["enum"]
+        .as_array()
+        .expect("component kind enum");
+    let branches = node_schema["allOf"]
+        .as_array()
+        .expect("component property branches");
+
+    for kind in kinds {
+        let has_props_contract = branches.iter().any(|branch| {
+            let condition = &branch["if"]["properties"]["type"];
+            let matches_kind = condition["const"] == *kind
+                || condition["enum"]
+                    .as_array()
+                    .is_some_and(|group| group.contains(kind));
+            matches_kind && branch["then"]["properties"].get("props").is_some()
+        });
+        assert!(
+            has_props_contract,
+            "component kind {kind} must have a typed props contract"
+        );
+    }
 }
 
 #[test]
