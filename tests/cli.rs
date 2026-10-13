@@ -374,6 +374,10 @@ fn spec_json_schema_should_constrain_list_and_list_item_properties() {
         schema["$defs"]["listItemProps"]["properties"]["level"]["maximum"],
         8
     );
+    assert_eq!(
+        schema["$defs"]["listItemProps"]["properties"]["indentLeftChars"]["maximum"],
+        i64::MAX
+    );
 }
 
 #[test]
@@ -467,6 +471,39 @@ fn spec_json_schema_should_type_nested_style_run_formatting() {
     assert_eq!(
         schema["$defs"]["styleRunProps"]["properties"]["stretch"]["maximum"],
         600
+    );
+}
+
+#[test]
+fn spec_json_schema_should_type_nested_style_paragraph_formatting() {
+    let schema = machine_readable_schema();
+    assert_eq!(
+        schema["$defs"]["styleDefinition"]["properties"]["paragraph"]["$ref"],
+        "#/$defs/styleParagraphProps"
+    );
+    assert_eq!(
+        schema["$defs"]["styleParagraphProps"]["properties"]["outlineLevel"]["maximum"],
+        9
+    );
+    assert_eq!(
+        schema["$defs"]["styleParagraphProps"]["properties"]["indentStartChars"]["minimum"],
+        i64::MIN
+    );
+    assert_eq!(
+        schema["$defs"]["styleFrame"]["properties"]["wrap"]["enum"],
+        serde_json::json!(["around", "auto", "none", "notBeside", "through", "tight"])
+    );
+}
+
+#[test]
+fn spec_json_schema_should_type_nested_style_table_and_cell_properties() {
+    let schema = machine_readable_schema();
+    let style = &schema["$defs"]["styleDefinition"]["properties"];
+    assert_eq!(style["table"]["$ref"], "#/$defs/styleTableProps");
+    assert_eq!(style["cell"]["$ref"], "#/$defs/styleCellProps");
+    assert_eq!(
+        schema["$defs"]["styleCellProps"]["properties"]["colSpan"]["minimum"],
+        1
     );
 }
 

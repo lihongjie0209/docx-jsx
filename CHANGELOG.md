@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.16 - 2026-10-13
+
+- Type all nested `StyleDefinition` run, paragraph, table, and cell properties
+  in the Agent JSON Schema, including frame/border and indentation constraints.
+- Bound character-unit indentation integers to the signed 64-bit range accepted
+  by DSL validation.
+
 ## 0.8.15 - 2026-10-13
 
 - Add strict Agent Schema coverage for nested style run formatting, including

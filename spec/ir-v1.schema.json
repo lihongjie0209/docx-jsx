@@ -144,14 +144,14 @@
         "lineRule": { "enum": ["auto", "atLeast", "exact"] },
         "indentLeft": { "type": "number" },
         "indentRight": { "type": "number" },
-        "indentLeftChars": { "type": "integer" },
-        "indentStartChars": { "type": "integer" },
-        "indentRightChars": { "type": "integer" },
-        "indentEndChars": { "type": "integer" },
+        "indentLeftChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentStartChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentRightChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentEndChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
         "firstLine": { "type": "number", "minimum": 0 },
         "hanging": { "type": "number", "minimum": 0 },
-        "firstLineChars": { "type": "integer" },
-        "hangingChars": { "type": "integer" },
+        "firstLineChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "hangingChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
         "keepNext": { "type": "boolean" },
         "keepLines": { "type": "boolean" },
         "contextualSpacing": { "type": "boolean" },
@@ -504,9 +504,9 @@
         "semiHidden": { "type": "boolean" },
         "unhideWhenUsed": { "type": "boolean" },
         "run": { "$ref": "#/$defs/styleRunProps" },
-        "paragraph": { "type": "object" },
-        "table": { "type": "object" },
-        "cell": { "type": "object" }
+        "paragraph": { "$ref": "#/$defs/styleParagraphProps" },
+        "table": { "$ref": "#/$defs/styleTableProps" },
+        "cell": { "$ref": "#/$defs/styleCellProps" }
       },
       "allOf": [
         {
@@ -589,6 +589,146 @@
         "color": { "oneOf": [{ "const": "auto" }, { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" }] },
         "pattern": { "enum": ["nil", "clear", "solid", "horzStripe", "vertStripe", "reverseDiagStripe", "diagStripe", "horzCross", "diagCross", "thinHorzStripe", "thinVertStripe", "thinReverseDiagStripe", "thinDiagStripe", "thinHorzCross", "thinDiagCross", "pct5", "pct10", "pct12", "pct15", "pct20", "pct25", "pct30", "pct35", "pct37", "pct40", "pct45", "pct50", "pct55", "pct60", "pct62", "pct65", "pct70", "pct75", "pct80", "pct85", "pct87", "pct90", "pct95"] }
       }
+    },
+    "styleParagraphProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "align": { "enum": ["left", "right", "center", "both", "distribute", "start", "end", "justified"] },
+        "textAlign": { "enum": ["auto", "baseline", "bottom", "center", "top"] },
+        "snapToGrid": { "type": "boolean" },
+        "suppressLineNumbers": { "type": "boolean" },
+        "pageBreakBefore": { "type": "boolean" },
+        "widowControl": { "type": "boolean" },
+        "bidi": { "type": "boolean" },
+        "shading": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "adjustRightIndent": { "enum": [0, 1] },
+        "keepNext": { "type": "boolean" },
+        "keepLines": { "type": "boolean" },
+        "contextualSpacing": { "type": "boolean" },
+        "mirrorIndents": { "type": "boolean" },
+        "suppressOverlap": { "type": "boolean" },
+        "spacingBefore": { "type": "number", "minimum": 0 },
+        "spacingAfter": { "type": "number", "minimum": 0 },
+        "lineSpacing": { "type": "number", "minimum": 0 },
+        "spacingBeforeLines": { "type": "integer", "minimum": 0 },
+        "spacingAfterLines": { "type": "integer", "minimum": 0 },
+        "lineRule": { "enum": ["auto", "atLeast", "exact"] },
+        "indentLeft": { "type": "number" },
+        "indentRight": { "type": "number" },
+        "indentLeftChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentStartChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentRightChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentEndChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "firstLine": { "type": "number", "minimum": 0 },
+        "hanging": { "type": "number", "minimum": 0 },
+        "hangingChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "firstLineChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "outlineLevel": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "frame": { "$ref": "#/$defs/styleFrame" }
+      },
+      "allOf": [
+        { "not": { "required": ["indentLeftChars", "indentStartChars"] } },
+        { "not": { "required": ["indentRightChars", "indentEndChars"] } },
+        { "not": { "required": ["firstLine", "hanging"] } },
+        { "not": { "required": ["firstLine", "hangingChars"] } },
+        { "not": { "required": ["firstLineChars", "hanging"] } },
+        { "not": { "required": ["firstLineChars", "hangingChars"] } },
+        { "not": { "required": ["firstLine", "firstLineChars"] } },
+        { "not": { "required": ["hanging", "hangingChars"] } }
+      ]
+    },
+    "styleFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "wrap": { "enum": ["around", "auto", "none", "notBeside", "through", "tight"] },
+        "verticalAnchor": { "enum": ["margin", "page", "text"] },
+        "horizontalAnchor": { "enum": ["margin", "page", "text"] },
+        "heightRule": { "enum": ["atLeast", "auto", "exact"] },
+        "xAlign": { "enum": ["center", "inside", "left", "outside", "right"] },
+        "yAlign": { "enum": ["bottom", "center", "inline", "inside", "outside", "top"] },
+        "horizontalSpace": { "type": "number" },
+        "verticalSpace": { "type": "number" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 }
+      },
+      "allOf": [
+        { "not": { "required": ["x", "xAlign"] } },
+        { "not": { "required": ["y", "yAlign"] } }
+      ]
+    },
+    "styleTableProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "indent": { "type": "number" },
+        "align": { "enum": ["left", "center", "right"] },
+        "margins": { "$ref": "#/$defs/tableMargins" },
+        "border": { "$ref": "#/$defs/tableBorder" }
+      }
+    },
+    "styleCellProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "colSpan": { "type": "integer", "minimum": 1 },
+        "verticalAlign": { "enum": ["top", "center", "bottom"] },
+        "verticalMerge": { "enum": ["restart", "continue"] },
+        "textDirection": { "enum": ["lr", "lrV", "rl", "rlV", "tb", "tbV", "tbRlV", "tbRl", "btLr", "lrTbV"] },
+        "shading": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "margins": { "$ref": "#/$defs/tableMargins" },
+        "border": { "$ref": "#/$defs/cellBorder" }
+      }
+    },
+    "cellBorder": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "style": { "$ref": "#/$defs/borderStyle" },
+            "size": { "type": "number", "exclusiveMinimum": 0 },
+            "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clearAll": { "type": "boolean" },
+            "top": { "$ref": "#/$defs/positionedTableBorder" },
+            "right": { "$ref": "#/$defs/positionedTableBorder" },
+            "bottom": { "$ref": "#/$defs/positionedTableBorder" },
+            "left": { "$ref": "#/$defs/positionedTableBorder" },
+            "insideHorizontal": { "$ref": "#/$defs/positionedTableBorder" },
+            "insideVertical": { "$ref": "#/$defs/positionedTableBorder" },
+            "topLeftToBottomRight": { "$ref": "#/$defs/positionedTableBorder" },
+            "topRightToBottomLeft": { "$ref": "#/$defs/positionedTableBorder" }
+          },
+          "anyOf": [
+            { "properties": { "clearAll": { "const": true } }, "required": ["clearAll"] },
+            { "required": ["top"] }, { "required": ["right"] },
+            { "required": ["bottom"] }, { "required": ["left"] },
+            { "required": ["insideHorizontal"] }, { "required": ["insideVertical"] },
+            { "required": ["topLeftToBottomRight"] }, { "required": ["topRightToBottomLeft"] }
+          ],
+          "not": {
+            "properties": { "clearAll": { "const": true } },
+            "required": ["clearAll"],
+            "anyOf": [
+              { "required": ["top"] }, { "required": ["right"] },
+              { "required": ["bottom"] }, { "required": ["left"] },
+              { "required": ["insideHorizontal"] }, { "required": ["insideVertical"] },
+              { "required": ["topLeftToBottomRight"] }, { "required": ["topRightToBottomLeft"] }
+            ]
+          }
+        }
+      ]
     },
     "documentProtection": {
       "type": "object",
@@ -911,12 +1051,12 @@
         "mirrorIndents": { "type": "boolean" },
         "suppressOverlap": { "type": "boolean" },
         "suppressLineNumbers": { "type": "boolean" },
-        "indentLeftChars": { "type": "integer" },
-        "indentStartChars": { "type": "integer" },
-        "indentRightChars": { "type": "integer" },
-        "indentEndChars": { "type": "integer" },
-        "firstLineChars": { "type": "integer" },
-        "hangingChars": { "type": "integer" }
+        "indentLeftChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentStartChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentRightChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentEndChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "firstLineChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "hangingChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
       },
       "allOf": [
         { "not": { "required": ["indentLeftChars", "indentStartChars"] } },

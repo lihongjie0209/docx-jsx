@@ -18,23 +18,21 @@ docx-jsx spec [--format markdown|json-schema]
 this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, `Table`,
 and `Caption` properties are additionally typed and constrained; other
-component `props` remain generic objects pending later coverage batches. Nested
-style formatting and identity/uniqueness rules remain the responsibility of
-`validate`, which is authoritative for the complete DSL semantic contract. List
-override level uniqueness and legal component placement are likewise checked
-by `validate`. Style definition metadata and the table-only placement of
-table/cell properties are constrained by the JSON Schema; style identity
-uniqueness, reference resolution/type compatibility, inheritance cycles, and
-nested paragraph/table/cell style formatting remain checked by `validate`.
+component `props` remain generic objects pending later coverage batches. The
+schema constrains style definition metadata and all four nested style property
+groups; style identity uniqueness, reference resolution/type compatibility,
+and inheritance cycles remain the responsibility of `validate`. List override
+level uniqueness and legal component placement are likewise checked by
+`validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment
 exclusivity. Caption schema validates the required Word label identifier,
 optional sequence identifier/format/restart/placeholder/dirty values, and style
 and separator strings.
-`StyleDefinition.run` receives its own typed schema for run formatting, text
-effects, and character shading; paragraph/table/cell style formatting remains
-generic in the schema while `validate` remains authoritative.
+`StyleDefinition.run`, `.paragraph`, `.table`, and `.cell` receive typed schemas
+for formatting, effects, layout, borders, and shading; cross-definition style
+identity/reference semantics remain authoritative in `validate`.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`
