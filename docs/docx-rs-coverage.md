@@ -100,3 +100,9 @@ its optional identifier, number format, restart counter, placeholder, style,
 dirty flag, and separators. Whether referenced caption styles exist and whether
 identifier values conflict with other sequence fields remains a document-level
 semantic validation.
+
+Document style schema coverage constrains the style-kind enum, required
+metadata, non-empty inheritance/reference names, and prohibits table/cell
+property blocks on non-table styles. Duplicate IDs, base/link/next resolution,
+type compatibility, cycles, and the detailed nested formatting objects remain
+checked by `validate`; their schema coverage is deferred to a later batch.

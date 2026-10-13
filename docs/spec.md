@@ -16,13 +16,16 @@ docx-jsx spec [--format markdown|json-schema]
 
 `spec --format json-schema` describes the IR envelope and recursive tree. In
 this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
-`Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, and
-`Table` and `Caption`
-properties are additionally typed and constrained; other component `props`
-remain generic objects pending later coverage batches. Nested style formatting
-and identity/uniqueness rules remain the responsibility of `validate`, which is
-authoritative for the complete DSL semantic contract. List override level
-uniqueness and legal component placement are likewise checked by `validate`.
+`Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, `Table`,
+and `Caption` properties are additionally typed and constrained; other
+component `props` remain generic objects pending later coverage batches. Nested
+style formatting and identity/uniqueness rules remain the responsibility of
+`validate`, which is authoritative for the complete DSL semantic contract. List
+override level uniqueness and legal component placement are likewise checked
+by `validate`. Style definition metadata and the table-only placement of
+table/cell properties are constrained by the JSON Schema; style identity
+uniqueness, reference resolution/type compatibility, inheritance cycles, and
+nested style formatting remain checked by `validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment

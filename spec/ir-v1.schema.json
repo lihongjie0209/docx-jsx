@@ -507,7 +507,16 @@
         "paragraph": { "type": "object" },
         "table": { "type": "object" },
         "cell": { "type": "object" }
-      }
+      },
+      "allOf": [
+        {
+          "not": {
+            "properties": { "type": { "enum": ["paragraph", "character", "numbering"] } },
+            "required": ["type"],
+            "anyOf": [{ "required": ["table"] }, { "required": ["cell"] }]
+          }
+        }
+      ]
     },
     "documentProtection": {
       "type": "object",

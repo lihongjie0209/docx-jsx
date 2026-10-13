@@ -437,6 +437,23 @@ fn spec_json_schema_should_constrain_caption_sequence_properties() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_style_metadata_and_table_properties() {
+    let schema = machine_readable_schema();
+    let style = &schema["$defs"]["styleDefinition"];
+    assert_eq!(
+        style["properties"]["type"]["enum"],
+        serde_json::json!(["paragraph", "character", "numbering", "table"])
+    );
+    assert_eq!(style["properties"]["basedOn"]["minLength"], 1);
+    assert!(
+        style["allOf"]
+            .as_array()
+            .is_some_and(|constraints| !constraints.is_empty()),
+        "style category restrictions should be expressed in the schema"
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");
