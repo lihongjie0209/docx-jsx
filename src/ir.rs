@@ -3525,6 +3525,9 @@ fn validate_section_semantics(node: &Node, path: &str) -> Result<()> {
             "oddPage",
         ],
     )?;
+    if let Some(value) = node.props.get("pageSize") {
+        validate_section_page_size(value, path)?;
+    }
     if let Some(value) = node.props.get("documentGrid") {
         validate_document_grid(value, path)?;
     }
@@ -3536,6 +3539,37 @@ fn validate_section_semantics(node: &Node, path: &str) -> Result<()> {
     }
     if let Some(value) = node.props.get("columns") {
         validate_section_columns(value, path)?;
+    }
+    Ok(())
+}
+
+fn validate_section_page_size(value: &Value, path: &str) -> Result<()> {
+    if let Some(name) = value.as_str() {
+        return if ["A4", "Letter"].contains(&name) {
+            Ok(())
+        } else {
+            Err(validation(
+                path,
+                "`pageSize` must be A4, Letter, or {width,height}",
+            ))
+        };
+    }
+    let page_size = value
+        .as_object()
+        .ok_or_else(|| validation(path, "`pageSize` must be A4, Letter, or {width,height}"))?;
+    for key in page_size.keys() {
+        if !["width", "height"].contains(&key.as_str()) {
+            return Err(validation(
+                path,
+                format!("unknown pageSize property `{key}`"),
+            ));
+        }
+    }
+    for key in ["width", "height"] {
+        let value = page_size
+            .get(key)
+            .ok_or_else(|| validation(path, format!("`pageSize` requires `{key}`")))?;
+        require_number(value, path, &format!("pageSize.{key}"), true)?;
     }
     Ok(())
 }
@@ -7891,6 +7925,7 @@ mod tests {
     #[test]
     fn validate_should_reject_invalid_section_page_configuration() {
         for (props, expected) in [
+            (r#""pageSize":{"width":0,"height":792}"#, "pageSize.width"),
             (r#""documentGrid":{}"#, "must not be empty"),
             (r#""documentGrid":{"type":"diagonal"}"#, "documentGrid.type"),
             (

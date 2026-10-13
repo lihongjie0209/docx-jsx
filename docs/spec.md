@@ -15,10 +15,11 @@ docx-jsx spec [--format markdown|json-schema]
 ```
 
 `spec --format json-schema` describes the IR envelope and recursive tree. In
-this schema revision, `TableRow`, `TableCell`, `Paragraph`, `Heading`, and
-`Run` properties are additionally typed and constrained; other component
-`props` remain generic objects pending later coverage batches. The `validate`
-command remains authoritative for the complete DSL semantic contract.
+this schema revision, `TableRow`, `TableCell`, `Paragraph`, `Heading`, `Run`,
+and `Section` properties are additionally typed and constrained; other
+component `props` remain generic objects pending later coverage batches. The
+`validate` command remains authoritative for the complete DSL semantic
+contract.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
@@ -335,6 +336,7 @@ error instead of a silent drop.
   definitions rather than expanding inherited properties onto every node.
 - `Section`: `type?: "nextPage" | "nextColumn" | "continuous" | "evenPage" | "oddPage"`
   (`w:type`; omitted means Word's default `nextPage`), `pageSize?: "A4" | "Letter" | {width,height}`,
+  where custom `width` and `height` are positive point values,
   `orientation?: "portrait" | "landscape"`, `margins?: {top,right,bottom,left,header?,footer?,gutter?}`,
   `titlePage?: boolean`, `textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV"`,
   `documentGrid?: {type,linePitch?,charSpace?}`, and

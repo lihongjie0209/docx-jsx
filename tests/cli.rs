@@ -226,6 +226,35 @@ fn spec_json_schema_should_restrict_run_hidden_flags_to_true() {
 }
 
 #[test]
+fn spec_json_schema_should_type_section_page_layout_properties() {
+    let schema = machine_readable_schema();
+    let branch = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas")
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "Section")
+        .expect("Section schema branch should exist");
+    assert_eq!(
+        branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/sectionProps"
+    );
+    assert_eq!(
+        schema["$defs"]["sectionProps"]["properties"]["orientation"]["enum"][0],
+        "portrait"
+    );
+}
+
+#[test]
+fn spec_json_schema_should_constrain_section_column_layout_forms() {
+    let schema = machine_readable_schema();
+    assert_eq!(schema["$defs"]["sectionColumns"]["oneOf"][0]["maximum"], 45);
+    assert_eq!(
+        schema["$defs"]["sectionColumnWidths"]["properties"]["widths"]["maxItems"],
+        45
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.7 - 2026-10-13
+
+- Extend the Agent JSON Schema to constrain Section page size, orientation,
+  margins, text direction, section breaks, document grid, page/line numbering,
+  and equal-width or individually sized column layouts. Reject custom page
+  sizes with missing, unknown, or non-positive dimensions during DSL validation.
+
 ## 0.8.6 - 2026-10-13
 
 - Extend the Agent JSON Schema to constrain common `Run` formatting, including
