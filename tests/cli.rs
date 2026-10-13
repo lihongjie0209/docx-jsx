@@ -208,7 +208,12 @@ fn spec_json_schema_should_constrain_table_of_figures_and_entries() {
     ] {
         let branch = branches
             .iter()
-            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .find(|branch| {
+                branch["if"]["properties"]["type"]["const"] == kind
+                    || branch["if"]["properties"]["type"]["enum"]
+                        .as_array()
+                        .is_some_and(|types| types.contains(&serde_json::json!(kind)))
+            })
             .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
         assert_eq!(branch["then"]["properties"]["props"]["$ref"], props_ref);
     }
@@ -271,7 +276,12 @@ fn spec_json_schema_should_constrain_field_component_properties() {
     ] {
         let branch = branches
             .iter()
-            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .find(|branch| {
+                branch["if"]["properties"]["type"]["const"] == kind
+                    || branch["if"]["properties"]["type"]["enum"]
+                        .as_array()
+                        .is_some_and(|types| types.contains(&serde_json::json!(kind)))
+            })
             .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
         assert_eq!(
             branch["then"]["properties"]["props"]["$ref"],
@@ -393,6 +403,50 @@ fn spec_json_schema_should_constrain_footnote_content() {
         schema["$defs"]["footnoteChild"]["oneOf"][2]["allOf"][1]["properties"]["type"]["enum"][0],
         "Run"
     );
+}
+
+#[test]
+fn spec_json_schema_should_constrain_inline_control_leaves() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    let break_branch = branches
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "Break")
+        .expect("Break schema branch should exist");
+    assert_eq!(
+        break_branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/breakProps"
+    );
+    assert_eq!(
+        break_branch["then"]["properties"]["children"]["maxItems"],
+        0
+    );
+    for kind in [
+        "PageNumber",
+        "TotalPages",
+        "Tab",
+        "CarriageReturn",
+        "NonBreakingSpace",
+        "SoftHyphen",
+        "NonBreakingHyphen",
+    ] {
+        let branch = branches
+            .iter()
+            .find(|branch| {
+                branch["if"]["properties"]["type"]["const"] == kind
+                    || branch["if"]["properties"]["type"]["enum"]
+                        .as_array()
+                        .is_some_and(|types| types.contains(&serde_json::json!(kind)))
+            })
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(
+            branch["then"]["properties"]["props"]["$ref"],
+            "#/$defs/emptyProps"
+        );
+        assert_eq!(branch["then"]["properties"]["children"]["maxItems"], 0);
+    }
 }
 
 #[test]

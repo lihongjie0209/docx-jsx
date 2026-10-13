@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.27 - 2026-10-13
+
+- Add Agent JSON Schema constraints for line breaks and inline control leaves.
+
 ## 0.8.26 - 2026-10-13
 
 - Add Agent JSON Schema constraints for Footnote content and allowed child types.
