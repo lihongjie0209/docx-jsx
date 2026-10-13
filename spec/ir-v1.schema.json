@@ -40,6 +40,10 @@
         {
           "if": { "properties": { "type": { "const": "Heading" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/headingProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Run" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/runProps" } } }
         }
       ]
     },
@@ -126,22 +130,7 @@
         "widowControl": { "type": "boolean" },
         "suppressLineNumbers": { "type": "boolean" },
         "font": { "type": "string", "minLength": 1 },
-        "fonts": {
-          "type": "object",
-          "additionalProperties": false,
-          "minProperties": 1,
-          "properties": {
-            "ascii": { "type": "string", "minLength": 1 },
-            "hiAnsi": { "type": "string", "minLength": 1 },
-            "eastAsia": { "type": "string", "minLength": 1 },
-            "cs": { "type": "string", "minLength": 1 },
-            "asciiTheme": { "type": "string", "minLength": 1 },
-            "hiAnsiTheme": { "type": "string", "minLength": 1 },
-            "eastAsiaTheme": { "type": "string", "minLength": 1 },
-            "csTheme": { "type": "string", "minLength": 1 },
-            "hint": { "type": "string", "minLength": 1 }
-          }
-        },
+        "fonts": { "$ref": "#/$defs/fontSlots" },
         "size": { "type": "number", "exclusiveMinimum": 0 },
         "bold": { "type": "boolean" },
         "italic": { "type": "boolean" },
@@ -183,6 +172,63 @@
         { "type": "object", "properties": { "outlineLevel": { "type": "integer", "minimum": 0, "maximum": 9 } } }
       ],
       "unevaluatedProperties": false
+    },
+    "fontSlots": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "ascii": { "type": "string", "minLength": 1 },
+        "hiAnsi": { "type": "string", "minLength": 1 },
+        "eastAsia": { "type": "string", "minLength": 1 },
+        "cs": { "type": "string", "minLength": 1 },
+        "asciiTheme": { "type": "string", "minLength": 1 },
+        "hiAnsiTheme": { "type": "string", "minLength": 1 },
+        "eastAsiaTheme": { "type": "string", "minLength": 1 },
+        "csTheme": { "type": "string", "minLength": 1 },
+        "hint": { "type": "string", "minLength": 1 }
+      }
+    },
+    "runProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": { "type": "string", "minLength": 1 },
+        "font": { "type": "string", "minLength": 1 },
+        "fonts": { "$ref": "#/$defs/fontSlots" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "sizeCs": { "type": "number", "exclusiveMinimum": 0 },
+        "bold": { "type": "boolean" },
+        "boldCs": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "italicCs": { "type": "boolean" },
+        "strike": { "type": "boolean" },
+        "doubleStrike": { "type": "boolean" },
+        "underline": {
+          "oneOf": [
+            { "type": "boolean" },
+            { "enum": ["single", "words", "double", "thick", "dotted", "dottedHeavy", "dash", "dashedHeavy", "dashLong", "dashLongHeavy", "dotDash", "dashDotHeavy", "dotDotDash", "dashDotDotHeavy", "wave", "wavyHeavy", "wavyDouble", "none"] }
+          ]
+        },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "highlight": { "type": "string", "minLength": 1 },
+        "themeColor": { "enum": ["dark1", "light1", "dark2", "light2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hyperlink", "followedHyperlink", "none", "background1", "text1", "background2", "text2"] },
+        "themeShade": { "type": "string", "pattern": "^[0-9A-Fa-f]{2}$" },
+        "themeTint": { "type": "string", "pattern": "^[0-9A-Fa-f]{2}$" },
+        "verticalAlign": { "enum": ["baseline", "superscript", "subscript"] },
+        "caps": { "type": "boolean" },
+        "hidden": { "const": true },
+        "specVanish": { "const": true }
+      },
+      "allOf": [
+        { "not": { "required": ["font", "fonts"] } },
+        {
+          "not": {
+            "properties": { "strike": { "const": true }, "doubleStrike": { "const": true } },
+            "required": ["strike", "doubleStrike"]
+          }
+        }
+      ]
     },
     "headingProps": {
       "allOf": [

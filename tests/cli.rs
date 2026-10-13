@@ -194,6 +194,38 @@ fn spec_json_schema_should_require_heading_level() {
 }
 
 #[test]
+fn spec_json_schema_should_type_run_formatting_properties() {
+    let schema = machine_readable_schema();
+    let branch = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas")
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "Run")
+        .expect("Run schema branch should exist");
+    assert_eq!(
+        branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/runProps"
+    );
+    assert_eq!(
+        schema["$defs"]["runProps"]["properties"]["sizeCs"]["type"],
+        "number"
+    );
+}
+
+#[test]
+fn spec_json_schema_should_restrict_run_hidden_flags_to_true() {
+    let schema = machine_readable_schema();
+    assert_eq!(
+        schema["$defs"]["runProps"]["properties"]["hidden"]["const"],
+        true
+    );
+    assert_eq!(
+        schema["$defs"]["runProps"]["properties"]["specVanish"]["const"],
+        true
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");

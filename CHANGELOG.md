@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.6 - 2026-10-13
+
+- Extend the Agent JSON Schema to constrain common `Run` formatting, including
+  underline/theme enums, color formats, font slots, positive sizes, enabled-only
+  hidden flags, and incompatible strike combinations.
+
 ## 0.8.5 - 2026-10-13
 
 - Extend the Agent JSON Schema to constrain `Paragraph` and `Heading` layout,
