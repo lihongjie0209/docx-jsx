@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "docx-jsx"
-version = "0.8.11"
+version = "0.8.12"
 dependencies = [
  "assert_cmd",
  "clap",

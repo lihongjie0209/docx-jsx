@@ -114,24 +114,27 @@ fn spec_should_output_machine_readable_json_schema() {
         serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
     assert_eq!(schema["title"], "docx-jsx IR v1");
     let node = &schema["$defs"]["node"];
+    let branches = node["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas");
+    let row = branches
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "TableRow")
+        .expect("TableRow branch should exist");
     assert_eq!(
-        node["allOf"][0]["if"]["properties"]["type"]["const"],
-        "TableRow"
-    );
-    assert_eq!(
-        node["allOf"][0]["then"]["properties"]["props"]["$ref"],
+        row["then"]["properties"]["props"]["$ref"],
         "#/$defs/tableRowProps"
     );
     assert_eq!(
         schema["$defs"]["tableRowProps"]["properties"]["header"]["type"],
         "boolean"
     );
+    let cell = branches
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "TableCell")
+        .expect("TableCell branch should exist");
     assert_eq!(
-        node["allOf"][1]["if"]["properties"]["type"]["const"],
-        "TableCell"
-    );
-    assert_eq!(
-        node["allOf"][1]["then"]["properties"]["props"]["$ref"],
+        cell["then"]["properties"]["props"]["$ref"],
         "#/$defs/tableCellProps"
     );
     assert_eq!(
@@ -383,6 +386,29 @@ fn spec_json_schema_should_limit_numbering_levels() {
     assert_eq!(
         schema["$defs"]["listLevel"]["properties"]["suffix"]["enum"],
         serde_json::json!(["tab", "space", "nothing"])
+    );
+}
+
+#[test]
+fn spec_json_schema_should_constrain_table_properties() {
+    let schema = machine_readable_schema();
+    let branch = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas")
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "Table")
+        .expect("Table schema branch should exist");
+    assert_eq!(
+        branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/tableProps"
+    );
+    assert_eq!(
+        schema["$defs"]["tableProps"]["properties"]["widthPercent"]["maximum"],
+        100
+    );
+    assert_eq!(
+        schema["$defs"]["tablePosition"]["properties"]["xAlign"]["enum"],
+        serde_json::json!(["center", "inside", "left", "outside", "right"])
     );
 }
 

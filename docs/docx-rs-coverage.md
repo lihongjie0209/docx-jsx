@@ -88,3 +88,9 @@ indent aliases. Duplicate override levels and tree-placement rules remain
 authoritatively checked by `validate` because JSON Schema cannot express
 cross-array uniqueness by a selected object property or the complete component
 parent/child grammar.
+
+Agent JSON Schema also covers `Table`: point/percentage widths, alignment and
+layout, positive grid-column widths, complete four-edge margins, uniform or
+positioned borders, and floating position anchors/coordinates. Grid width
+count matching the table's effective column count remains a semantic compiler
+check because it depends on the child rows and cell spans.

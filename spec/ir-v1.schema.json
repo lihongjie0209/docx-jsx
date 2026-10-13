@@ -26,6 +26,10 @@
       },
       "allOf": [
         {
+          "if": { "properties": { "type": { "const": "Table" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/tableProps" } } }
+        },
+        {
           "if": { "properties": { "type": { "const": "TableRow" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/tableRowProps" } } }
         },
@@ -624,6 +628,112 @@
         { "required": ["href"], "not": { "required": ["anchor"] } },
         { "required": ["anchor"], "not": { "required": ["href"] } }
       ]
+    },
+    "tableProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "widthPercent": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "align": { "enum": ["left", "center", "right"] },
+        "layout": { "enum": ["auto", "fixed"] },
+        "columnWidths": { "type": "array", "items": { "type": "number", "exclusiveMinimum": 0 } },
+        "style": { "type": "string", "minLength": 1 },
+        "indent": { "type": "number" },
+        "margins": { "$ref": "#/$defs/tableMargins" },
+        "position": { "$ref": "#/$defs/tablePosition" },
+        "border": { "$ref": "#/$defs/tableBorder" }
+      },
+      "allOf": [{ "not": { "required": ["width", "widthPercent"] } }]
+    },
+    "tableMargins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top", "right", "bottom", "left"],
+      "properties": {
+        "top": { "type": "number", "minimum": 0 },
+        "right": { "type": "number", "minimum": 0 },
+        "bottom": { "type": "number", "minimum": 0 },
+        "left": { "type": "number", "minimum": 0 }
+      }
+    },
+    "tablePosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "leftFromText": { "type": "number", "minimum": 0 },
+        "rightFromText": { "type": "number", "minimum": 0 },
+        "verticalAnchor": { "enum": ["margin", "page", "text"] },
+        "horizontalAnchor": { "enum": ["margin", "page", "text"] },
+        "xAlign": { "enum": ["center", "inside", "left", "outside", "right"] },
+        "yAlign": { "enum": ["bottom", "center", "inline", "inside", "outside", "top"] },
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "allOf": [
+        { "not": { "required": ["x", "xAlign"] } },
+        { "not": { "required": ["y", "yAlign"] } }
+      ]
+    },
+    "tableBorder": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "style": { "$ref": "#/$defs/borderStyle" },
+            "size": { "type": "number", "exclusiveMinimum": 0 },
+            "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clearAll": { "type": "boolean" },
+            "top": { "$ref": "#/$defs/positionedTableBorder" },
+            "right": { "$ref": "#/$defs/positionedTableBorder" },
+            "bottom": { "$ref": "#/$defs/positionedTableBorder" },
+            "left": { "$ref": "#/$defs/positionedTableBorder" },
+            "insideHorizontal": { "$ref": "#/$defs/positionedTableBorder" },
+            "insideVertical": { "$ref": "#/$defs/positionedTableBorder" }
+          },
+          "anyOf": [
+            { "properties": { "clearAll": { "const": true } }, "required": ["clearAll"] },
+            { "required": ["top"] }, { "required": ["right"] },
+            { "required": ["bottom"] }, { "required": ["left"] },
+            { "required": ["insideHorizontal"] }, { "required": ["insideVertical"] }
+          ],
+          "not": {
+            "properties": { "clearAll": { "const": true } },
+            "required": ["clearAll"],
+            "anyOf": [
+              { "required": ["top"] }, { "required": ["right"] },
+              { "required": ["bottom"] }, { "required": ["left"] },
+              { "required": ["insideHorizontal"] }, { "required": ["insideVertical"] }
+            ]
+          }
+        }
+      ]
+    },
+    "positionedTableBorder": {
+      "oneOf": [
+        { "const": false },
+        { "$ref": "#/$defs/tableBorderStyle" }
+      ]
+    },
+    "tableBorderStyle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": { "$ref": "#/$defs/borderStyle" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" }
+      }
+    },
+    "borderStyle": {
+      "enum": ["nil", "none", "single", "thick", "double", "dotted", "dashed", "dotDash", "dotDotDash", "triple", "thinThickSmallGap", "thickThinSmallGap", "thinThickThinSmallGap", "thinThickMediumGap", "thickThinMediumGap", "thinThickThinMediumGap", "thinThickLargeGap", "thickThinLargeGap", "thinThickThinLargeGap", "wave", "doubleWave", "dashSmallGap", "dashDotStroked", "threeDEmboss", "threeDEngrave", "outset", "inset", "apples", "archedScallops", "babyPacifier", "babyRattle"]
     },
     "listProps": {
       "type": "object",

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.12 - 2026-10-13
+
+- Extend the Agent JSON Schema to constrain Table widths, grid columns,
+  margins, borders, layout, and floating-position properties.
+
 ## 0.8.11 - 2026-10-13
 
 - Extend the Agent JSON Schema to constrain list numbering definitions, level
