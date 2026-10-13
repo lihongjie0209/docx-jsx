@@ -34,6 +34,10 @@
           "then": { "properties": { "props": { "$ref": "#/$defs/bookmarkProps" } } }
         },
         {
+          "if": { "properties": { "type": { "const": "TableOfContents" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/tableOfContentsProps" } } }
+        },
+        {
           "if": { "properties": { "type": { "const": "Header" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/headerFooterProps" } } }
         },
@@ -102,6 +106,119 @@
       "properties": {
         "name": { "type": "string", "minLength": 1 }
       }
+    },
+    "tableOfContentsProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startLevel": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "endLevel": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "tcFieldLevelRange": { "$ref": "#/$defs/indexLevelRange" },
+        "omitPageNumbersLevelRange": { "$ref": "#/$defs/indexLevelRange" },
+        "entryBookmarkName": { "type": "string", "minLength": 1, "pattern": "^[^\"]+$" },
+        "entryAndPageNumberSeparator": { "type": "string", "pattern": "^[^\"]*$" },
+        "sequenceAndPageNumbersSeparator": { "type": "string", "pattern": "^[^\"]*$" },
+        "seqFieldIdentifierForPrefix": { "type": "string", "minLength": 1, "pattern": "^[^\"]+$" },
+        "stylesWithLevels": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/indexStyleLevel" } },
+        "preserveTab": { "type": "boolean" },
+        "preserveNewLine": { "type": "boolean" },
+        "useAppliedParagraphLineLevel": { "type": "boolean" },
+        "hideTabAndPageNumbersInWebview": { "type": "boolean" },
+        "hyperlinks": { "type": "boolean" },
+        "dirty": { "type": "boolean" },
+        "alias": { "type": "string", "minLength": 1 },
+        "withoutSdt": { "type": "boolean" },
+        "deletion": { "$ref": "#/$defs/indexDeletion" },
+        "fieldParagraph": { "$ref": "#/$defs/tocFieldParagraphProps" }
+      },
+      "allOf": [
+        { "not": { "required": ["deletion", "withoutSdt"] } }
+      ]
+    },
+    "indexLevelRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "end": { "type": "integer", "minimum": 1, "maximum": 9 }
+      }
+    },
+    "indexStyleLevel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["style", "level"],
+      "properties": {
+        "style": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^,\"]+$",
+          "allOf": [{ "not": { "pattern": "\\\\" } }]
+        },
+        "level": { "type": "integer", "minimum": 1, "maximum": 9 }
+      }
+    },
+    "indexDeletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["author", "date"],
+      "properties": {
+        "author": { "type": "string", "minLength": 1 },
+        "date": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tocFieldParagraphProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "style": { "type": "string", "minLength": 1 },
+        "align": { "enum": ["left", "center", "right", "both", "distribute", "start", "end", "justified"] },
+        "spacingBefore": { "type": "number", "minimum": 0 },
+        "spacingAfter": { "type": "number", "minimum": 0 },
+        "lineSpacing": { "type": "number", "minimum": 0 },
+        "spacingBeforeLines": { "type": "integer", "minimum": 0 },
+        "spacingAfterLines": { "type": "integer", "minimum": 0 },
+        "lineRule": { "enum": ["auto", "atLeast", "exact"] },
+        "indentLeft": { "type": "number" },
+        "indentRight": { "type": "number" },
+        "firstLine": { "type": "number", "minimum": 0 },
+        "hanging": { "type": "number", "minimum": 0 },
+        "keepNext": { "const": true },
+        "keepLines": { "const": true },
+        "pageBreakBefore": { "const": true },
+        "snapToGrid": { "type": "boolean" },
+        "widowControl": { "type": "boolean" },
+        "bidi": { "type": "boolean" },
+        "textAlign": { "enum": ["auto", "baseline", "bottom", "center", "top"] },
+        "shading": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "outlineLevel": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "suppressLineNumbers": { "type": "boolean" },
+        "indentLeftChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentStartChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentRightChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "indentEndChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "firstLineChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "hangingChars": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+        "font": { "type": "string", "minLength": 1 },
+        "fonts": { "$ref": "#/$defs/fontSlots" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "bold": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "characterSpacing": { "type": "number" }
+      },
+      "allOf": [
+        { "not": { "required": ["font", "fonts"] } },
+        { "not": { "required": ["indentLeftChars", "indentStartChars"] } },
+        { "not": { "required": ["indentRightChars", "indentEndChars"] } },
+        { "not": { "required": ["firstLine", "hanging"] } },
+        { "not": { "required": ["firstLine", "hangingChars"] } },
+        { "not": { "required": ["firstLineChars", "hanging"] } },
+        { "not": { "required": ["firstLineChars", "hangingChars"] } },
+        { "not": { "required": ["firstLine", "firstLineChars"] } },
+        { "not": { "required": ["hanging", "hangingChars"] } }
+      ]
     },
     "headerFooterProps": {
       "type": "object",

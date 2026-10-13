@@ -116,3 +116,9 @@ document relationship concern handled by the compiler and reverse converter.
 Bookmark and inline-bookmark schemas require non-empty names while leaving
 range structure and matching ID reconstruction to the existing semantic
 validator/reverse parser.
+
+The Table of Contents schema constrains level bounds and level-range objects,
+field switches/separators, custom styles-with-levels, boolean options,
+deletion metadata, and the restricted generated field-paragraph properties.
+Ordering between level values, valid component placement, and child-dependent
+restrictions (`deletion`/`withoutSdt`/`TocItem`) remain semantic validator rules.

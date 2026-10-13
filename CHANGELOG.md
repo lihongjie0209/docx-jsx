@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.19 - 2026-10-13
+
+- Add Agent JSON Schema coverage for TableOfContents options, level ranges,
+  style mappings, deletion metadata, and generated field-paragraph formatting.
+
 ## 0.8.18 - 2026-10-13
 
 - Add Agent JSON Schema constraints requiring non-empty Bookmark and

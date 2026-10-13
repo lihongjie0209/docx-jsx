@@ -556,6 +556,33 @@ fn spec_json_schema_should_require_bookmark_anchor_names() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_table_of_contents_options() {
+    let schema = machine_readable_schema();
+    let branch = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas")
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "TableOfContents")
+        .expect("TableOfContents schema branch should exist");
+    assert_eq!(
+        branch["then"]["properties"]["props"]["$ref"],
+        "#/$defs/tableOfContentsProps"
+    );
+    assert_eq!(
+        schema["$defs"]["tableOfContentsProps"]["properties"]["startLevel"]["maximum"],
+        9
+    );
+    assert_eq!(
+        schema["$defs"]["indexLevelRange"]["required"],
+        serde_json::json!(["start", "end"])
+    );
+    assert_eq!(
+        schema["$defs"]["tocFieldParagraphProps"]["minProperties"],
+        1
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");
