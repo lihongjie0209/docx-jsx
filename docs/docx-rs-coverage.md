@@ -49,6 +49,11 @@ The Agent JSON Schema constrains `ContentControl` metadata and requires the
 `xpath` / `storeItemId` pair whenever data-binding fields are present. Child
 placement and block-versus-inline structure remain enforced by validation.
 
+The Agent JSON Schema constrains native field-component properties, including
+required instructions and identifiers, sequence formats, field switches,
+document-property names, and formula arguments. Bookmark resolution and the
+full validation of field instruction syntax remain enforced by `validate`.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

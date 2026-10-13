@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.22 - 2026-10-13
+
+- Add Agent JSON Schema coverage for native field components, including
+  identifiers, field switches, and quoted argument constraints.
+
 ## 0.8.21 - 2026-10-13
 
 - Add Agent JSON Schema constraints for ContentControl metadata and data-binding

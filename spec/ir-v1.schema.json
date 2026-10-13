@@ -49,6 +49,18 @@
           "if": { "properties": { "type": { "const": "ContentControl" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/contentControlProps" } } }
         },
+        { "if": { "properties": { "type": { "const": "Field" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/fieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "DateField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/dateTimeFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "TimeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/dateTimeFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "FileNameField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/fileNameFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "AuthorField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/simpleFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "TitleField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/simpleFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "SubjectField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/simpleFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "SequenceField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/sequenceFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "ReferenceField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/referenceFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "MergeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/mergeFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "DocumentPropertyField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/documentPropertyFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "FormulaField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/formulaFieldProps" } } } },
         {
           "if": { "properties": { "type": { "const": "Header" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/headerFooterProps" } } }
@@ -140,6 +152,89 @@
           "then": { "required": ["xpath", "storeItemId"] }
         }
       ]
+    },
+    "fieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instruction"],
+      "properties": {
+        "instruction": { "type": "string", "minLength": 1 },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "dateTimeFieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format": { "type": "string", "minLength": 1, "pattern": "^[^\\\"\\u0000-\\u001F\\u007F]+$" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "fileNameFieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "fullPath": { "type": "boolean" }, "dirty": { "type": "boolean" } }
+    },
+    "simpleFieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "dirty": { "type": "boolean" } }
+    },
+    "sequenceFieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identifier"],
+      "properties": {
+        "identifier": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "format": { "enum": ["arabic", "roman", "Roman", "alphabetic", "Alphabetic"] },
+        "restart": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "placeholder": { "type": "string" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "referenceFieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bookmark"],
+      "properties": {
+        "bookmark": { "type": "string", "minLength": 1 },
+        "hyperlink": { "type": "boolean" },
+        "relativePosition": { "type": "boolean" },
+        "placeholder": { "type": "string" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "mergeFieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "preserveFormatting": { "type": "boolean" },
+        "placeholder": { "type": "string" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "documentPropertyFieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "pattern": "^[^\\\"\\u0000-\\u001F\\u007F]+$" },
+        "placeholder": { "type": "string" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "formulaFieldProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expression"],
+      "properties": {
+        "expression": { "type": "string", "minLength": 1, "pattern": "^[^\\u0000-\\u001F\\u007F]*$" },
+        "numberFormat": { "type": "string", "minLength": 1, "pattern": "^[^\\\"\\u0000-\\u001F\\u007F]+$" },
+        "placeholder": { "type": "string" },
+        "dirty": { "type": "boolean" }
+      }
     },
     "tableOfContentsProps": {
       "type": "object",

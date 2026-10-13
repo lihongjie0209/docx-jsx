@@ -250,6 +250,45 @@ fn spec_json_schema_should_constrain_content_control_binding() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_field_component_properties() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    for (kind, definition) in [
+        ("Field", "fieldProps"),
+        ("DateField", "dateTimeFieldProps"),
+        ("TimeField", "dateTimeFieldProps"),
+        ("FileNameField", "fileNameFieldProps"),
+        ("AuthorField", "simpleFieldProps"),
+        ("TitleField", "simpleFieldProps"),
+        ("SubjectField", "simpleFieldProps"),
+        ("SequenceField", "sequenceFieldProps"),
+        ("ReferenceField", "referenceFieldProps"),
+        ("MergeField", "mergeFieldProps"),
+        ("DocumentPropertyField", "documentPropertyFieldProps"),
+        ("FormulaField", "formulaFieldProps"),
+    ] {
+        let branch = branches
+            .iter()
+            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(
+            branch["then"]["properties"]["props"]["$ref"],
+            format!("#/$defs/{definition}")
+        );
+    }
+    assert_eq!(
+        schema["$defs"]["sequenceFieldProps"]["required"][0],
+        "identifier"
+    );
+    assert_eq!(
+        schema["$defs"]["formulaFieldProps"]["required"][0],
+        "expression"
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]
