@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.23 - 2026-10-13
+
+- Add Agent JSON Schema coverage for static TOC items and page-reference fields.
+
 ## 0.8.22 - 2026-10-13
 
 - Add Agent JSON Schema coverage for native field components, including

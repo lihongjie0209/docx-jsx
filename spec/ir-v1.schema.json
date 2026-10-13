@@ -58,6 +58,8 @@
         { "if": { "properties": { "type": { "const": "SubjectField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/simpleFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "SequenceField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/sequenceFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "ReferenceField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/referenceFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "PageReference" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/referenceFieldProps" } } } },
+        { "if": { "properties": { "type": { "const": "TocItem" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocItemProps" } } } },
         { "if": { "properties": { "type": { "const": "MergeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/mergeFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "DocumentPropertyField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/documentPropertyFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "FormulaField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/formulaFieldProps" } } } },
@@ -202,6 +204,18 @@
         "relativePosition": { "type": "boolean" },
         "placeholder": { "type": "string" },
         "dirty": { "type": "boolean" }
+      }
+    },
+    "tocItemProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "bookmark"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "bookmark": { "type": "string", "minLength": 1, "pattern": "^[^\\s\"\\\\]+$" },
+        "level": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "pageRef": { "type": "string" },
+        "tabPosition": { "type": "number", "exclusiveMinimum": 0, "maximum": 1584 }
       }
     },
     "mergeFieldProps": {

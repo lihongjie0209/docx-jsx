@@ -54,6 +54,10 @@ required instructions and identifiers, sequence formats, field switches,
 document-property names, and formula arguments. Bookmark resolution and the
 full validation of field instruction syntax remain enforced by `validate`.
 
+The Agent JSON Schema constrains static `TocItem` rows and `PageReference`
+targets, including non-empty targets, legal page-number tab positions, and the
+same bookmark target contract as `ReferenceField`.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

@@ -18,8 +18,8 @@ docx-jsx spec [--format markdown|json-schema]
 this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Heading`, `Run`, `Section`, `Image`, `Hyperlink`, `List`, `ListItem`, `Table`,
 `Caption`, `Header`, `Footer`, `Bookmark`, `InlineBookmark`, and
-`TableOfContents`, `TableOfFigures`, `TableOfEntries`, `ContentControl`, and
-the native field components' properties are additionally typed and constrained;
+`TableOfContents`, `TableOfFigures`, `TableOfEntries`, `ContentControl`, the
+native field components, `TocItem`, and `PageReference` properties are additionally typed and constrained;
 other component `props` remain generic
 objects pending later coverage batches. The
 schema constrains style definition metadata and all four nested style property
@@ -52,6 +52,9 @@ Child-kind and placement rules remain checked by `validate`.
 Field component schemas constrain required instructions/identifiers, switch
 types, sequence formats, Word identifiers, and quoted field arguments; bookmark
 resolution and XML control-character rules remain checked by `validate`.
+Static `TocItem` rows require text and a bookmark, constrain level and tab
+position, and `PageReference` shares the strict bookmark-target schema with
+`ReferenceField`.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`
