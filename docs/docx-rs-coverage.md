@@ -123,6 +123,11 @@ The Agent JSON Schema types `Index` and `IndexEntry` properties, including
 index column bounds, field-argument strings, page-number style flags, and the
 mutually exclusive page-range/cross-reference options.
 
+The Agent JSON Schema enforces empty children for image, tab-stop, symbol,
+page-reference, positional-tab, TOC-item, and deleted-instruction leaves; it
+also types the required non-empty deleted-instruction field. Its deleted-range
+ancestor requirement remains semantic validation.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

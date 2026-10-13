@@ -62,6 +62,7 @@
         { "if": { "properties": { "type": { "const": "TocItem" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocItemProps" } } } },
         { "if": { "properties": { "type": { "const": "Index" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/indexProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "const": "IndexEntry" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/indexEntryProps" }, "children": { "maxItems": 0 } } } },
+        { "if": { "properties": { "type": { "const": "DeletedInstruction" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/deletedInstructionProps" } } } },
         { "if": { "properties": { "type": { "const": "TabStop" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tabStopProps" } } } },
         { "if": { "properties": { "type": { "const": "PositionalTab" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/positionalTabProps" } } } },
         { "if": { "properties": { "type": { "const": "Symbol" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/symbolProps" } } } },
@@ -176,8 +177,20 @@
         {
           "if": { "properties": { "type": { "const": "List" } }, "required": ["type"] },
           "then": { "properties": { "children": { "minItems": 1, "items": { "$ref": "#/$defs/listChild" } } } }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["Image", "TabStop", "Symbol", "PageReference", "PositionalTab", "TocItem", "DeletedInstruction"] } }, "required": ["type"] },
+          "then": { "properties": { "children": { "maxItems": 0 } } }
         }
       ]
+    },
+    "deletedInstructionProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instruction"],
+      "properties": {
+        "instruction": { "type": "string", "minLength": 1 }
+      }
     },
     "documentChild": { "$ref": "#/$defs/sectionNode" },
     "sectionChild": {

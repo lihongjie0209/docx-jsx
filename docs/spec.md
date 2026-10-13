@@ -58,6 +58,10 @@ placement remain enforced by `validate`.
 `Index` and `IndexEntry` properties are typed, including field-argument
 strings, index columns, page-number styling, and mutually exclusive page-range
 bookmark/cross-reference targets.
+`Image`, `TabStop`, `Symbol`, `PageReference`, `PositionalTab`, `TocItem`, and
+`DeletedInstruction` are leaf components and reject children; the latter also
+requires a non-empty instruction. Its required nesting under a deleted run
+remains an ancestor-dependent `validate` rule.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment

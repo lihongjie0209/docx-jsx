@@ -981,6 +981,39 @@ fn spec_json_schema_should_constrain_custom_index_properties() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_leaf_children() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    let branch = branches
+        .iter()
+        .find(|branch| {
+            branch["if"]["properties"]["type"]["enum"]
+                == serde_json::json!([
+                    "Image",
+                    "TabStop",
+                    "Symbol",
+                    "PageReference",
+                    "PositionalTab",
+                    "TocItem",
+                    "DeletedInstruction"
+                ])
+                && branch["then"]["properties"]["children"]["maxItems"] == 0
+        })
+        .expect("leaf components should reject children");
+    assert_eq!(branch["then"]["properties"]["children"]["maxItems"], 0);
+    assert!(branches.iter().any(|branch| {
+        branch["if"]["properties"]["type"]["const"] == "DeletedInstruction"
+            && branch["then"]["properties"]["props"]["$ref"] == "#/$defs/deletedInstructionProps"
+    }));
+    assert_eq!(
+        schema["$defs"]["deletedInstructionProps"]["required"],
+        serde_json::json!(["instruction"])
+    );
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

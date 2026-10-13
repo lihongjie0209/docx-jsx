@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.40 - 2026-10-13
+
+- Constrain leaf component children and `DeletedInstruction` properties in the
+  Agent JSON Schema.
+
 ## 0.8.39 - 2026-10-13
 
 - Constrain custom `Index` and `IndexEntry` properties in the Agent JSON
