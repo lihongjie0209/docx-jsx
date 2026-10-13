@@ -58,6 +58,10 @@ The Agent JSON Schema constrains static `TocItem` rows and `PageReference`
 targets, including non-empty targets, legal page-number tab positions, and the
 same bookmark target contract as `ReferenceField`.
 
+The Agent JSON Schema also types `TabStop`, `PositionalTab`, and `Symbol`
+properties, including legal leaders/alignment and the required four-digit
+hexadecimal symbol code.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

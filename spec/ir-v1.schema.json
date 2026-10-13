@@ -60,6 +60,9 @@
         { "if": { "properties": { "type": { "const": "ReferenceField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/referenceFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "PageReference" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/referenceFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "TocItem" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocItemProps" } } } },
+        { "if": { "properties": { "type": { "const": "TabStop" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tabStopProps" } } } },
+        { "if": { "properties": { "type": { "const": "PositionalTab" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/positionalTabProps" } } } },
+        { "if": { "properties": { "type": { "const": "Symbol" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/symbolProps" } } } },
         { "if": { "properties": { "type": { "const": "MergeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/mergeFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "DocumentPropertyField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/documentPropertyFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "FormulaField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/formulaFieldProps" } } } },
@@ -216,6 +219,34 @@
         "level": { "type": "integer", "minimum": 1, "maximum": 9 },
         "pageRef": { "type": "string" },
         "tabPosition": { "type": "number", "exclusiveMinimum": 0, "maximum": 1584 }
+      }
+    },
+    "tabStopProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position"],
+      "properties": {
+        "position": { "type": "number", "minimum": 0 },
+        "align": { "enum": ["left", "center", "right", "decimal", "bar", "clear"] },
+        "leader": { "enum": ["none", "dot", "heavy", "hyphen", "middleDot", "underscore"] }
+      }
+    },
+    "positionalTabProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "align": { "enum": ["left", "center", "right"] },
+        "relativeTo": { "enum": ["margin", "indent"] },
+        "leader": { "enum": ["none", "dot", "heavy", "hyphen", "middleDot", "underscore"] }
+      }
+    },
+    "symbolProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["font", "char"],
+      "properties": {
+        "font": { "type": "string", "minLength": 1 },
+        "char": { "type": "string", "pattern": "^[0-9A-Fa-f]{4}$" }
       }
     },
     "mergeFieldProps": {
