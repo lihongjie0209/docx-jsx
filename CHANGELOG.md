@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.33 - 2026-10-13
+
+- Constrain direct child kinds for paragraph-like and inline components in the
+  Agent JSON Schema.
+
 ## 0.8.32 - 2026-10-13
 
 - Constrain direct child kinds for core structural containers in the Agent JSON

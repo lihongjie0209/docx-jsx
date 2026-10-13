@@ -31,7 +31,7 @@
         },
         {
           "if": { "properties": { "type": { "const": "InlineBookmark" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/bookmarkProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/bookmarkProps" }, "children": { "items": { "$ref": "#/$defs/paragraphChild" } } } }
         },
         {
           "if": { "properties": { "type": { "const": "TableOfContents" } }, "required": ["type"] },
@@ -95,7 +95,7 @@
         },
         {
           "if": { "properties": { "type": { "const": "Caption" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/captionProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/captionProps" }, "children": { "items": { "$ref": "#/$defs/paragraphChild" } } } }
         },
         {
           "if": { "properties": { "type": { "const": "Table" } }, "required": ["type"] },
@@ -111,15 +111,15 @@
         },
         {
           "if": { "properties": { "type": { "const": "Paragraph" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/paragraphProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/paragraphProps" }, "children": { "items": { "$ref": "#/$defs/paragraphChild" } } } }
         },
         {
           "if": { "properties": { "type": { "const": "Heading" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/headingProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/headingProps" }, "children": { "items": { "$ref": "#/$defs/paragraphChild" } } } }
         },
         {
           "if": { "properties": { "type": { "const": "Run" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/runProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/runProps" }, "children": { "items": { "$ref": "#/$defs/runChild" } } } }
         },
         {
           "if": { "properties": { "type": { "const": "Section" } }, "required": ["type"] },
@@ -135,7 +135,7 @@
         },
         {
           "if": { "properties": { "type": { "const": "Hyperlink" } }, "required": ["type"] },
-          "then": { "properties": { "props": { "$ref": "#/$defs/hyperlinkProps" } } }
+          "then": { "properties": { "props": { "$ref": "#/$defs/hyperlinkProps" }, "children": { "items": { "$ref": "#/$defs/hyperlinkChild" } } } }
         },
         {
           "if": { "properties": { "type": { "const": "List" } }, "required": ["type"] },
@@ -252,6 +252,63 @@
     "listItemNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "ListItem" } } },
     "contentControlNode": { "$ref": "#/$defs/typedNode", "type": "object", "properties": { "type": { "const": "ContentControl" } } },
     "typedNode": { "$ref": "#/$defs/node" },
+    "paragraphChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/paragraphInlineNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "paragraphInlineNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": {
+              "enum": ["Run", "Text", "Break", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen", "Image", "Hyperlink", "ContentControl", "Field", "DateField", "TimeField", "FileNameField", "AuthorField", "TitleField", "SubjectField", "SequenceField", "ReferenceField", "MergeField", "DocumentPropertyField", "FormulaField", "IndexEntry", "Comment", "InlineBookmark", "Inserted", "Deleted", "MovedFrom", "MovedTo", "Footnote", "Tab", "TabStop", "PositionalTab", "Symbol", "Bold", "Italic", "Underline", "StrikeThrough", "Superscript", "Subscript", "AllCaps", "HiddenText", "SpecialHiddenText", "DoubleStrike", "SpacedText", "ScaledText", "FitText", "BorderedText", "ShadedText", "PageNumber", "TotalPages", "PageReference", "TocEntry"]
+            }
+          }
+        }
+      ]
+    },
+    "runChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/runInlineNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "runInlineNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": {
+              "enum": ["Text", "Break", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen", "Image", "Footnote", "Tab", "Symbol", "PageReference", "PositionalTab", "TocEntry", "DeletedInstruction"]
+            }
+          }
+        }
+      ]
+    },
+    "hyperlinkChild": {
+      "oneOf": [
+        { "$ref": "#/$defs/hyperlinkInlineNode" },
+        { "type": "string" },
+        { "type": "number" }
+      ]
+    },
+    "hyperlinkInlineNode": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": {
+            "type": {
+              "enum": ["Run", "Text", "Break", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen", "Image", "Footnote", "Tab", "Symbol", "PageReference", "PositionalTab", "TocEntry", "ContentControl", "Inserted", "Deleted", "InlineBookmark", "Comment"]
+            }
+          }
+        }
+      ]
+    },
     "bookmarkProps": {
       "type": "object",
       "additionalProperties": false,

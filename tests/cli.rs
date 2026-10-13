@@ -658,6 +658,123 @@ fn spec_json_schema_should_constrain_core_container_children() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_inline_parent_children() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    for (kind, child_ref) in [
+        ("Paragraph", "#/$defs/paragraphChild"),
+        ("Heading", "#/$defs/paragraphChild"),
+        ("Caption", "#/$defs/paragraphChild"),
+        ("InlineBookmark", "#/$defs/paragraphChild"),
+        ("Run", "#/$defs/runChild"),
+        ("Hyperlink", "#/$defs/hyperlinkChild"),
+    ] {
+        assert!(
+            branches.iter().any(|branch| {
+                let type_matches = branch["if"]["properties"]["type"]["const"] == kind;
+                type_matches
+                    && branch["then"]["properties"]["children"]["items"]["$ref"] == child_ref
+            }),
+            "{kind} should use {child_ref}"
+        );
+    }
+}
+
+#[test]
+fn spec_json_schema_should_list_allowed_inline_node_types() {
+    let schema = machine_readable_schema();
+    for (definition, expected_types) in [
+        (
+            "paragraphInlineNode",
+            [
+                "Run",
+                "Text",
+                "Break",
+                "CarriageReturn",
+                "NonBreakingSpace",
+                "SoftHyphen",
+                "NonBreakingHyphen",
+                "Image",
+                "Hyperlink",
+                "ContentControl",
+                "Field",
+                "DateField",
+                "TimeField",
+                "FileNameField",
+                "AuthorField",
+                "TitleField",
+                "SubjectField",
+                "SequenceField",
+                "ReferenceField",
+                "MergeField",
+                "DocumentPropertyField",
+                "FormulaField",
+                "IndexEntry",
+                "Comment",
+                "InlineBookmark",
+                "Inserted",
+                "Deleted",
+                "MovedFrom",
+                "MovedTo",
+                "Footnote",
+                "Tab",
+                "TabStop",
+                "PositionalTab",
+                "Symbol",
+                "Bold",
+                "Italic",
+                "Underline",
+                "StrikeThrough",
+                "Superscript",
+                "Subscript",
+                "AllCaps",
+                "HiddenText",
+                "SpecialHiddenText",
+                "DoubleStrike",
+                "SpacedText",
+                "ScaledText",
+                "FitText",
+                "BorderedText",
+                "ShadedText",
+                "PageNumber",
+                "TotalPages",
+                "PageReference",
+                "TocEntry",
+            ]
+            .as_slice(),
+        ),
+        (
+            "runInlineNode",
+            [
+                "Text",
+                "Break",
+                "CarriageReturn",
+                "NonBreakingSpace",
+                "SoftHyphen",
+                "NonBreakingHyphen",
+                "Image",
+                "Footnote",
+                "Tab",
+                "Symbol",
+                "PageReference",
+                "PositionalTab",
+                "TocEntry",
+                "DeletedInstruction",
+            ]
+            .as_slice(),
+        ),
+    ] {
+        assert_eq!(
+            schema["$defs"][definition]["allOf"][1]["properties"]["type"]["enum"],
+            serde_json::json!(expected_types),
+            "{definition} allowed component kinds"
+        );
+    }
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

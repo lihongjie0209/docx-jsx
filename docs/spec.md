@@ -34,6 +34,11 @@ containers `Document`, `Section`, `Header`, `Footer`, `Table`, `TableRow`,
 `TableCell`, `List`, and `ListItem`. Context-sensitive rules—especially the
 inline-versus-block `ContentControl` form and section/index relationships—remain
 enforced by `validate`.
+For inline content, it also constrains direct child kinds for `Paragraph`,
+`Heading`, `Caption`, `Run`, `Hyperlink`, and `InlineBookmark`; string and
+numeric text remains supported where the DSL permits it. The requirement that
+`DeletedInstruction` occur inside a `Run` nested within `Deleted` is
+ancestor-dependent and remains enforced by `validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment
