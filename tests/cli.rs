@@ -454,6 +454,23 @@ fn spec_json_schema_should_constrain_style_metadata_and_table_properties() {
 }
 
 #[test]
+fn spec_json_schema_should_type_nested_style_run_formatting() {
+    let schema = machine_readable_schema();
+    assert_eq!(
+        schema["$defs"]["styleDefinition"]["properties"]["run"]["$ref"],
+        "#/$defs/styleRunProps"
+    );
+    assert_eq!(
+        schema["$defs"]["styleRunProps"]["properties"]["specVanish"]["const"],
+        true
+    );
+    assert_eq!(
+        schema["$defs"]["styleRunProps"]["properties"]["stretch"]["maximum"],
+        600
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");

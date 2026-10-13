@@ -503,7 +503,7 @@
         "uiPriority": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
         "semiHidden": { "type": "boolean" },
         "unhideWhenUsed": { "type": "boolean" },
-        "run": { "type": "object" },
+        "run": { "$ref": "#/$defs/styleRunProps" },
         "paragraph": { "type": "object" },
         "table": { "type": "object" },
         "cell": { "type": "object" }
@@ -517,6 +517,78 @@
           }
         }
       ]
+    },
+    "styleRunProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "font": { "type": "string", "minLength": 1 },
+        "fonts": { "$ref": "#/$defs/fontSlots" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "sizeCs": { "type": "number", "exclusiveMinimum": 0 },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "themeColor": { "enum": ["dark1", "light1", "dark2", "light2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hyperlink", "followedHyperlink", "none", "background1", "text1", "background2", "text2"] },
+        "themeShade": { "type": "string", "pattern": "^[0-9A-Fa-f]{2}$" },
+        "themeTint": { "type": "string", "pattern": "^[0-9A-Fa-f]{2}$" },
+        "highlight": { "type": "string", "minLength": 1 },
+        "bold": { "type": "boolean" },
+        "boldCs": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "italicCs": { "type": "boolean" },
+        "strike": { "type": "boolean" },
+        "doubleStrike": { "type": "boolean" },
+        "caps": { "type": "boolean" },
+        "underline": { "$ref": "#/$defs/underlineStyle" },
+        "hidden": { "type": "boolean" },
+        "verticalAlign": { "enum": ["baseline", "superscript", "subscript"] },
+        "characterSpacing": { "type": "number" },
+        "textBorder": { "$ref": "#/$defs/styleTextBorder" },
+        "fitText": { "$ref": "#/$defs/styleFitText" },
+        "stretch": { "type": "integer", "minimum": 1, "maximum": 600 },
+        "specVanish": { "const": true },
+        "shading": { "$ref": "#/$defs/styleRunShading" }
+      },
+      "allOf": [
+        { "not": { "required": ["font", "fonts"] } },
+        {
+          "not": {
+            "properties": { "strike": { "const": true }, "doubleStrike": { "const": true } },
+            "required": ["strike", "doubleStrike"]
+          }
+        }
+      ]
+    },
+    "underlineStyle": {
+      "enum": ["single", "words", "double", "thick", "dotted", "dottedHeavy", "dash", "dashedHeavy", "dashLong", "dashLongHeavy", "dotDash", "dashDotHeavy", "dotDotDash", "dashDotDotHeavy", "wave", "wavyHeavy", "wavyDouble", "none"]
+    },
+    "styleTextBorder": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": { "$ref": "#/$defs/borderStyle" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "space": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 }
+      }
+    },
+    "styleFitText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width"],
+      "properties": {
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "id": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      }
+    },
+    "styleRunShading": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fill"],
+      "properties": {
+        "fill": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "color": { "oneOf": [{ "const": "auto" }, { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" }] },
+        "pattern": { "enum": ["nil", "clear", "solid", "horzStripe", "vertStripe", "reverseDiagStripe", "diagStripe", "horzCross", "diagCross", "thinHorzStripe", "thinVertStripe", "thinReverseDiagStripe", "thinDiagStripe", "thinHorzCross", "thinDiagCross", "pct5", "pct10", "pct12", "pct15", "pct20", "pct25", "pct30", "pct35", "pct37", "pct40", "pct45", "pct50", "pct55", "pct60", "pct62", "pct65", "pct70", "pct75", "pct80", "pct85", "pct87", "pct90", "pct95"] }
+      }
     },
     "documentProtection": {
       "type": "object",

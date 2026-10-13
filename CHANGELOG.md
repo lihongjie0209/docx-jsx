@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.15 - 2026-10-13
+
+- Add strict Agent Schema coverage for nested style run formatting, including
+  run effects, theme/font options, and character shading.
+
 ## 0.8.14 - 2026-10-13
 
 - Constrain Agent schema style metadata and restrict table/cell style properties

@@ -25,13 +25,16 @@ override level uniqueness and legal component placement are likewise checked
 by `validate`. Style definition metadata and the table-only placement of
 table/cell properties are constrained by the JSON Schema; style identity
 uniqueness, reference resolution/type compatibility, inheritance cycles, and
-nested style formatting remain checked by `validate`.
+nested paragraph/table/cell style formatting remain checked by `validate`.
 `TableCell.widthPercent` must be greater than 0 and at most 100.
 The Table schema also constrains width exclusivity, percentage widths, layout,
 grid widths, margins, borders, and floating-position coordinate/alignment
 exclusivity. Caption schema validates the required Word label identifier,
 optional sequence identifier/format/restart/placeholder/dirty values, and style
 and separator strings.
+`StyleDefinition.run` receives its own typed schema for run formatting, text
+effects, and character shading; paragraph/table/cell style formatting remains
+generic in the schema while `validate` remains authoritative.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`

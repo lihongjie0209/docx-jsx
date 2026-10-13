@@ -104,5 +104,7 @@ semantic validation.
 Document style schema coverage constrains the style-kind enum, required
 metadata, non-empty inheritance/reference names, and prohibits table/cell
 property blocks on non-table styles. Duplicate IDs, base/link/next resolution,
-type compatibility, cycles, and the detailed nested formatting objects remain
-checked by `validate`; their schema coverage is deferred to a later batch.
+type compatibility, and cycles remain checked by `validate`. Nested run style
+formatting is also constrained, including font slots, theme values, complex
+script properties, text effects, and shading; paragraph/table/cell style
+formatting remains checked by `validate` and its schema coverage is deferred.
