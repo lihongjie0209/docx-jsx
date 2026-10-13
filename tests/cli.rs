@@ -346,6 +346,47 @@ fn spec_json_schema_should_require_one_hyperlink_target() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_list_and_list_item_properties() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node should have conditional property schemas");
+    let list = branches
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "List")
+        .expect("List schema branch should exist");
+    let item = branches
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "ListItem")
+        .expect("ListItem schema branch should exist");
+    assert_eq!(
+        list["then"]["properties"]["props"]["$ref"],
+        "#/$defs/listProps"
+    );
+    assert_eq!(
+        item["then"]["properties"]["props"]["$ref"],
+        "#/$defs/listItemProps"
+    );
+    assert_eq!(
+        schema["$defs"]["listItemProps"]["properties"]["level"]["maximum"],
+        8
+    );
+}
+
+#[test]
+fn spec_json_schema_should_limit_numbering_levels() {
+    let schema = machine_readable_schema();
+    assert_eq!(
+        schema["$defs"]["listProps"]["properties"]["levels"]["maxItems"],
+        9
+    );
+    assert_eq!(
+        schema["$defs"]["listLevel"]["properties"]["suffix"]["enum"],
+        serde_json::json!(["tab", "space", "nothing"])
+    );
+}
+
+#[test]
 fn validation_error_should_include_explanation_and_fix_suggestion() {
     let directory = tempdir().expect("tempdir should work");
     let input = directory.path().join("invalid.jsx");

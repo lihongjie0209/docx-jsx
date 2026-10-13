@@ -80,3 +80,11 @@ public writer surface for a common table-layout feature.
 property and the external reverse path reads the raw `w:tcPr` marker, including
 explicit false, without the manifest. Final `w:tcPr` child ordering is
 normalized by the existing table-cell property ranker.
+
+Agent JSON Schema coverage now includes `List` and `ListItem`: the schema
+constrains the nine OOXML numbering levels, level/run formatting, per-instance
+level overrides, style-link rules, list-item nesting level, and character-unit
+indent aliases. Duplicate override levels and tree-placement rules remain
+authoritatively checked by `validate` because JSON Schema cannot express
+cross-array uniqueness by a selected object property or the complete component
+parent/child grammar.

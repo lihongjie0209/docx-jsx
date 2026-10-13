@@ -60,6 +60,14 @@
         {
           "if": { "properties": { "type": { "const": "Hyperlink" } }, "required": ["type"] },
           "then": { "properties": { "props": { "$ref": "#/$defs/hyperlinkProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "List" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/listProps" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "ListItem" } }, "required": ["type"] },
+          "then": { "properties": { "props": { "$ref": "#/$defs/listItemProps" } } }
         }
       ]
     },
@@ -330,7 +338,7 @@
       "additionalProperties": false,
       "properties": {
         "countBy": { "type": "integer", "minimum": 1 },
-        "start": { "type": "integer", "minimum": 1 },
+        "start": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
         "distance": { "type": "number", "minimum": 0 },
         "restart": { "enum": ["newPage", "newSection", "continuous"] }
       }
@@ -615,6 +623,94 @@
       "oneOf": [
         { "required": ["href"], "not": { "required": ["anchor"] } },
         { "required": ["anchor"], "not": { "required": ["href"] } }
+      ]
+    },
+    "listProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["bullet", "ordered"] },
+        "start": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+        "multiLevelType": { "enum": ["singleLevel", "multilevel", "hybridMultilevel"] },
+        "levels": { "type": "array", "minItems": 1, "maxItems": 9, "items": { "$ref": "#/$defs/listLevel" } },
+        "overrides": { "type": "array", "items": { "$ref": "#/$defs/listOverride" } },
+        "styleLink": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$" },
+        "numStyleLink": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$" }
+      },
+      "not": {
+        "required": ["numStyleLink"],
+        "anyOf": [{ "required": ["type"] }, { "required": ["start"] }, { "required": ["levels"] }]
+      }
+    },
+    "listLevel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "start": { "type": "integer", "minimum": 1 },
+        "align": { "enum": ["left", "center", "right"] },
+        "suffix": { "enum": ["tab", "space", "nothing"] },
+        "paragraphStyle": { "type": "string", "minLength": 1 },
+        "restart": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "legal": { "type": "boolean" },
+        "indentLeft": { "type": "number" },
+        "indentRight": { "type": "number" },
+        "hanging": { "type": "number", "minimum": 0 },
+        "firstLine": { "type": "number", "minimum": 0 },
+        "font": { "type": "string", "minLength": 1 },
+        "fonts": { "$ref": "#/$defs/fontSlots" },
+        "size": { "type": "number", "exclusiveMinimum": 0 },
+        "sizeCs": { "type": "number", "exclusiveMinimum": 0 },
+        "color": { "type": "string", "pattern": "^[0-9A-Fa-f]{6}$" },
+        "highlight": { "type": "string", "minLength": 1 },
+        "bold": { "type": "boolean" },
+        "boldCs": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "italicCs": { "type": "boolean" },
+        "strike": { "type": "boolean" },
+        "doubleStrike": { "type": "boolean" },
+        "underline": { "enum": ["single", "words", "double", "thick", "dotted", "dottedHeavy", "dash", "dashedHeavy", "dashLong", "dashLongHeavy", "dotDash", "dashDotHeavy", "dotDotDash", "dashDotDotHeavy", "wave", "wavyHeavy", "wavyDouble", "none"] },
+        "hidden": { "type": "boolean" },
+        "characterSpacing": { "type": "number" }
+      },
+      "allOf": [
+        { "not": { "required": ["font", "fonts"] } },
+        { "not": { "required": ["firstLine", "hanging"] } }
+      ]
+    },
+    "listOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level"],
+      "properties": {
+        "level": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "start": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+        "definition": { "$ref": "#/$defs/listLevel" }
+      },
+      "anyOf": [{ "required": ["start"] }, { "required": ["definition"] }]
+    },
+    "listItemProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "style": { "type": "string", "minLength": 1 },
+        "contextualSpacing": { "type": "boolean" },
+        "mirrorIndents": { "type": "boolean" },
+        "suppressOverlap": { "type": "boolean" },
+        "suppressLineNumbers": { "type": "boolean" },
+        "indentLeftChars": { "type": "integer" },
+        "indentStartChars": { "type": "integer" },
+        "indentRightChars": { "type": "integer" },
+        "indentEndChars": { "type": "integer" },
+        "firstLineChars": { "type": "integer" },
+        "hangingChars": { "type": "integer" }
+      },
+      "allOf": [
+        { "not": { "required": ["indentLeftChars", "indentStartChars"] } },
+        { "not": { "required": ["indentRightChars", "indentEndChars"] } },
+        { "not": { "required": ["firstLineChars", "hangingChars"] } }
       ]
     }
   }

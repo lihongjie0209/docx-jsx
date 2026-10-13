@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.11 - 2026-10-13
+
+- Extend the Agent JSON Schema to constrain list numbering definitions, level
+  formatting, overrides, style links, and list-item levels/character indents.
+
 ## 0.8.10 - 2026-10-13
 
 - Extend the Agent JSON Schema to require exactly one non-empty `Hyperlink`
