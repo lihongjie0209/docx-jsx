@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.30 - 2026-10-13
+
+- Add Agent JSON Schema coverage for custom TOC entries and before/after blocks.
+
 ## 0.8.29 - 2026-10-13
 
 - Add Agent JSON Schema constraints for semantic text effect components.

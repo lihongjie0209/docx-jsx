@@ -513,6 +513,38 @@ fn spec_json_schema_should_constrain_semantic_text_effects() {
 }
 
 #[test]
+fn spec_json_schema_should_constrain_toc_entry_wrappers() {
+    let schema = machine_readable_schema();
+    let branches = schema["$defs"]["node"]["allOf"]
+        .as_array()
+        .expect("node conditional branches");
+    let toc_entry = branches
+        .iter()
+        .find(|branch| branch["if"]["properties"]["type"]["const"] == "TocEntry")
+        .expect("TocEntry schema branch should exist");
+    assert_eq!(
+        toc_entry["then"]["properties"]["props"]["$ref"],
+        "#/$defs/tocEntryProps"
+    );
+    assert_eq!(toc_entry["then"]["properties"]["children"]["maxItems"], 0);
+    for kind in ["TocBefore", "TocAfter"] {
+        let branch = branches
+            .iter()
+            .find(|branch| branch["if"]["properties"]["type"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} schema branch should exist"));
+        assert_eq!(
+            branch["then"]["properties"]["props"]["$ref"],
+            "#/$defs/tocWrapperProps"
+        );
+        assert_eq!(branch["then"]["properties"]["children"]["minItems"], 1);
+        assert_eq!(
+            branch["then"]["properties"]["children"]["items"]["$ref"],
+            "#/$defs/tocBlockChild"
+        );
+    }
+}
+
+#[test]
 fn spec_json_schema_should_type_run_formatting_properties() {
     let schema = machine_readable_schema();
     let branch = schema["$defs"]["node"]["allOf"]

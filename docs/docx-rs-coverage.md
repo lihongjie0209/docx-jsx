@@ -82,6 +82,10 @@ underline, spacing, scaling, fit-to-width, borders, and shading, plus the
 no-property emphasis wrappers. Required content and XML-level semantics remain
 checked by `docx-jsx validate`.
 
+The Agent JSON Schema constrains custom `TocEntry` fields and the `TocBefore` /
+`TocAfter` block wrappers, including their required child kinds and non-empty
+content rules.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

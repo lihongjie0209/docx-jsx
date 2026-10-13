@@ -71,6 +71,9 @@
         { "if": { "properties": { "type": { "const": "Break" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/breakProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "enum": ["PageNumber", "TotalPages", "Tab", "CarriageReturn", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen"] } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/emptyProps" }, "children": { "maxItems": 0 } } } },
         { "if": { "properties": { "type": { "const": "Text" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/textProps" }, "children": { "items": { "oneOf": [{ "type": "string" }, { "type": "number" }] } } } } },
+        { "if": { "properties": { "type": { "const": "TocEntry" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocEntryProps" }, "children": { "maxItems": 0 } } } },
+        { "if": { "properties": { "type": { "const": "TocBefore" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocWrapperProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/tocBlockChild" } } } } },
+        { "if": { "properties": { "type": { "const": "TocAfter" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/tocWrapperProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/tocBlockChild" } } } } },
         { "if": { "properties": { "type": { "enum": ["Bold", "Italic", "StrikeThrough", "Superscript", "Subscript", "AllCaps", "HiddenText", "SpecialHiddenText", "DoubleStrike"] } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/semanticTextEmptyProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
         { "if": { "properties": { "type": { "const": "Underline" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/underlineTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
         { "if": { "properties": { "type": { "const": "SpacedText" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/spacedTextProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/semanticTextChild" } } } } },
@@ -352,6 +355,31 @@
         { "type": "string", "minLength": 1 },
         { "type": "number" },
         { "allOf": [{ "$ref": "#/$defs/node" }, { "properties": { "type": { "const": "Text" } }, "required": ["type"] }] }
+      ]
+    },
+    "tocEntryProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "level": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "omitPageNumber": { "type": "boolean" },
+        "identifier": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tocWrapperProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "tocBlockChild": {
+      "allOf": [
+        { "$ref": "#/$defs/node" },
+        {
+          "properties": { "type": { "enum": ["Paragraph", "Table"] } },
+          "required": ["type"]
+        }
       ]
     },
     "footnoteChild": {

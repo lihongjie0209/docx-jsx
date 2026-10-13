@@ -20,7 +20,7 @@ this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Caption`, `Header`, `Footer`, `Bookmark`, `InlineBookmark`, and
 `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `ContentControl`, the
 native field components, `TocItem`, `PageReference`, `TabStop`, `PositionalTab`,
-`Text`, semantic text effects, `Symbol`, tracked revision properties, `Footnote`,
+`Text`, semantic text effects, `Symbol`, `TocEntry`/`TocBefore`/`TocAfter`, tracked revision properties, `Footnote`,
 line breaks, and common inline control leaves are additionally typed and constrained;
 other component `props` remain generic
 objects pending later coverage batches. The
@@ -71,6 +71,8 @@ strings and numbers; component nesting is rejected by the schema.
 Semantic text effects constrain their formatting properties and require text
 children; detailed content presence and effect-specific semantic validation
 remain enforced by `validate`.
+`TocEntry` requires non-empty text and has no children; TOC before/after wrappers
+require one or more `Paragraph` or `Table` children and accept no properties.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`
