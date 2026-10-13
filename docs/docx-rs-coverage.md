@@ -66,6 +66,10 @@ The Agent JSON Schema constrains tracked revision author/date properties and
 requires content for insertion, deletion, and move-range components. Revision
 range matching and nested-content validity remain checked by `validate`.
 
+The Agent JSON Schema requires `Footnote` content and limits direct children to
+the inline component types accepted by the IR validator, including text, Run,
+images, symbols, tabs, and supported fields.
+
 `Zoom::new(percent)` is public in 0.4.22, but `Settings.zoom` is private and
 has no public setter. The compiler normalizes the writer's schema-valid 100%
 default in `word/settings.xml` when `Document.zoom` is supplied; external

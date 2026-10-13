@@ -20,7 +20,7 @@ this schema revision, `Document`, `TableRow`, `TableCell`, `Paragraph`,
 `Caption`, `Header`, `Footer`, `Bookmark`, `InlineBookmark`, and
 `TableOfContents`, `TableOfFigures`, `TableOfEntries`, `ContentControl`, the
 native field components, `TocItem`, `PageReference`, `TabStop`, `PositionalTab`,
-`Symbol`, and tracked revision properties are additionally typed and constrained;
+`Symbol`, tracked revision properties, and `Footnote` structure are additionally typed and constrained;
 other component `props` remain generic
 objects pending later coverage batches. The
 schema constrains style definition metadata and all four nested style property
@@ -60,6 +60,8 @@ Tab-stop and positional-tab schemas constrain alignment and leader enums, while
 `Symbol` requires a font and four hexadecimal character code.
 Tracked revision schemas allow optional author/date metadata and require at least
 one child for `Inserted`, `Deleted`, `MovedFrom`, and `MovedTo`.
+Footnote schema requires at least one child and restricts direct children to
+text, numbers, `Run`, and the inline elements accepted by the IR validator.
 
 When `-o` is omitted, the input extension is replaced with `.docx`. The output
 format is inferred from the `-o` suffix: `.docx` writes a DOCX archive; `.pdf`

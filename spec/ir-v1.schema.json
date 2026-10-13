@@ -67,6 +67,7 @@
         { "if": { "properties": { "type": { "const": "Deleted" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
         { "if": { "properties": { "type": { "const": "MovedFrom" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
         { "if": { "properties": { "type": { "const": "MovedTo" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/revisionProps" }, "children": { "minItems": 1 } } } },
+        { "if": { "properties": { "type": { "const": "Footnote" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/footnoteProps" }, "children": { "minItems": 1, "items": { "$ref": "#/$defs/footnoteChild" } } } } },
         { "if": { "properties": { "type": { "const": "MergeField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/mergeFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "DocumentPropertyField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/documentPropertyFieldProps" } } } },
         { "if": { "properties": { "type": { "const": "FormulaField" } }, "required": ["type"] }, "then": { "properties": { "props": { "$ref": "#/$defs/formulaFieldProps" } } } },
@@ -260,6 +261,29 @@
         "author": { "type": "string" },
         "date": { "type": "string" }
       }
+    },
+    "footnoteProps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "footnoteChild": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "number" },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/node" },
+            {
+              "properties": {
+                "type": {
+                  "enum": ["Run", "Text", "Break", "CarriageReturn", "Image", "Tab", "Symbol", "PageReference", "PositionalTab", "TocEntry", "DeletedInstruction", "NonBreakingSpace", "SoftHyphen", "NonBreakingHyphen"]
+                }
+              }
+            }
+          ]
+        }
+      ]
     },
     "mergeFieldProps": {
       "type": "object",
